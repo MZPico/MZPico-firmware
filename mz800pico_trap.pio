@@ -1,0 +1,43 @@
+.program mz800pico_trap
+
+.wrap_target
+
+    ; Wait for /IORQ (pin 16) to go low (active)
+wait_iorq_low:
+    wait 0 gpio 16          ; Wait until pin 16 (/IORQ) is low
+    nop [20]                ; wait ~150-200 ns for RD or WR
+
+    jmp pin, no_wr_active   ; /WR = 1 -> no WR active
+    irq set 1               ; Write active. Signal write cycle
+    jmp wait_iorq_high
+
+no_wr_active:
+    in pins, 1              ; read /RD
+    mov x, isr
+    jmp x--, wait_iorq_low  ; none of /RD /WR active - wait again
+    irq set 0               ; Signal read cycle
+
+    wait 1 gpio 17          ; Wait for /RD high
+    irq set 2               ; IRQ 2 = RD cycle ended, time to release data bus
+wait_iorq_high:
+    wait 1 gpio 16
+
+.wrap
+
+% c-sdk {
+#include "hardware/pio.h"
+#include "mz800pico_trap.pio.h"
+
+void mz800pico_trap_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
+    uint offset = pio_add_program(pio, &mz800pico_trap_program);
+
+    pio_sm_config c = mz800pico_trap_program_get_default_config(offset);
+
+    sm_config_set_in_pins(&c, base_gpio);
+    sm_config_set_jmp_pin(&c, jump_gpio);
+    sm_config_set_in_shift(&c, false, false, 8);
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
