@@ -1,173 +1,113 @@
 #include <stdio.h>
+
 #include "pico/stdlib.h"
-#include "hardware/pio.h"
-#include "hardware/irq.h"
-#include "mz800pico_trap.pio.h"
+#include "pico/time.h"
+#include "tusb.h"
 
-// --- Pin Definitions ---
-#define ADDR_BUS_BASE    0
-#define ADDR_BUS_COUNT   8
+#include "mz800pico_device.h"
+#include "fatfs_disk.h"
 
-#define DATA_BUS_BASE    8
-#define DATA_BUS_COUNT   8
 
-#define IORQ_PIN         16
-#define RD_PIN           17
-#define WR_PIN           18
+//--------------------------------------------------------------------+
+// Device callbacks
+//--------------------------------------------------------------------+
 
-// Control pins array
-static const uint control_pins[] = { IORQ_PIN, RD_PIN, WR_PIN };
-static const uint control_pins_count = sizeof(control_pins) / sizeof(control_pins[0]);
+// Invoked when device is mounted
+void tud_mount_cb(void)
+{
+  printf("Device mounted\n");
+  if (!mount_fatfs_disk())
+    create_fatfs_disk();
+}
 
-// --- Constants ---
-#define IO_RESET_ADDR    0xE9
-#define IO_READ_ADDR     0xEA
-#define IO_WRITE_ADDR    0xEB
+// Invoked when device is unmounted
+void tud_umount_cb(void)
+{
+  printf("Device unmounted\n");
+}
 
-#define RD_SIZE          65536u
-#define DATA_BUS_MASK    (((1u << DATA_BUS_COUNT) - 1) << DATA_BUS_BASE)
+// Invoked when usb bus is suspended
+// remote_wakeup_en : if host allow us  to perform remote wakeup
+// Within 7ms, device must draw an average of current less than 2.5 mA from bus
+void tud_suspend_cb(bool remote_wakeup_en)
+{
+  (void) remote_wakeup_en;
+//  blink_interval_ms = BLINK_SUSPENDED;
+}
 
-// --- Macros ---
-#define READ_PINS(pins, base, count) (((pins) >> (base)) & ((1u << (count)) - 1))
+// Invoked when usb bus is resumed
+void tud_resume_cb(void)
+{
+//  blink_interval_ms = BLINK_MOUNTED;
+}
 
-// --- Globals ---
-PIO pio = pio0;
-uint sm = 0;
+//--------------------------------------------------------------------+
+// USB CDC
+//--------------------------------------------------------------------+
+void cdc_task(void)
+{
+  // connected() check for DTR bit
+  // Most but not all terminal client set this when making connection
+  // if ( tud_cdc_connected() )
+  {
+    // connected and there are data available
+    if ( tud_cdc_available() )
+    {
+      // read data
+      char buf[64];
+      uint32_t count = tud_cdc_read(buf, sizeof(buf));
+      (void) count;
 
-static uint8_t rd[RD_SIZE] = {
-    // --- Header (9 bytes) ---
-    0x15, 0x00,       // Body size: 21 bytes
-    0x00, 0x12,       // Load address: 0x1200
-    0x00, 0x12,       // Entry point: 0x1200
-    0x9A, 0x00,       // Body CRC: 154 ones
-    0x2B,             // Header CRC: 43 ones in header[0–7]
-
-    // --- Program Body (21 bytes) ---
-    0x11, 0x05, 0x12,             // LD DE, message
-    0xCD, 0x15, 0x00,             // CALL 0x0015
-    0xC3, 0x04, 0x12,             // JP hang
-    0x48, 0x45, 0x4C, 0x4C, 0x4F, // "HELLO"
-    0x20,                         // space
-    0x57, 0x4F, 0x52, 0x4C, 0x44, // "WORLD"
-    0x0D                          // CR terminator
-};
-
-static uint32_t rd_pnt = 0;
-
-// --- Inline Functions ---
-static inline void rd_pnt_increment(void) {
-    rd_pnt++;
-    if (rd_pnt >= RD_SIZE) {
-        rd_pnt = 0;
+      // Echo back
+      // Note: Skip echo by commenting out write() and write_flush()
+      // for throughput test e.g
+      //    $ dd if=/dev/zero of=/dev/ttyACM0 count=10000
+      tud_cdc_write(buf, count);
+      tud_cdc_write_flush();
     }
+  }
 }
 
-static inline uint8_t read_address_bus(void) {
-    return READ_PINS(gpio_get_all(), ADDR_BUS_BASE, ADDR_BUS_COUNT);
+// Invoked when cdc when line state changed e.g connected/disconnected
+void tud_cdc_line_state_cb(uint8_t itf, bool dtr, bool rts)
+{
+  (void) itf;
+  (void) rts;
+
+  // TODO set some indicator
+  if ( dtr )
+  {
+    // Terminal connected
+  }else
+  {
+    // Terminal disconnected
+  }
 }
 
-static inline uint8_t read_data_bus(void) {
-    return READ_PINS(gpio_get_all(), DATA_BUS_BASE, DATA_BUS_COUNT);
+// Invoked when CDC interface received data from host
+void tud_cdc_rx_cb(uint8_t itf)
+{
+  (void) itf;
 }
 
-static inline void read_address_data_bus(uint8_t *addr_out, uint8_t *data_out) {
-    uint32_t pins = gpio_get_all();
-    *addr_out = READ_PINS(pins, ADDR_BUS_BASE, ADDR_BUS_COUNT);
-    *data_out = READ_PINS(pins, DATA_BUS_BASE, DATA_BUS_COUNT);
-}
-
-static inline void write_data_bus(uint8_t value) {
-    gpio_put_masked(DATA_BUS_MASK, (uint32_t)value << DATA_BUS_BASE);
-}
-
-static inline void acquire_data_bus_for_writing(void) {
-    gpio_set_dir_masked(DATA_BUS_MASK, DATA_BUS_MASK);  // Set data pins as output
-}
-
-static inline void release_data_bus(void) {
-    gpio_set_dir_masked(DATA_BUS_MASK, 0);              // Set data pins as input (Hi-Z)
-}
-
-static inline uint8_t rd_read(void) {
-    uint8_t val = rd[rd_pnt];
-    rd_pnt_increment();
-    return val;
-}
-
-static inline void rd_write(uint8_t value) {
-    rd[rd_pnt] = value;
-    rd_pnt_increment();
-}
-
-// --- IRQ Handler ---
-void pio0_irq0_handler(void) {
-    if (pio_interrupt_get(pio, 0)) {
-        pio_interrupt_clear(pio, 0);
-
-        uint8_t addr = read_address_bus();
-        if (addr == IO_RESET_ADDR) {
-            rd_pnt = 0;
-        } else if (addr == IO_READ_ADDR) {
-            acquire_data_bus_for_writing();
-            write_data_bus(rd_read());
-        }
-    }
-
-    if (pio_interrupt_get(pio, 1)) {
-        pio_interrupt_clear(pio, 1);
-
-        uint8_t addr, data;
-        read_address_data_bus(&addr, &data);
-        if (addr == IO_WRITE_ADDR) {
-            sleep_us(1);  // Wait for valid data
-            rd_write(data);
-        }
-    }
-
-    if (pio_interrupt_get(pio, 2)) {
-        pio_interrupt_clear(pio, 2);
-        release_data_bus();
-    }
-}
-
-// --- GPIO Init ---
-void init_gpio(void) {
-    for (int i = 0; i < ADDR_BUS_COUNT; ++i) {
-        gpio_init(ADDR_BUS_BASE + i);
-        gpio_set_dir(ADDR_BUS_BASE + i, GPIO_IN);
-    }
-
-    for (int i = 0; i < DATA_BUS_COUNT; ++i) {
-        gpio_init(DATA_BUS_BASE + i);
-        gpio_set_dir(DATA_BUS_BASE + i, GPIO_IN);
-    }
-
-    //for (size_t i = 0; i < control_pins_count; ++i) {
-    for (size_t i = 0; i < 3; ++i) {
-        gpio_init(control_pins[i]);
-        gpio_set_dir(control_pins[i], GPIO_IN);
-        gpio_pull_up(control_pins[i]);
-    }
-}
-
-// --- Main Entry ---
 int main(void) {
+
+    gpio_init(RD_PIN);
+    gpio_set_dir(RD_PIN, GPIO_IN);
+    gpio_pull_down(RD_PIN);
+
+    while (to_ms_since_boot(get_absolute_time()) < 100)
+    {
+      if (gpio_get(RD_PIN))
+        device_main();
+    }
+
     stdio_init_all();
-    init_gpio();
 
-    mz800pico_trap_init(pio, sm, RD_PIN, WR_PIN);
-
-    irq_set_exclusive_handler(PIO0_IRQ_0, pio0_irq0_handler);
-    irq_set_enabled(PIO0_IRQ_0, true);
-
-    pio_set_irq0_source_enabled(pio, pis_interrupt0, true);
-    pio_set_irq0_source_enabled(pio, pis_interrupt1, true);
-    pio_set_irq0_source_enabled(pio, pis_interrupt2, true);
-
-    printf("mz800pico trap ready.\n");
-
+    tud_init(BOARD_TUD_RHPORT);
     while (1) {
-        tight_loop_contents();
+        tud_task();
+        cdc_task();
     }
 }
 

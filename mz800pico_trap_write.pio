@@ -1,0 +1,29 @@
+.program mz800pico_trap_write
+
+.wrap_target
+
+wait_iorq_low:
+    wait 0 gpio 16
+    jmp pin, wait_iorq_high
+    irq set 1
+wait_iorq_high:
+    wait 1 gpio 16
+.wrap
+
+% c-sdk {
+#include "hardware/pio.h"
+#include "mz800pico_trap_write.pio.h"
+
+void mz800pico_trap_write_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
+    uint offset = pio_add_program(pio, &mz800pico_trap_write_program);
+
+    pio_sm_config c = mz800pico_trap_write_program_get_default_config(offset);
+
+    sm_config_set_in_pins(&c, base_gpio);
+    sm_config_set_jmp_pin(&c, jump_gpio);
+    sm_config_set_in_shift(&c, true, true, 16);
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}

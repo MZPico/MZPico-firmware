@@ -5,7 +5,7 @@
     ; Wait for /IORQ (pin 16) to go low (active)
 wait_iorq_low:
     wait 0 gpio 16          ; Wait until pin 16 (/IORQ) is low
-    nop [20]                ; wait ~150-200 ns for RD or WR
+    nop [10]                ; wait ~150-200 ns for RD or WR
 
     jmp pin, no_wr_active   ; /WR = 1 -> no WR active
     irq set 1               ; Write active. Signal write cycle
