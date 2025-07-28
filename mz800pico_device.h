@@ -10,9 +10,9 @@
 #define DATA_BUS_BASE    8
 #define DATA_BUS_COUNT   8
 
-#define IORQ_PIN         16
-#define RD_PIN           17
-#define WR_PIN           18
+#define IORQ_PIN         20
+#define RD_PIN           21
+#define WR_PIN           22
 
 #define IO_REPO_COMMAND_ADDR  0x40
 #define IO_REPO_DATA_ADDR  0x41
