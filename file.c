@@ -1,8 +1,9 @@
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
-#include "mz800pico_file.h"
-#include "mz800pico_device.h"
+#include "file.h"
+#include "device.h"
 #include "ff.h"
 #include "fatfs_disk.h"
 
@@ -38,17 +39,18 @@ int entry_compare(const void* p1, const void* p2)
 
 FILINFO fno;
 
-int read_directory(GEN_RD *dest_rd, char *path) {
+int read_directory(char *path, GEN_RD *buffer) {
 	int ret = 0;
-	uint16_t *num_dir_entries = (uint16_t *)&dest_rd->data[0];
-  uint8_t *buff = dest_rd->data+2;
+	uint16_t *dir_list_size = (uint16_t *)buffer->data;
+	uint16_t num_dir_entries;
+  uint8_t *buff = buffer->data+2;
 	DIR_ENTRY *dst = (DIR_ENTRY *)buff;
 
   if (!fatfs_is_mounted())
      mount_fatfs_disk();
 
 	FATFS FatFs;
-  *num_dir_entries = 0;
+  num_dir_entries = 0;
 	if (f_mount(&FatFs, "", 1) == FR_OK) {
 		DIR dir;
 		if (f_opendir(&dir, path) == FR_OK) {
@@ -56,9 +58,9 @@ int read_directory(GEN_RD *dest_rd, char *path) {
         strcpy(dst->filename, "..");
         dst->isDir = 1;
         dst++;
-        (*num_dir_entries)++;
+        num_dir_entries++;
       }
-			while (*num_dir_entries < MAX_DIR_FILES) {
+			while (num_dir_entries < MAX_DIR_FILES) {
 				if (f_readdir(&dir, &fno) != FR_OK || fno.fname[0] == 0)
 					break;
 				if (fno.fattrib & (AM_HID | AM_SYS))
@@ -72,19 +74,21 @@ int read_directory(GEN_RD *dest_rd, char *path) {
 				dst->filename[31] = 0;
         dst->size = fno.fsize;
         dst++;
-				(*num_dir_entries)++;
+				num_dir_entries++;
 			}
 			f_closedir(&dir);
-		}
-		else {
+  		qsort((DIR_ENTRY *)buff, num_dir_entries, sizeof(DIR_ENTRY), entry_compare);
+      *(dir_list_size) = num_dir_entries * sizeof(DIR_ENTRY);
+  	} else {
 			strcpy(buff, "Can't read directory");
+      *(dir_list_size) = strlen(buff) + 1;
+      ret = 1;
     }
 		f_mount(0, "", 1);
-		qsort((DIR_ENTRY *)buff, *num_dir_entries, sizeof(DIR_ENTRY), entry_compare);
-		ret = 1;
-	}
-	else {
+  } else {
 		strcpy(buff, "Can't read flash memory");
+    *(dir_list_size) = strlen(buff) + 1;
+    ret = 2;
   }
 	return ret;
 }
@@ -101,25 +105,38 @@ uint16_t count_ones(const uint8_t *array, size_t length) {
   return count;
 }
 
-int mount_file(GEN_RD *dir_rd, GEN_RD *mount_rd, uint16_t index) {
+int mount_file(char *path, GEN_RD *buffer) {
   FATFS FatFs;
   UINT br;
+  uint16_t len;
+  int ret = 0;
+  uint8_t *buff = buffer->data+2;
+	uint16_t *dir_list_size = (uint16_t *)buffer->data;
 
-  if (f_mount(&FatFs, "", 1) != FR_OK)
-		return 0;
+  if (f_mount(&FatFs, "", 1) != FR_OK) {
+	  strcpy((char *)buff, "Can't read flash memory");
+    *(dir_list_size) = strlen(buff) + 1;
+    ret = 1;
+		return ret;
+  }
 
   FIL fil;
-	if (f_open(&fil, ((DIR_ENTRY *)&dir_rd->data[2])[index].filename, FA_READ) != FR_OK)
+	if (f_open(&fil, path, FA_READ) != FR_OK) {
+	  sprintf(buff, "Can't read file %s", path);
+    *(dir_list_size) = strlen(buff) + 1;
+    ret = 2;
 		goto cleanup;
+  }
 
-  f_lseek(&fil, 18);
-  f_read(&fil, mount_rd->data, 6, &br); // read addresses
-  f_lseek(&fil, 128);
-  f_read(&fil, &mount_rd->data[9], *(uint16_t *)mount_rd->data, &br); // read body
-  *(uint16_t *)&mount_rd->data[6] = count_ones((uint8_t *)&mount_rd->data[9], *(uint16_t *)mount_rd->data); // count body checksum
-  mount_rd->data[8] = count_ones(mount_rd->data, 8) & 0xff;
+  f_read(&fil, buff, 128, &br); // read addresses
+  memcpy(&len, buff+18, 2);
+  f_read(&fil, buff+128, len, &br); // read body
+  len += 2 + 128;
+  memcpy(buffer->data, &len, 2);
+  //*(uint16_t *)&mount_rd->data[6] = count_ones((uint8_t *)&mount_rd->data[9], *(uint16_t *)mount_rd->data); // count body checksum
+  //mount_rd->data[8] = count_ones(mount_rd->data, 8) & 0xff;
 
 cleanup:
   f_mount(0, "", 1);
-  return 0;
+  return ret;
 }

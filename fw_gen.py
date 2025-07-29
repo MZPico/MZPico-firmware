@@ -97,7 +97,7 @@ def generate_c_header(mzf_info, var_name="rd"):
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage: python mzf_to_c_array.py <file.mzf>")
+        print("Usage: python mz800pico_fw_gen.py <file.mzf>")
         sys.exit(1)
 
     mzf_info = parse_mzf(sys.argv[1])

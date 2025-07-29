@@ -1,5 +1,5 @@
-#ifndef __MZ800PICO_DEVICE_H__
-#define __MZ800PICO_DEVICE_H__
+#ifndef __DEVICE_H__
+#define __DEVICE_H__
 
 #include "pico/stdlib.h"
 

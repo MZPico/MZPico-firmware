@@ -8,37 +8,38 @@
 #include "hardware/structs/sio.h"
 #include "hardware/watchdog.h"
 
-#include "mz800pico_device.h"
-#include "mz800pico_common.h"
-#include "mz800pico_gen_rd.h"
-#include "mz800pico_file.h"
-#include "mz800pico_trap_read.pio.h"
-#include "mz800pico_trap_write.pio.h"
-#include "mz800pico_trap_reset.pio.h"
-#include "mz800pico_device_fw.h"
+#include "device.h"
+#include "common.h"
+#include "gen_rd.h"
+#include "file.h"
+#include "trap_read.pio.h"
+#include "trap_write.pio.h"
+#include "trap_reset.pio.h"
+#include "device_fw.h"
 
 // Control pins array
 const uint control_pins[] = { IORQ_PIN, RD_PIN, WR_PIN };
 const uint control_pins_count = sizeof(control_pins) / sizeof(control_pins[0]);
 
+/*
 typedef struct {
   uint8_t read_pnt;
   uint8_t write_pnt;
   uint8_t *content;
 } RAMDISK;
+*/
 
 // --- Globals ---
 PIO pio = pio0;
 uint sm = 0;
 
-GEN_RAMDISK(sram, 8192, GEN_RD_RW_COMMON, 0xf8, 0xf9, 0xfa)
-GEN_RAMDISK(mzf_server, 0xd000-0x1200+10, GEN_RD_RW_COMMON, 0x46, 0x47, 0x48)
-GEN_RAMDISK(comm_buffer, 32768, GEN_RD_RW_SEPARATE, 0x42, 0x41, 0x41)
+GEN_RAMDISK(sram, 16384, 0xf8, 0xf9, 0xfa)
+GEN_RAMDISK(comm_buffer, 0xD000 - 0x1200 + 128 + 2 + 4, 0x42, 0x41, 0x41)
+PICO_RAMDISK(pico_rd, 0x18000, 0x43, 0x44, 0x44, 0x45, 0x46, 0x47, 0x48)
 
 GEN_RD *ramdisks[] = {
+  &comm_buffer,
   &sram,
-  &mzf_server,
-  &comm_buffer
 };
 
 #define RAMDISKS_SIZE (sizeof(ramdisks) / sizeof(ramdisks[0]))
@@ -108,6 +109,12 @@ RAM_FUNC void pio0_irq0_handler(void) {
           break;
         }
       }
+      if (addr == pico_rd.port_read) {
+        acquire_data_bus_for_writing();
+        write_data_bus(pico_rd_read(&pico_rd));
+      } else if (addr == pico_rd.port_control) {
+        pico_rd_reset(&pico_rd);
+      }
     }
   }
 
@@ -128,6 +135,17 @@ RAM_FUNC void pio0_irq0_handler(void) {
           break;
         }
       }
+      if (addr == pico_rd.port_write) {
+        pico_rd_write(&pico_rd, data);
+      } else if (addr == pico_rd.port_addr3) {
+        pico_rd_set_addr3(&pico_rd, data);
+      } else if (addr == pico_rd.port_addr2) {
+        pico_rd_set_addr2(&pico_rd, data);
+      } else if (addr == pico_rd.port_addr1) {
+        pico_rd_set_addr1(&pico_rd, data);
+      } else if (addr == pico_rd.port_addr_serial) {
+        pico_rd_set_addr_serial(&pico_rd, data);
+      }
     }
   }
 
@@ -144,23 +162,35 @@ RAM_FUNC void pio0_irq0_handler(void) {
 }
 
 RAM_FUNC void handle_command(){
+  char path[256];
+  int ret;
+  uint16_t len;
+
   if (!request_command)
     return;
 
   response_command = 0x02;
   switch (request_command) {
     case REPO_CMD_LIST_DIR:
-      char path[256];
-      strcpy(path, comm_buffer.data);
+      memcpy(&len, comm_buffer.data, 2);
+      memcpy(path, comm_buffer.data + 2, len);
+      path[len] = 0;
       gen_rd_reset(&comm_buffer);
-      int ret = read_directory(&comm_buffer, path);
+      ret = read_directory(path, &comm_buffer);
+      if (!ret)
+        response_command = 0x03;
+      else
+        response_command = 0x04;
       break;
     case REPO_CMD_MOUNT:
-      mount_file(&comm_buffer, &mzf_server, *(uint16_t *)&comm_buffer.data[0]);
+      memcpy(&len, comm_buffer.data, 2);
+      memcpy(path, &comm_buffer.data[2], len);
+      path[len] = 0;
+      gen_rd_reset(&comm_buffer);
+      mount_file(path, &comm_buffer);
+      response_command = 0x03;
       break;
   };
-  response_command = 0x03;
-  gen_rd_reset(&comm_buffer);
 }
 
 // --- GPIO Init ---
@@ -193,9 +223,9 @@ RAM_FUNC void device_main(void) {
 
     init_gpio();
     memcpy(sram.data, firmware, sizeof(firmware));
-    mz800pico_trap_read_init(pio, 0, ADDR_BUS_BASE, RD_PIN);
-    mz800pico_trap_write_init(pio, 1, ADDR_BUS_BASE, WR_PIN);
-    mz800pico_trap_reset_init(pio, 2);
+    trap_read_init(pio, 0, ADDR_BUS_BASE, RD_PIN);
+    trap_write_init(pio, 1, ADDR_BUS_BASE, WR_PIN);
+    trap_reset_init(pio, 2);
 
     irq_set_exclusive_handler(PIO0_IRQ_0, pio0_irq0_handler);
     irq_set_enabled(PIO0_IRQ_0, true);
