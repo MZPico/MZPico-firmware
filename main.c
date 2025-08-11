@@ -4,6 +4,7 @@
 #include "pico/time.h"
 #include "tusb.h"
 
+#include "bus.h"
 #include "device.h"
 #include "fatfs_disk.h"
 

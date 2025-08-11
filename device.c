@@ -8,14 +8,15 @@
 #include "hardware/structs/sio.h"
 #include "hardware/watchdog.h"
 
-#include "device.h"
 #include "common.h"
+#include "bus.h"
 #include "gen_rd.h"
 #include "file.h"
 #include "trap_read.pio.h"
 #include "trap_write.pio.h"
 #include "trap_reset.pio.h"
 #include "device_fw.h"
+#include "device.h"
 
 // Control pins array
 const uint control_pins[] = { IORQ_PIN, RD_PIN, WR_PIN };
@@ -56,67 +57,13 @@ void blink(uint8_t cnt) {
   }
 }
 
+// --- IRQ Handlers ---
 
-ALWAYS_INLINE uint8_t read_address_bus(void) {
-    return (sio_hw->gpio_in >> ADDR_BUS_BASE) & 0xFF;
-}
-
-ALWAYS_INLINE uint8_t read_data_bus(void) {
-    return (sio_hw->gpio_in >> DATA_BUS_BASE) & 0xFF;
-}
-
-ALWAYS_INLINE void read_address_data_bus(uint8_t *addr_out, uint8_t *data_out) {
-    *addr_out = (sio_hw->gpio_in >> ADDR_BUS_BASE) & 0xFF;
-    *data_out = (sio_hw->gpio_in >> DATA_BUS_BASE) & 0xFF;
-}
-
-ALWAYS_INLINE void write_data_bus(uint8_t value) {
-    sio_hw->gpio_clr = DATA_BUS_MASK;
-    sio_hw->gpio_set = ((uint32_t)value << DATA_BUS_BASE);
-}
-
-ALWAYS_INLINE void acquire_data_bus_for_writing(void) {
-    sio_hw->gpio_oe_set = DATA_BUS_MASK;
-}
-
-ALWAYS_INLINE void release_data_bus(void) {
-    sio_hw->gpio_oe_clr = DATA_BUS_MASK;
-}
-
-// --- IRQ Handler ---
-RAM_FUNC void pio0_irq0_handler(void) {
+RAM_FUNC void irq_handler(void) {
   uint8_t i;
   uint8_t addr;
   uint8_t data;
-  uint32_t raw;
   GEN_RD *rd;
-  if (pio_interrupt_get(pio, 0)) {
-    pio_interrupt_clear(pio, 0);
-
-    addr = read_address_bus();
-    if (addr == IO_REPO_COMMAND_ADDR) {
-      acquire_data_bus_for_writing();
-      write_data_bus(response_command);
-    } else {
-      for (i=0; i<RAMDISKS_SIZE; i++) {
-        rd = ramdisks[i];
-        if (addr == rd->port_reset) {
-          gen_rd_reset(rd);
-          break;
-        } else if (addr == rd->port_read) {
-          acquire_data_bus_for_writing();
-          write_data_bus(gen_rd_read(rd));
-          break;
-        }
-      }
-      if (addr == pico_rd.port_read) {
-        acquire_data_bus_for_writing();
-        write_data_bus(pico_rd_read(&pico_rd));
-      } else if (addr == pico_rd.port_control) {
-        pico_rd_reset(&pico_rd);
-      }
-    }
-  }
 
   if (pio_interrupt_get(pio, 1)) {
     pio_interrupt_clear(pio, 1);
@@ -154,11 +101,43 @@ RAM_FUNC void pio0_irq0_handler(void) {
     release_data_bus();
   }
 
+
   if (pio_interrupt_get(pio, 3)) {
     pio_interrupt_clear(pio, 3);
     watchdog_reboot(0, 0, 0);
   }
+}
 
+RAM_FUNC void read_handler(void) {
+  uint8_t i;
+  uint8_t addr;
+  GEN_RD *rd;
+
+  pio_interrupt_clear(pio, 0);
+
+  addr = read_address_bus();
+  if (addr == IO_REPO_COMMAND_ADDR) {
+    acquire_data_bus_for_writing();
+    write_data_bus(response_command);
+  } else {
+    for (i=0; i<RAMDISKS_SIZE; i++) {
+      rd = ramdisks[i];
+      if (addr == rd->port_reset) {
+        gen_rd_reset(rd);
+        break;
+      } else if (addr == rd->port_read) {
+        acquire_data_bus_for_writing();
+        write_data_bus(gen_rd_read(rd));
+        break;
+      }
+    }
+    if (addr == pico_rd.port_read) {
+      acquire_data_bus_for_writing();
+      write_data_bus(pico_rd_read(&pico_rd));
+    } else if (addr == pico_rd.port_control) {
+      pico_rd_reset(&pico_rd);
+    }
+  }
 }
 
 RAM_FUNC void handle_command(){
@@ -210,6 +189,13 @@ RAM_FUNC void init_gpio(void) {
         gpio_set_dir(control_pins[i], GPIO_IN);
         gpio_pull_up(control_pins[i]);
     }
+    gpio_init(INT_PIN);
+    gpio_init(EXWAIT_PIN);
+    gpio_set_dir(INT_PIN, GPIO_IN);
+    gpio_set_dir(EXWAIT_PIN, GPIO_OUT);
+    gpio_set_pulls(INT_PIN, false, false);
+    gpio_set_pulls(EXWAIT_PIN, false, false);
+    gpio_put(EXWAIT_PIN, true);
     gpio_init(25);
     gpio_set_dir(25, GPIO_OUT);
     gpio_put(25, true);
@@ -227,10 +213,12 @@ RAM_FUNC void device_main(void) {
     trap_write_init(pio, 1, ADDR_BUS_BASE, WR_PIN);
     trap_reset_init(pio, 2);
 
-    irq_set_exclusive_handler(PIO0_IRQ_0, pio0_irq0_handler);
+    irq_set_exclusive_handler(PIO0_IRQ_0, irq_handler);
+    irq_set_exclusive_handler(PIO0_IRQ_1, read_handler);
     irq_set_enabled(PIO0_IRQ_0, true);
+    irq_set_enabled(PIO0_IRQ_1, true);
 
-    pio_set_irq0_source_enabled(pio, pis_interrupt0, true);
+    pio_set_irq1_source_enabled(pio, pis_interrupt0, true);
     pio_set_irq0_source_enabled(pio, pis_interrupt1, true);
     pio_set_irq0_source_enabled(pio, pis_interrupt2, true);
     pio_set_irq0_source_enabled(pio, pis_interrupt3, true);

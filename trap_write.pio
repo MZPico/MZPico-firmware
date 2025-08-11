@@ -4,7 +4,7 @@
 
 wait_iorq_low:
     wait 0 gpio 20
-    jmp pin, wait_iorq_high
+    jmp pin, wait_iorq_low
     irq set 1
 wait_iorq_high:
     wait 1 gpio 20
