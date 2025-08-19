@@ -1,6 +1,8 @@
 #ifndef __BUS_H_
 #define __BUS_H_
 
+#include "hardware/structs/sio.h"
+
 #include "common.h"
 
 #define ADDR_BUS_BASE    0
@@ -58,12 +60,12 @@ ALWAYS_INLINE void release_data_bus(void) {
   sio_hw->gpio_oe_clr = DATA_BUS_MASK;
 }
 
-ALWAYS_INLINE void set_int(void) {
-  sio_hw->gpio_oe_set = 1u << INT_PIN;
+ALWAYS_INLINE void set_interrupt(void) {
   sio_hw->gpio_clr = 1u << INT_PIN;
+  sio_hw->gpio_oe_set = 1u << INT_PIN;
 }
 
-ALWAYS_INLINE void reset_int(void) {
+ALWAYS_INLINE void release_interrupt(void) {
   sio_hw->gpio_oe_clr = 1u << INT_PIN;
 }
 

@@ -17,6 +17,10 @@
 #include "trap_reset.pio.h"
 #include "device_fw.h"
 #include "device.h"
+#include "fdc.h"
+#include "qd.h"
+#include "ff.h"
+#include "fatfs_disk.h"
 
 // Control pins array
 const uint control_pins[] = { IORQ_PIN, RD_PIN, WR_PIN };
@@ -74,24 +78,46 @@ RAM_FUNC void irq_handler(void) {
         request_command = data;
         response_command = 0x01;
       }
+    } else if (addr == pico_rd.port_write) {
+      pico_rd_write(&pico_rd, data);
+    } else if (addr == pico_rd.port_addr3) {
+      pico_rd_set_addr3(&pico_rd, data);
+    } else if (addr == pico_rd.port_addr2) {
+      pico_rd_set_addr2(&pico_rd, data);
+    } else if (addr == pico_rd.port_addr1) {
+      pico_rd_set_addr1(&pico_rd, data);
+    } else if (addr == pico_rd.port_addr_serial) {
+      pico_rd_set_addr_serial(&pico_rd, data);
     } else {
-      for (i=0; i<RAMDISKS_SIZE; i++) {
-        rd = ramdisks[i];
-        if (addr == rd->port_write) {
-          gen_rd_write(rd, data);
+      switch (addr) {
+        case 0xd8:
+        case 0xd9:
+        case 0xda:
+        case 0xdb:
+        case 0xdc:
+        case 0xdd:
+        case 0xde:
+        case 0xdf:
+          set_exwait();
+          fdc_write(addr & 0x07, data);
+          fdc_interrupt();
+          release_exwait();
           break;
-        }
+        case 0xf4:
+        case 0xf5:
+        case 0xf6:
+        case 0xf7:
+          set_exwait();
+          qd_write(addr & 0x03, data);
+          release_exwait();
+          break;
       }
-      if (addr == pico_rd.port_write) {
-        pico_rd_write(&pico_rd, data);
-      } else if (addr == pico_rd.port_addr3) {
-        pico_rd_set_addr3(&pico_rd, data);
-      } else if (addr == pico_rd.port_addr2) {
-        pico_rd_set_addr2(&pico_rd, data);
-      } else if (addr == pico_rd.port_addr1) {
-        pico_rd_set_addr1(&pico_rd, data);
-      } else if (addr == pico_rd.port_addr_serial) {
-        pico_rd_set_addr_serial(&pico_rd, data);
+    }
+    for (i=0; i<RAMDISKS_SIZE; i++) {
+      rd = ramdisks[i];
+      if (addr == rd->port_write) {
+        gen_rd_write(rd, data);
+        break;
       }
     }
   }
@@ -111,6 +137,7 @@ RAM_FUNC void irq_handler(void) {
 RAM_FUNC void read_handler(void) {
   uint8_t i;
   uint8_t addr;
+  uint8_t data;
   GEN_RD *rd;
 
   pio_interrupt_clear(pio, 0);
@@ -120,6 +147,29 @@ RAM_FUNC void read_handler(void) {
     acquire_data_bus_for_writing();
     write_data_bus(response_command);
   } else {
+    switch (addr) {
+      case 0xd8:
+      case 0xd9:
+      case 0xda:
+      case 0xdb:
+        set_exwait();
+        fdc_read(addr & 0x7, &data);
+        acquire_data_bus_for_writing();
+        write_data_bus(data);
+        fdc_interrupt();
+        release_exwait();
+        break;
+      case 0xf4:
+      case 0xf5:
+      case 0xf6:
+      case 0xf7:
+        set_exwait();
+        data = qd_read(addr & 0x3);
+        acquire_data_bus_for_writing();
+        write_data_bus(data);
+        release_exwait();
+        break;
+    }
     for (i=0; i<RAMDISKS_SIZE; i++) {
       rd = ramdisks[i];
       if (addr == rd->port_reset) {
@@ -192,10 +242,9 @@ RAM_FUNC void init_gpio(void) {
     gpio_init(INT_PIN);
     gpio_init(EXWAIT_PIN);
     gpio_set_dir(INT_PIN, GPIO_IN);
-    gpio_set_dir(EXWAIT_PIN, GPIO_OUT);
+    gpio_set_dir(EXWAIT_PIN, GPIO_IN);
     gpio_set_pulls(INT_PIN, false, false);
     gpio_set_pulls(EXWAIT_PIN, false, false);
-    gpio_put(EXWAIT_PIN, true);
     gpio_init(25);
     gpio_set_dir(25, GPIO_OUT);
     gpio_put(25, true);
@@ -205,9 +254,19 @@ RAM_FUNC void init_gpio(void) {
 }
 
 RAM_FUNC void device_main(void) {
+    FATFS FatFs;
+
     set_sys_clock_khz(250000, true);
 
     init_gpio();
+
+    mount_fatfs_disk();
+    if (f_mount(&FatFs, "", 1) != FR_OK)
+      return;
+
+    fdc_init();
+    qd_init();
+
     memcpy(sram.data, firmware, sizeof(firmware));
     trap_read_init(pio, 0, ADDR_BUS_BASE, RD_PIN);
     trap_write_init(pio, 1, ADDR_BUS_BASE, WR_PIN);

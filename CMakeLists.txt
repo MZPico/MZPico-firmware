@@ -28,6 +28,8 @@ target_sources(mzpico PUBLIC
     ${CMAKE_CURRENT_LIST_DIR}/main.c
     ${CMAKE_CURRENT_LIST_DIR}/device.c
     ${CMAKE_CURRENT_LIST_DIR}/file.c
+    ${CMAKE_CURRENT_LIST_DIR}/fdc.c
+    ${CMAKE_CURRENT_LIST_DIR}/qd.c
     ${CMAKE_CURRENT_LIST_DIR}/trap_read.pio
     ${CMAKE_CURRENT_LIST_DIR}/trap_write.pio
     ${CMAKE_CURRENT_LIST_DIR}/trap_reset.pio
