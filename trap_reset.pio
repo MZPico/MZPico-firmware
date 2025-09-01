@@ -4,7 +4,7 @@
 
 wait_iorq_low:
     wait 1 gpio 19
-    irq set 3
+    irq set 0
 .wrap
 
 % c-sdk {

@@ -11,40 +11,46 @@ set(PICO_BOARD board)
 # Initialize the Raspberry Pi Pico SDK
 pico_sdk_init()
 
-# Add executable (binary name is now "mz800pico")
+add_subdirectory(fatfs-sdk/src build)
+
 add_executable(mzpico)
 
 # 16megs of flash on purple pico clones
 target_compile_definitions(mzpico PRIVATE
-    PICO_FLASH_SIZE_BYTES=16777216
+        #PICO_FLASH_SIZE_BYTES=16777216
+                PICO_FLASH_SIZE_BYTES=2097152
 )
 
 # Generate PIO header from PIO source
+pico_generate_pio_header(mzpico ${CMAKE_CURRENT_LIST_DIR}/trap_reset.pio)
 pico_generate_pio_header(mzpico ${CMAKE_CURRENT_LIST_DIR}/trap_read.pio)
 pico_generate_pio_header(mzpico ${CMAKE_CURRENT_LIST_DIR}/trap_write.pio)
-pico_generate_pio_header(mzpico ${CMAKE_CURRENT_LIST_DIR}/trap_reset.pio)
 
 target_sources(mzpico PUBLIC
     ${CMAKE_CURRENT_LIST_DIR}/main.c
     ${CMAKE_CURRENT_LIST_DIR}/device.c
     ${CMAKE_CURRENT_LIST_DIR}/file.c
-    ${CMAKE_CURRENT_LIST_DIR}/fdc.c
-    ${CMAKE_CURRENT_LIST_DIR}/qd.c
+    ${CMAKE_CURRENT_LIST_DIR}/mz_devices.c
+    ${CMAKE_CURRENT_LIST_DIR}/mz_devices/pico_mgr.c
+    ${CMAKE_CURRENT_LIST_DIR}/mz_devices/fdc.c
+    ${CMAKE_CURRENT_LIST_DIR}/mz_devices/qd.c
+    ${CMAKE_CURRENT_LIST_DIR}/mz_devices/sramdisk.c
+    ${CMAKE_CURRENT_LIST_DIR}/mz_devices/pico_rd.c
+    ${CMAKE_CURRENT_LIST_DIR}/trap_reset.pio
     ${CMAKE_CURRENT_LIST_DIR}/trap_read.pio
     ${CMAKE_CURRENT_LIST_DIR}/trap_write.pio
-    ${CMAKE_CURRENT_LIST_DIR}/trap_reset.pio
     ${CMAKE_CURRENT_LIST_DIR}/msc_disk.c
     ${CMAKE_CURRENT_LIST_DIR}/usb_descriptors.c
+    ${CMAKE_CURRENT_LIST_DIR}/hw_config.c
     ${CMAKE_CURRENT_LIST_DIR}/fatfs_disk.c
     ${CMAKE_CURRENT_LIST_DIR}/flash_fs.c
-    ${CMAKE_CURRENT_LIST_DIR}/fatfs/ff.c
-    ${CMAKE_CURRENT_LIST_DIR}/fatfs/ffunicode.c
-    ${CMAKE_CURRENT_LIST_DIR}/fatfs/diskio.c
+    ${CMAKE_CURRENT_LIST_DIR}/fatfs_glue.c
 )
 
 target_include_directories(mzpico PUBLIC
     ${CMAKE_CURRENT_LIST_DIR}
-    ${CMAKE_CURRENT_LIST_DIR}/fatfs
+    ${CMAKE_CURRENT_LIST_DIR}/mz_devices
+    ${CMAKE_CURRENT_LIST_DIR}/fatfs-sdk/src/ff15/source/
 )
 
 # Link with required libraries
@@ -54,6 +60,12 @@ target_link_libraries(mzpico
     hardware_irq
     hardware_flash
     tinyusb_device
+    no-OS-FatFS-SD-SDIO-SPI-RPi-Pico
+)
+
+set_source_files_properties(
+    ${CMAKE_CURRENT_SOURCE_DIR}/fatfs-sdk/src/src/glue.c
+    PROPERTIES HEADER_FILE_ONLY TRUE
 )
 
 # Enable USB stdio

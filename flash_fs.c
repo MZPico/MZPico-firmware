@@ -28,8 +28,11 @@
 #define HW_FLASH_STORAGE_BASE  (1024 * 1024)
 #define MAGIC_8_BYTES "RHE!FS30"
 
-#define NUM_FAT_SECTORS 30716   // 15megs / 512bytes = 30720, but we used 4 records for the header (8 bytes)
-#define NUM_FLASH_SECTORS 3840  // 15megs / 4096bytes = 3840
+#define FLASH_BYTES (PICO_FLASH_SIZE_BYTES - HW_FLASH_STORAGE_BASE)
+#define FLASH_MEGS (FLASH_BYTES / 1024 / 1024)
+
+#define NUM_FAT_SECTORS (FLASH_BYTES / 512 - 4)   // 30716   // 15megs / 512bytes = 30720, but we used 4 records for the header (8 bytes)
+#define NUM_FLASH_SECTORS (FLASH_BYTES / 4096) //  3840  // 15megs / 4096bytes = 3840
  
 typedef struct {
     uint8_t header[8];
@@ -37,7 +40,7 @@ typedef struct {
 } sector_map;
 
 sector_map fs_map;
-bool fs_map_needs_written[15];
+bool fs_map_needs_written[FLASH_MEGS];
 
 uint8_t used_bitmap[NUM_FLASH_SECTORS];    // we will use 256 flash sectors for 2048 fat sectors
 
@@ -74,7 +77,7 @@ void debug_print_in_use() {
 void write_fs_map()
 {   
     debug_print_in_use();
-    for (int i=0; i<15; i++) {
+    for (int i=0; i<FLASH_MEGS; i++) {
         if (fs_map_needs_written[i]) {
 //          printf("Writing FS Map %d\n", i);
             flash_erase_sector(i);
@@ -123,7 +126,7 @@ uint16_t getNextWriteSector()
 
 void init_used_bitmap() {
     memset(used_bitmap, 0, NUM_FLASH_SECTORS);
-    for (int i=0; i<15; i++)
+    for (int i=0; i<FLASH_MEGS; i++)
         used_bitmap[i] = 0xFF;    // first 15 flash sectors used by fs map
 
     for (int i=0; i<NUM_FAT_SECTORS; i++) {
@@ -136,7 +139,7 @@ void init_used_bitmap() {
 
 int flash_fs_mount()
 {
-    for (int i=0; i<15; i++)
+    for (int i=0; i<FLASH_MEGS; i++)
         fs_map_needs_written[i] = false;
 
     // read the first sector, with header
@@ -146,7 +149,7 @@ int flash_fs_mount()
         return 1;
     }
     // read the remaining 14 sectors without headers
-    for (int i=1; i<15; i++)
+    for (int i=1; i<FLASH_MEGS; i++)
         flash_read_sector(i, 0, (uint8_t*)&fs_map+(4096*i), 4096);
 
     init_used_bitmap();
@@ -159,7 +162,7 @@ void flash_fs_create()
     printf("flash_fs_create()\n");
     memset(&fs_map, 0, sizeof(fs_map));
     strcpy(fs_map.header, MAGIC_8_BYTES);
-    for (int i=0; i<15; i++)
+    for (int i=0; i<FLASH_MEGS; i++)
         fs_map_needs_written[i] = true;
     write_fs_map();
     init_used_bitmap();

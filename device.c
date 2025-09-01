@@ -4,13 +4,14 @@
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
 #include "hardware/irq.h"
+#include "hardware/sync.h"
 #include "hardware/clocks.h"
 #include "hardware/structs/sio.h"
 #include "hardware/watchdog.h"
+#include "hardware/vreg.h"
 
 #include "common.h"
 #include "bus.h"
-#include "gen_rd.h"
 #include "file.h"
 #include "trap_read.pio.h"
 #include "trap_write.pio.h"
@@ -19,38 +20,41 @@
 #include "device.h"
 #include "fdc.h"
 #include "qd.h"
+#include "sramdisk.h"
+#include "pico_rd.h"
+#include "pico_mgr.h"
+#include "sramdisk.h"
+#include "pico_rd.h"
 #include "ff.h"
 #include "fatfs_disk.h"
+#include "mz_devices.h"
+
+#define SM_RESET 0
+#define SM_READ 1
+#define SM_WRITE 2
 
 // Control pins array
 const uint control_pins[] = { IORQ_PIN, RD_PIN, WR_PIN };
 const uint control_pins_count = sizeof(control_pins) / sizeof(control_pins[0]);
 
-/*
-typedef struct {
-  uint8_t read_pnt;
-  uint8_t write_pnt;
-  uint8_t *content;
-} RAMDISK;
-*/
 
 // --- Globals ---
 PIO pio = pio0;
 uint sm = 0;
 
-GEN_RAMDISK(sram, 16384, 0xf8, 0xf9, 0xfa)
-GEN_RAMDISK(comm_buffer, 0xD000 - 0x1200 + 128 + 2 + 4, 0x42, 0x41, 0x41)
-PICO_RAMDISK(pico_rd, 0x18000, 0x43, 0x44, 0x44, 0x45, 0x46, 0x47, 0x48)
+//uint8_t pico_mgr_buff[PICO_MGR_BUFF_SIZE];
+PicoMgr *pico_mgr;
 
-GEN_RD *ramdisks[] = {
-  &comm_buffer,
-  &sram,
-};
+FDC *fdc;
+QD *qd;
 
-#define RAMDISKS_SIZE (sizeof(ramdisks) / sizeof(ramdisks[0]))
+#define BOOT_RD_SIZE 16384
+uint8_t boot_rd_data[BOOT_RD_SIZE];
+SRamDisk *boot_rd;
 
-volatile uint8_t request_command = 0;
-volatile uint8_t response_command = 0;
+#define PICO_RD_SIZE 0x18000
+uint8_t pico_rd_data[PICO_RD_SIZE];
+PicoRD *pico_rd;
 
 void blink(uint8_t cnt) {
   for (int i=0; i<cnt; i++) {
@@ -61,169 +65,87 @@ void blink(uint8_t cnt) {
   }
 }
 
-// --- IRQ Handlers ---
-
-RAM_FUNC void irq_handler(void) {
-  uint8_t i;
+RAM_FUNC void reset_handler(void) {
+  pio_interrupt_clear(pio, 0);
+  watchdog_reboot(0, 0, 0);
+}
+/*
+RAM_FUNC void listen_loop(void) {
   uint8_t addr;
   uint8_t data;
-  GEN_RD *rd;
+  MZDevice *dev;
+  read_fn_t read;
+  write_fn_t write;
+  uint32_t pins;
 
-  if (pio_interrupt_get(pio, 1)) {
-    pio_interrupt_clear(pio, 1);
-
-    read_address_data_bus(&addr, &data);
-    if (addr == IO_REPO_COMMAND_ADDR) {
-      if ((response_command != 0x01) && (response_command != 0x02)) {
-        request_command = data;
-        response_command = 0x01;
-      }
-    } else if (addr == pico_rd.port_write) {
-      pico_rd_write(&pico_rd, data);
-    } else if (addr == pico_rd.port_addr3) {
-      pico_rd_set_addr3(&pico_rd, data);
-    } else if (addr == pico_rd.port_addr2) {
-      pico_rd_set_addr2(&pico_rd, data);
-    } else if (addr == pico_rd.port_addr1) {
-      pico_rd_set_addr1(&pico_rd, data);
-    } else if (addr == pico_rd.port_addr_serial) {
-      pico_rd_set_addr_serial(&pico_rd, data);
-    } else {
-      switch (addr) {
-        case 0xd8:
-        case 0xd9:
-        case 0xda:
-        case 0xdb:
-        case 0xdc:
-        case 0xdd:
-        case 0xde:
-        case 0xdf:
-          set_exwait();
-          fdc_write(addr & 0x07, data);
-          fdc_interrupt();
-          release_exwait();
-          break;
-        case 0xf4:
-        case 0xf5:
-        case 0xf6:
-        case 0xf7:
-          set_exwait();
-          qd_write(addr & 0x03, data);
-          release_exwait();
-          break;
-      }
-    }
-    for (i=0; i<RAMDISKS_SIZE; i++) {
-      rd = ramdisks[i];
-      if (addr == rd->port_write) {
-        gen_rd_write(rd, data);
-        break;
+  while (1) {
+    if (!pio_sm_is_rx_fifo_empty(pio, SM_READ)) {
+      addr = (uint8_t)(pio_sm_get(pio, SM_READ) >>24);
+      read = get_mz_port_read(addr, &dev);
+      if (read) {
+        if (dev->needs_exwait) set_exwait();
+        read(dev, addr, &data, 0);
+        acquire_data_bus_for_writing();
+        write_data_bus(data);
+        if (dev->needs_exwait) release_exwait();
+        if (dev->is_interrupt && dev->is_interrupt(dev)) set_interrupt();
+      };
+      pio_sm_put(pio, SM_READ, IO_END);
+    } else if (!pio_sm_is_rx_fifo_empty(pio, SM_WRITE)) {
+      pins = pio_sm_get(pio, SM_WRITE);
+      addr = (uint8_t)((pins >> 16) & 0xff);
+      data = (uint8_t)(pins >> 24);
+      write = get_mz_port_write(addr, &dev);
+      if (write) {
+        if (dev->needs_exwait) set_exwait();
+        write(dev, addr, data, 0);
+        if (dev->needs_exwait) release_exwait();
+        if (dev->is_interrupt && dev->is_interrupt(dev)) set_interrupt();
       }
     }
   }
+}
+*/
 
-  if (pio_interrupt_get(pio, 2)) {
-    pio_interrupt_clear(pio, 2);
+RAM_FUNC void listen_loop(void) {
+  uint8_t addr;
+  uint8_t data;
+  MZDevice *dev;
+  read_fn_t read;
+  write_fn_t write;
+  uint32_t pins;
+
+  while (1) {
+    while (sio_hw->gpio_in & (1<<IORQ_PIN));
+    pins = sio_hw->gpio_in;
+    //if (!(sio_hw->gpio_in & (1<<RD_PIN))) {
+    if (!(pins & (1<<RD_PIN))) {
+      addr = read_address_bus();
+      read = get_mz_port_read(addr, &dev);
+      if (read) {
+        if (dev->needs_exwait) set_exwait();
+        read(dev, addr, &data, 0);
+        acquire_data_bus_for_writing();
+        write_data_bus(data);
+        if (dev->needs_exwait) release_exwait();
+        if (dev->is_interrupt && dev->is_interrupt(dev)) set_interrupt();
+      }
+    } else if (!(pins & (1<<WR_PIN))) {
+      read_address_data_bus(&addr, &data);
+      write = get_mz_port_write(addr, &dev);
+      if (write) {
+        if (dev->needs_exwait) set_exwait();
+        write(dev, addr, data, 0);
+        if (dev->needs_exwait) release_exwait();
+        if (dev->is_interrupt && dev->is_interrupt(dev)) set_interrupt();
+      }
+    }
+    while (!(sio_hw->gpio_in & (1<<IORQ_PIN)));
     release_data_bus();
   }
-
-
-  if (pio_interrupt_get(pio, 3)) {
-    pio_interrupt_clear(pio, 3);
-    watchdog_reboot(0, 0, 0);
-  }
 }
 
-RAM_FUNC void read_handler(void) {
-  uint8_t i;
-  uint8_t addr;
-  uint8_t data;
-  GEN_RD *rd;
-
-  pio_interrupt_clear(pio, 0);
-
-  addr = read_address_bus();
-  if (addr == IO_REPO_COMMAND_ADDR) {
-    acquire_data_bus_for_writing();
-    write_data_bus(response_command);
-  } else {
-    switch (addr) {
-      case 0xd8:
-      case 0xd9:
-      case 0xda:
-      case 0xdb:
-        set_exwait();
-        fdc_read(addr & 0x7, &data);
-        acquire_data_bus_for_writing();
-        write_data_bus(data);
-        fdc_interrupt();
-        release_exwait();
-        break;
-      case 0xf4:
-      case 0xf5:
-      case 0xf6:
-      case 0xf7:
-        set_exwait();
-        data = qd_read(addr & 0x3);
-        acquire_data_bus_for_writing();
-        write_data_bus(data);
-        release_exwait();
-        break;
-    }
-    for (i=0; i<RAMDISKS_SIZE; i++) {
-      rd = ramdisks[i];
-      if (addr == rd->port_reset) {
-        gen_rd_reset(rd);
-        break;
-      } else if (addr == rd->port_read) {
-        acquire_data_bus_for_writing();
-        write_data_bus(gen_rd_read(rd));
-        break;
-      }
-    }
-    if (addr == pico_rd.port_read) {
-      acquire_data_bus_for_writing();
-      write_data_bus(pico_rd_read(&pico_rd));
-    } else if (addr == pico_rd.port_control) {
-      pico_rd_reset(&pico_rd);
-    }
-  }
-}
-
-RAM_FUNC void handle_command(){
-  char path[256];
-  int ret;
-  uint16_t len;
-
-  if (!request_command)
-    return;
-
-  response_command = 0x02;
-  switch (request_command) {
-    case REPO_CMD_LIST_DIR:
-      memcpy(&len, comm_buffer.data, 2);
-      memcpy(path, comm_buffer.data + 2, len);
-      path[len] = 0;
-      gen_rd_reset(&comm_buffer);
-      ret = read_directory(path, &comm_buffer);
-      if (!ret)
-        response_command = 0x03;
-      else
-        response_command = 0x04;
-      break;
-    case REPO_CMD_MOUNT:
-      memcpy(&len, comm_buffer.data, 2);
-      memcpy(path, &comm_buffer.data[2], len);
-      path[len] = 0;
-      gen_rd_reset(&comm_buffer);
-      mount_file(path, &comm_buffer);
-      response_command = 0x03;
-      break;
-  };
-}
-
-// --- GPIO Init ---
-RAM_FUNC void init_gpio(void) {
+void init_gpio(void) {
     for (int i = 0; i < ADDR_BUS_COUNT; ++i) {
         gpio_init(ADDR_BUS_BASE + i);
         gpio_set_dir(ADDR_BUS_BASE + i, GPIO_IN);
@@ -253,39 +175,39 @@ RAM_FUNC void init_gpio(void) {
     sleep_ms(20);
 }
 
-RAM_FUNC void device_main(void) {
-    FATFS FatFs;
 
-    set_sys_clock_khz(250000, true);
-
+void device_main(void) {
+    set_sys_clock_khz(260000, true);
     init_gpio();
+    mount_devices();
 
-    mount_fatfs_disk();
-    if (f_mount(&FatFs, "", 1) != FR_OK)
-      return;
+    //pico_mgr = pico_mgr_new(IO_REPO_BASE_ADDR, pico_mgr_buff, PICO_MGR_BUFF_SIZE);
+    pico_mgr = pico_mgr_new(IO_REPO_BASE_ADDR); if (!pico_mgr) return;
+    fdc = fdc_new(0xd8); if (!fdc) return;
+    qd = qd_new(0xf4); if (!qd) return;
+    boot_rd = sramdisk_new(0xf8, 0xf9, 0xfa, boot_rd_data, BOOT_RD_SIZE); if (!boot_rd) return;
+    pico_rd = pico_rd_new(0x45, pico_rd_data, PICO_RD_SIZE); if (!pico_rd) return;
 
-    fdc_init();
-    qd_init();
+    pico_mgr->iface.init(pico_mgr);
+    qd->iface.init(qd);
+    fdc->iface.init(fdc);
+    boot_rd->iface.init(boot_rd);
+    pico_rd->iface.init(pico_rd);
 
-    memcpy(sram.data, firmware, sizeof(firmware));
-    trap_read_init(pio, 0, ADDR_BUS_BASE, RD_PIN);
-    trap_write_init(pio, 1, ADDR_BUS_BASE, WR_PIN);
-    trap_reset_init(pio, 2);
+    mz_device_register(&pico_mgr->iface);
+    mz_device_register(&qd->iface);
+    mz_device_register(&fdc->iface);
+    mz_device_register(&boot_rd->iface);
+    mz_device_register(&pico_rd->iface);
 
-    irq_set_exclusive_handler(PIO0_IRQ_0, irq_handler);
-    irq_set_exclusive_handler(PIO0_IRQ_1, read_handler);
+    memcpy(boot_rd->data, firmware, sizeof(firmware));
+
+    trap_reset_init(pio, SM_RESET);
+    trap_read_init(pio, SM_READ, ADDR_BUS_BASE, RD_PIN);
+    trap_write_init(pio, SM_WRITE, ADDR_BUS_BASE, WR_PIN);
+    irq_set_exclusive_handler(PIO0_IRQ_0, reset_handler);
     irq_set_enabled(PIO0_IRQ_0, true);
-    irq_set_enabled(PIO0_IRQ_1, true);
+    pio_set_irq0_source_enabled(pio, pis_interrupt0, true);
 
-    pio_set_irq1_source_enabled(pio, pis_interrupt0, true);
-    pio_set_irq0_source_enabled(pio, pis_interrupt1, true);
-    pio_set_irq0_source_enabled(pio, pis_interrupt2, true);
-    pio_set_irq0_source_enabled(pio, pis_interrupt3, true);
-
-    while (1) {
-        if ((request_command != 0) && (response_command == 0x01))
-          handle_command();
-        tight_loop_contents();
-    }
+    listen_loop();
 }
-

@@ -18,8 +18,7 @@
 #define EXWAIT_PIN       16
 #define M1_PIN           17
 
-#define IO_REPO_COMMAND_ADDR  0x40
-#define IO_REPO_DATA_ADDR  0x41
+#define IO_REPO_BASE_ADDR  0x40
 
 #define REPO_CMD_LIST_DIR   0x01
 #define REPO_CMD_MOUNT      0x03
@@ -30,6 +29,8 @@
 #define REPO_CMD_CONN_WF    0x08
 #define REPO_CMD_LIST_REPOS 0x09
 #define REPO_CMD_CHREPO     0x0a
+
+#define PICO_MGR_BUFF_SIZE (0xd000 - 0x1200 + 128 + 2 + 4)
 
 #define DATA_BUS_MASK    (((1u << DATA_BUS_COUNT) - 1) << DATA_BUS_BASE)
 #define READ_PINS(pins, base, count) (((pins) >> (base)) & ((1u << (count)) - 1))

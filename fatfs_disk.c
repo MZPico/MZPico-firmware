@@ -48,8 +48,8 @@ void create_fatfs_disk()
 
     /* Format the default drive with default parameters */
     printf("making fatfs\n");
-    res = f_mkfs("", 0, work, sizeof work);
-    f_mount(&fs, "", 0);
+    res = f_mkfs("flash:", 0, work, sizeof work);
+    f_mount(&fs, "flash:", 0);
     f_setlabel("MZ800PICO");
     res = f_open(&fil, "WELCOME.TXT", FA_CREATE_NEW | FA_WRITE);
     f_puts("MZ800Pico\r\nDrag MZF files in here!\r\n", &fil);

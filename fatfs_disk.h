@@ -17,7 +17,7 @@
 
 #include "flash_fs.h"
 
-#define SECTOR_NUM 30716 //2044 //1800
+#define SECTOR_NUM ((PICO_FLASH_SIZE_BYTES - 1024 * 1024) / 512 - 4) // 30716 //2044 //1800
 #define SECTOR_SIZE 512
 
 void create_fatfs_disk();
