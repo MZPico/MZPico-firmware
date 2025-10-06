@@ -20,11 +20,17 @@
 #define SECTOR_NUM ((PICO_FLASH_SIZE_BYTES - 1024 * 1024) / 512 - 4) // 30716 //2044 //1800
 #define SECTOR_SIZE 512
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 void create_fatfs_disk();
 bool mount_fatfs_disk();
 bool fatfs_is_mounted();
 uint32_t fatfs_disk_read(uint8_t* buff, uint32_t sector, uint32_t count);
 uint32_t fatfs_disk_write(const uint8_t* buff, uint32_t sector, uint32_t count);
 void fatfs_disk_sync();
+#ifdef __cplusplus
+}
+#endif
 
 #endif

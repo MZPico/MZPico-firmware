@@ -4,12 +4,15 @@ import sys
 def generate_c_header(mzf_file, var_name="rd"):
 
     with open(mzf_file, 'rb') as f:
-        data = f.read()
+        dt = f.read()
 
+    data = bytearray(dt.rstrip(b'\x00'))
     total_size = len(data)
     output = []
     output.append(f"const uint8_t {var_name}[{total_size}] = {{")
 
+    data[18] = (total_size-128) & 0xff
+    data[19] =  ((total_size-128) >> 8) & 0xff
     for i in range(0, total_size, 8):
         chunk = data[i:i+8]
         line = ", ".join(f"0x{b:02X}" for b in chunk)

@@ -1,3 +1,7 @@
 build/
-mzpico800.mzf
-device_fw.h
+basic.h
+mzf_menu.h
+mzf_explorer.h
+.vscode
+*.mzf
+*.ld

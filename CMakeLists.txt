@@ -4,6 +4,9 @@ include(pico_sdk_import.cmake)
 project(mzpico C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS ON)
+
 
 set(PICO_BOARD_HEADER_DIRS ${CMAKE_SOURCE_DIR})
 set(PICO_BOARD board)
@@ -12,7 +15,7 @@ set(PICO_BOARD board)
 pico_sdk_init()
 
 add_subdirectory(fatfs-sdk/src build)
-
+add_subdirectory(byte_source)
 add_executable(mzpico)
 
 # 16megs of flash on purple pico clones
@@ -23,33 +26,35 @@ target_compile_definitions(mzpico PRIVATE
 
 # Generate PIO header from PIO source
 pico_generate_pio_header(mzpico ${CMAKE_CURRENT_LIST_DIR}/trap_reset.pio)
-pico_generate_pio_header(mzpico ${CMAKE_CURRENT_LIST_DIR}/trap_read.pio)
-pico_generate_pio_header(mzpico ${CMAKE_CURRENT_LIST_DIR}/trap_write.pio)
 
 target_sources(mzpico PUBLIC
-    ${CMAKE_CURRENT_LIST_DIR}/main.c
-    ${CMAKE_CURRENT_LIST_DIR}/device.c
-    ${CMAKE_CURRENT_LIST_DIR}/file.c
-    ${CMAKE_CURRENT_LIST_DIR}/mz_devices.c
-    ${CMAKE_CURRENT_LIST_DIR}/mz_devices/pico_mgr.c
-    ${CMAKE_CURRENT_LIST_DIR}/mz_devices/fdc.c
-    ${CMAKE_CURRENT_LIST_DIR}/mz_devices/qd.c
-    ${CMAKE_CURRENT_LIST_DIR}/mz_devices/sramdisk.c
-    ${CMAKE_CURRENT_LIST_DIR}/mz_devices/pico_rd.c
+    ${CMAKE_CURRENT_LIST_DIR}/main.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/device.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/file.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/config.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/mz_devices.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/mz_devices/qd.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/mz_devices/pico_mgr.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/mz_devices/fdc.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/mz_devices/sramdisk.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/mz_devices/pico_rd.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/iniparser/src/iniparser.c
+    ${CMAKE_CURRENT_LIST_DIR}/iniparser/src/dictionary.c
     ${CMAKE_CURRENT_LIST_DIR}/trap_reset.pio
-    ${CMAKE_CURRENT_LIST_DIR}/trap_read.pio
-    ${CMAKE_CURRENT_LIST_DIR}/trap_write.pio
     ${CMAKE_CURRENT_LIST_DIR}/msc_disk.c
     ${CMAKE_CURRENT_LIST_DIR}/usb_descriptors.c
     ${CMAKE_CURRENT_LIST_DIR}/hw_config.c
     ${CMAKE_CURRENT_LIST_DIR}/fatfs_disk.c
     ${CMAKE_CURRENT_LIST_DIR}/flash_fs.c
     ${CMAKE_CURRENT_LIST_DIR}/fatfs_glue.c
+    ${BYTE_SOURCE_SOURCES}
 )
 
 target_include_directories(mzpico PUBLIC
     ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/byte_source
     ${CMAKE_CURRENT_LIST_DIR}/mz_devices
+    ${CMAKE_CURRENT_LIST_DIR}/iniparser/src
     ${CMAKE_CURRENT_LIST_DIR}/fatfs-sdk/src/ff15/source/
 )
 
