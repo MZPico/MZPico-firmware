@@ -19,11 +19,15 @@ void unpack_ConfigEntry(const uint8_t* src, void* outPtr) {
     memcpy(r->value, src + MAX_CONFIG_KEY_LENGTH, MAX_CONFIG_VALUE_LENGTH);
 }
 
-std::unordered_map<std::string, SectionConfig> picoConfig;
+std::vector<std::pair<std::string, SectionConfig>> picoConfig;
 
 int getConfig(std::string &section, PicoMgr *mgr) {
     mgr->setContent(CONFIG_ENTRY_SIZE, pack_ConfigEntry, unpack_ConfigEntry);
-    auto it = picoConfig.find(section);
+
+    auto it = std::find_if(
+        picoConfig.begin(), picoConfig.end(),
+        [&](const auto &pair) { return pair.first == section; });
+
     if (it != picoConfig.end()) {
         for (const auto &configEntry : it->second) {
             ConfigEntry entryStruct;

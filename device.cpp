@@ -224,11 +224,11 @@ void device_main(void) {
                 const char *value_cstr = iniparser_getstring(ini, fullKey.c_str(), "");
                 std::string value = value_cstr ? value_cstr : "";
 
-                config[keyName] = value;
+                config.emplace_back(keyName, value);
             }
 
             delete[] keys;
-            picoConfig[sectionName] = config;
+            picoConfig.emplace_back(sectionName, std::move(config));
         } else { // devices
             std::string devName = stripTrailingNumbers(sectionName);
             MZDevice* dev = MZDeviceManager::createDevice(devName, sectionName);

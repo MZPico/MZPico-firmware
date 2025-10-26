@@ -9,7 +9,7 @@
 
 
 
-using SectionConfig = std::unordered_map<std::string, std::string>;
-extern std::unordered_map<std::string, SectionConfig> picoConfig;
+using SectionConfig = std::vector<std::pair<std::string, std::string>>;
+extern std::vector<std::pair<std::string, SectionConfig>> picoConfig;
 
 int getConfig(std::string &section, PicoMgr *mgr);
