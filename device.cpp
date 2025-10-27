@@ -1,8 +1,6 @@
-// device.cpp  — C++ port of device.c, adapted to MZDeviceManager + FDCDevice
 #include <cstdio>
 #include <cstring>
 
-// Pico SDK / hardware (C++ compatible)
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
 #include "hardware/irq.h"
@@ -12,20 +10,20 @@
 #include "hardware/watchdog.h"
 #include "hardware/vreg.h"
 
-// Your project headers (unchanged)
 #include "common.hpp"
 #include "bus.hpp"
 #include "file.hpp"
 #include "trap_reset.pio.h"
+#include "trap_read.pio.h"
+#include "trap_write.pio.h"
 #include "device.hpp"
 #include "config.hpp"
 #include "file_source.hpp"
 #include "cached_source.hpp"
 #include "qd_dir_source.hpp"
 
-// New C++ device framework + the FDC device
 #include "mz_devices.hpp"
-#include "fdc.hpp"      // C++ port of FDC
+#include "fdc.hpp"
 
 #include "ff.h"
 #include "fatfs_disk.h"
@@ -65,22 +63,21 @@ RAM_FUNC static void reset_handler(void) {
 RAM_FUNC static void listen_loop(void) {
     uint8_t addr = 0;
     uint8_t data = 0;
+    uint32_t raw_bus;
 
-    while (!(sio_hw->gpio_in & (1u << IORQ_PIN)));
+    //while (!(sio_hw->gpio_in & (1u << IORQ_PIN)));
     while (true) {
-        while (sio_hw->gpio_in & (1u << IORQ_PIN));
+        //while (sio_hw->gpio_in & (1u << IORQ_PIN));
 
-        const uint32_t pins = sio_hw->gpio_in;
+        //const uint32_t pins = sio_hw->gpio_in;
 
-        if (!(pins & (1u << RD_PIN))) {
+        if (!pio_sm_is_rx_fifo_empty(pio, SM_READ)) {
             // IN: CPU reads from port
-            //set_exwait();
-            addr = read_address_bus();
+            addr = pio_sm_get(pio, SM_READ) >> 24;
             MZDevice* dev = MZDeviceManager::getReadDevice(addr);
             auto fn  = MZDeviceManager::getReadFunction(addr);
 
             if (fn && dev) {
-                //set_exwait();
                 if (dev->needsExwait()) set_exwait();
 
                 fn(dev, addr, &data, 0);
@@ -90,33 +87,29 @@ RAM_FUNC static void listen_loop(void) {
 
                 if (dev->needsExwait()) release_exwait();
                 if (dev->isInterrupt()) set_interrupt();
-                //release_exwait();
             }
-            //release_exwait();
         }
-        else if (!(pins & (1u << WR_PIN))) {
-            //set_exwait();
-            read_address_data_bus(&addr, &data);
+        else if (!pio_sm_is_rx_fifo_empty(pio, SM_WRITE)) {
+            raw_bus = pio_sm_get(pio, SM_WRITE);
+            data = raw_bus >> 24;
+            addr = (raw_bus >> 16) & 0xff;
 
             MZDevice* dev = MZDeviceManager::getWriteDevice(addr);
             auto fn  = MZDeviceManager::getWriteFunction(addr);
 
             if (fn && dev) {
-                //set_exwait();
                 if (dev->needsExwait()) set_exwait();
 
                 fn(dev, addr, data, 0);
 
                 if (dev->needsExwait()) release_exwait();
                 if (dev->isInterrupt()) set_interrupt();
-                //release_exwait();
             }
-            //release_exwait();
         }
 
         // Wait for IORQ to go HIGH again (cycle end) and tri-state data bus
-        while (!(sio_hw->gpio_in & (1u << IORQ_PIN)));
-        release_data_bus();
+        //while (!(sio_hw->gpio_in & (1u << IORQ_PIN)));
+        //release_data_bus();
     }
 }
 
@@ -128,6 +121,7 @@ static void init_gpio(void) {
     for (int i = 0; i < DATA_BUS_COUNT; ++i) {
         gpio_init(DATA_BUS_BASE + i);
         gpio_set_dir(DATA_BUS_BASE + i, GPIO_IN);
+        gpio_set_slew_rate(DATA_BUS_BASE + i, GPIO_SLEW_RATE_FAST);
     }
     for (size_t i = 0; i < control_pins_count; ++i) {
         gpio_init(control_pins[i]);
@@ -141,6 +135,7 @@ static void init_gpio(void) {
     gpio_set_dir(EXWAIT_PIN, GPIO_IN);
     gpio_set_pulls(INT_PIN, false, false);
     gpio_set_pulls(EXWAIT_PIN, false, false);
+    gpio_set_slew_rate(EXWAIT_PIN, GPIO_SLEW_RATE_FAST);
 
     gpio_init(25);
     gpio_set_dir(25, GPIO_OUT);
@@ -165,9 +160,8 @@ void halt(void) {
         tight_loop_contents();
 }
 
-// Entry point used by your startup (unchanged name)
 void device_main(void) {
-    set_sys_clock_khz(200000, true);
+    set_sys_clock_khz(180000, true);
     init_gpio();
     mount_devices();
 /*
@@ -255,8 +249,8 @@ void device_main(void) {
 
     release_exwait();
     trap_reset_init(pio, SM_RESET);
-    //trap_read_init (pio, SM_READ,  ADDR_BUS_BASE, RD_PIN);
-    //trap_write_init(pio, SM_WRITE, ADDR_BUS_BASE, WR_PIN);
+    trap_read_init(pio, SM_READ,  ADDR_BUS_BASE, RD_PIN);
+    trap_write_init(pio, SM_WRITE, ADDR_BUS_BASE, WR_PIN);
 
     irq_set_exclusive_handler(PIO0_IRQ_0, reset_handler);
     irq_set_enabled(PIO0_IRQ_0, true);

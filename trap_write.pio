@@ -1,5 +1,4 @@
 .program trap_write
-
 .wrap_target
 wait_iorq_low:
     wait 0 gpio 20
@@ -21,6 +20,7 @@ void trap_write_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
     sm_config_set_in_pins(&c, base_gpio);
     sm_config_set_jmp_pin(&c, jump_gpio);
     sm_config_set_in_shift(&c, true, true, 16);
+    sm_config_set_out_shift(&c, true, true, 32);
 
     pio_sm_init(pio, sm, offset, &c);
     pio_sm_set_enabled(pio, sm, true);
