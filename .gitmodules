@@ -7,3 +7,6 @@
 [submodule "manager"]
 	path = manager
 	url = https://github.com/MZPico/MZPico-800-Manager
+[submodule "pico-sdk"]
+	path = pico-sdk
+	url = https://github.com/raspberrypi/pico-sdk.git
