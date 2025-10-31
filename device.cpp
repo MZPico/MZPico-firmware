@@ -13,9 +13,7 @@
 #include "common.hpp"
 #include "bus.hpp"
 #include "file.hpp"
-#include "trap_reset.pio.h"
-#include "trap_read.pio.h"
-#include "trap_write.pio.h"
+#include "bus_io.pio.h"
 #include "device.hpp"
 #include "config.hpp"
 #include "file_source.hpp"
@@ -43,9 +41,8 @@ static const uint control_pins[] = { IORQ_PIN, RD_PIN, WR_PIN };
 static const uint control_pins_count = sizeof(control_pins) / sizeof(control_pins[0]);
 
 // ---- Globals ----
-static PIO  pio = pio0;
+static PIO  pio = pio1;
 
-// Optional small status LED helper
 void blink(uint8_t cnt) {
     for (int i = 0; i < cnt; ++i) {
         gpio_put(25, true);
@@ -57,6 +54,7 @@ void blink(uint8_t cnt) {
 
 RAM_FUNC static void reset_handler(void) {
     pio_interrupt_clear(pio, 0);
+    MZDeviceManager::flushAll();
     watchdog_reboot(0, 0, 0);
 }
 
@@ -65,14 +63,9 @@ RAM_FUNC static void listen_loop(void) {
     uint8_t data = 0;
     uint32_t raw_bus;
 
-    //while (!(sio_hw->gpio_in & (1u << IORQ_PIN)));
     while (true) {
-        //while (sio_hw->gpio_in & (1u << IORQ_PIN));
-
-        //const uint32_t pins = sio_hw->gpio_in;
-
         if (!pio_sm_is_rx_fifo_empty(pio, SM_READ)) {
-            // IN: CPU reads from port
+            set_exwait();
             addr = pio_sm_get(pio, SM_READ) >> 24;
             MZDevice* dev = MZDeviceManager::getReadDevice(addr);
             auto fn  = MZDeviceManager::getReadFunction(addr);
@@ -88,63 +81,64 @@ RAM_FUNC static void listen_loop(void) {
                 if (dev->needsExwait()) release_exwait();
                 if (dev->isInterrupt()) set_interrupt();
             }
+            release_exwait();
         }
         else if (!pio_sm_is_rx_fifo_empty(pio, SM_WRITE)) {
-            raw_bus = pio_sm_get(pio, SM_WRITE);
-            data = raw_bus >> 24;
-            addr = (raw_bus >> 16) & 0xff;
+            addr = pio_sm_get(pio, SM_WRITE) >> 24;
 
             MZDevice* dev = MZDeviceManager::getWriteDevice(addr);
             auto fn  = MZDeviceManager::getWriteFunction(addr);
 
             if (fn && dev) {
                 if (dev->needsExwait()) set_exwait();
-
+                data = read_data_bus();
                 fn(dev, addr, data, 0);
-
                 if (dev->needsExwait()) release_exwait();
                 if (dev->isInterrupt()) set_interrupt();
             }
         }
-
-        // Wait for IORQ to go HIGH again (cycle end) and tri-state data bus
-        //while (!(sio_hw->gpio_in & (1u << IORQ_PIN)));
-        //release_data_bus();
     }
 }
 
 static void init_gpio(void) {
-    for (int i = 0; i < ADDR_BUS_COUNT; ++i) {
-        gpio_init(ADDR_BUS_BASE + i);
-        gpio_set_dir(ADDR_BUS_BASE + i, GPIO_IN);
-    }
+    #if (ADDR_BUS_BASE != DATA_BUS_BASE)
+        for (int i = 0; i < ADDR_BUS_COUNT; ++i) {
+            gpio_init(ADDR_BUS_BASE + i);
+            gpio_set_dir(ADDR_BUS_BASE + i, GPIO_IN);
+        }
+    #endif
+
     for (int i = 0; i < DATA_BUS_COUNT; ++i) {
         gpio_init(DATA_BUS_BASE + i);
         gpio_set_dir(DATA_BUS_BASE + i, GPIO_IN);
         gpio_set_slew_rate(DATA_BUS_BASE + i, GPIO_SLEW_RATE_FAST);
     }
+
     for (size_t i = 0; i < control_pins_count; ++i) {
         gpio_init(control_pins[i]);
         gpio_set_dir(control_pins[i], GPIO_IN);
         gpio_pull_up(control_pins[i]);
     }
 
+    #ifdef BOARD_DELUXE
+        for (size_t i = 0; i < 4; ++i) {
+            gpio_init(EN0_PIN + i);
+            gpio_set_dir(EN0_PIN + i, GPIO_OUT);
+            gpio_set_slew_rate(EN0_PIN + i, GPIO_SLEW_RATE_FAST);
+            gpio_set_function(EN0_PIN + i, GPIO_FUNC_PIO1);
+        }
+    #endif
+
     gpio_init(INT_PIN);
     gpio_init(EXWAIT_PIN);
+    gpio_init(RESET_PIN);
     gpio_set_dir(INT_PIN, GPIO_IN);
     gpio_set_dir(EXWAIT_PIN, GPIO_IN);
+    gpio_set_dir(RESET_PIN, GPIO_IN);
     gpio_set_pulls(INT_PIN, false, false);
     gpio_set_pulls(EXWAIT_PIN, false, false);
     gpio_set_slew_rate(EXWAIT_PIN, GPIO_SLEW_RATE_FAST);
 
-    gpio_init(25);
-    gpio_set_dir(25, GPIO_OUT);
-    /*
-    gpio_put(25, true);
-    sleep_ms(20);
-    gpio_put(25, false);
-    sleep_ms(20);
-    */
 }
 
 std::string stripTrailingNumbers(const std::string& s) {
@@ -164,6 +158,7 @@ void device_main(void) {
     set_sys_clock_khz(180000, true);
     init_gpio();
     mount_devices();
+
 /*
     FIL fx;
 
@@ -186,7 +181,7 @@ void device_main(void) {
     f_close(&fx);
     return;
 */
-    set_exwait();
+    //set_exwait();
     dictionary *ini = iniparser_load("flash:/mzpico.ini");
     int sectionNumber = iniparser_getnsec(ini);
 
@@ -247,15 +242,27 @@ void device_main(void) {
 
     iniparser_freedict(ini);
 
-    release_exwait();
-    trap_reset_init(pio, SM_RESET);
-    trap_read_init(pio, SM_READ,  ADDR_BUS_BASE, RD_PIN);
-    trap_write_init(pio, SM_WRITE, ADDR_BUS_BASE, WR_PIN);
+    #ifdef BOARD_DELUXE
+        bus_read_deluxe_init(pio, SM_READ,  ADDR_BUS_BASE, RD_PIN);
+        bus_write_deluxe_init(pio, SM_WRITE, ADDR_BUS_BASE, WR_PIN);
+    #else
+        bus_read_frugal_init(pio, SM_READ,  ADDR_BUS_BASE, RD_PIN);
+        bus_write_frugal_init(pio, SM_WRITE, ADDR_BUS_BASE, WR_PIN);
+    #endif
 
-    irq_set_exclusive_handler(PIO0_IRQ_0, reset_handler);
-    irq_set_enabled(PIO0_IRQ_0, true);
+
+
+    bus_reset_init(pio, SM_RESET);
+    irq_set_exclusive_handler(PIO1_IRQ_0, reset_handler);
+    irq_set_enabled(PIO1_IRQ_0, true);
     pio_set_irq0_source_enabled(pio, pis_interrupt0, true);
 
-    // Run I/O server
+    // workaround for unstability after cold boot
+    if (!watchdog_caused_reboot()) {
+        busy_wait_ms(30);
+        watchdog_reboot(0, 0, 0);
+    }
+
+    //release_exwait();
     listen_loop();
 }

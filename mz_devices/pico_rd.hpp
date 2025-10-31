@@ -29,6 +29,7 @@ public:
     uint8_t getDefaultBasePort() const override { return PICO_RD_DEFAULT_BASE_PORT; }
     static std::string getDevType() { return PICO_RD_ID; }
     int readConfig(dictionary *ini) override;
+    int flush() override;
     void setDriveContent(std::string content, bool in_ram);
 
     static int writeControl(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);

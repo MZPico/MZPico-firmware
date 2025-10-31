@@ -36,6 +36,8 @@ public:
     uint8_t getDefaultBasePort() const override { return PICO_MGR_DEFAULT_BASE_PORT; }
     static std::string getDevType() { return PICO_MGR_ID; }
     int readConfig(dictionary *ini) override;
+    int flush() override { return 0; }
+
 
     static int writeControl(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
     static int readControl(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr);

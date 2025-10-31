@@ -1,0 +1,156 @@
+.define GATES_BLOCK_ALL 0b1111
+.define GATES_READ_LOW_ADDR 0b1110
+.define GATES_READ_HIGH_ADDR 0b1101
+.define GATES_READ_DATA 0b1011
+.define GATES_WRITE_DATA 0b0011
+
+.program bus_read_deluxe
+.side_set 4 opt
+.wrap_target
+    nop                         side GATES_READ_LOW_ADDR
+wait_iorq_low:
+    wait 0 gpio 20
+    jmp pin, wait_iorq_low
+    in pins, 8                  side GATES_WRITE_DATA
+    wait 1 gpio 20
+    set pindirs, 0
+.wrap
+
+.program bus_read_frugal
+.side_set 4 opt
+.wrap_target
+wait_iorq_low:
+    wait 0 gpio 20
+    jmp pin, wait_iorq_low
+    in pins, 8
+    wait 1 gpio 20
+    set pindirs, 0
+.wrap 
+
+.program bus_write_deluxe
+.side_set 4 opt
+.wrap_target
+    nop                         side GATES_READ_LOW_ADDR
+wait_iorq_low:
+    wait 0 gpio 20
+    jmp pin, wait_iorq_low
+    in pins, 8                  side GATES_READ_DATA
+wait_iorq_high:
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    wait 1 gpio 20
+.wrap
+
+.program bus_write_frugal
+.side_set 4 opt
+.wrap_target
+wait_iorq_low:
+    wait 0 gpio 20
+    jmp pin, wait_iorq_low
+    in pins, 8
+wait_iorq_high:
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    wait 1 gpio 20
+.wrap
+
+.program bus_reset
+.wrap_target
+start:
+    wait 1 gpio 19
+    set x, 2
+hold_high:
+    jmp pin, still_high
+    jmp start
+still_high:
+    jmp x-- hold_high
+    irq set 0
+.wrap
+
+
+% c-sdk {
+#include "hardware/pio.h"
+#include "bus_io.pio.h"
+
+void bus_read_deluxe_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
+    uint offset = pio_add_program(pio, &bus_read_deluxe_program);
+
+    pio_sm_config c = bus_read_deluxe_program_get_default_config(offset);
+
+    sm_config_set_in_pins(&c, base_gpio);
+    sm_config_set_set_pins(&c, 0, 8);
+    sm_config_set_jmp_pin(&c, jump_gpio);
+    sm_config_set_in_shift(&c, true, true, 8);
+    sm_config_set_clkdiv(&c, 1.0f);
+    sm_config_set_sideset_pins(&c, 8);
+
+    pio_sm_set_consecutive_pindirs(pio, sm, 8, 4, true);
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+void bus_read_frugal_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
+    uint offset = pio_add_program(pio, &bus_read_frugal_program);
+
+    pio_sm_config c = bus_read_frugal_program_get_default_config(offset);
+
+    sm_config_set_in_pins(&c, base_gpio);
+    sm_config_set_set_pins(&c, 8, 8);
+    sm_config_set_jmp_pin(&c, jump_gpio);
+    sm_config_set_in_shift(&c, true, true, 8);
+    sm_config_set_clkdiv(&c, 1.0f);
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+void bus_write_deluxe_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
+    uint offset = pio_add_program(pio, &bus_write_deluxe_program);
+
+    pio_sm_config c = bus_write_deluxe_program_get_default_config(offset);
+
+    sm_config_set_in_pins(&c, base_gpio);
+    sm_config_set_jmp_pin(&c, jump_gpio);
+    sm_config_set_in_shift(&c, true, true, 8);
+    sm_config_set_sideset_pins(&c, 8);
+    pio_sm_set_consecutive_pindirs(pio, sm, 8, 4, true);
+    sm_config_set_clkdiv(&c, 1.0f);
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+void bus_write_frugal_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
+    uint offset = pio_add_program(pio, &bus_write_frugal_program);
+
+    pio_sm_config c = bus_write_frugal_program_get_default_config(offset);
+
+    sm_config_set_in_pins(&c, base_gpio);
+    sm_config_set_jmp_pin(&c, jump_gpio);
+    sm_config_set_in_shift(&c, true, true, 8);
+    sm_config_set_clkdiv(&c, 1.0f);
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+void bus_reset_init(PIO pio, uint sm) {
+    uint offset = pio_add_program(pio, &bus_reset_program);
+
+    pio_sm_config c = bus_reset_program_get_default_config(offset);
+    sm_config_set_jmp_pin(&c, 19);
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}

@@ -18,6 +18,8 @@ add_subdirectory(fatfs-sdk/src build)
 add_subdirectory(byte_source)
 add_executable(mzpico)
 
+target_compile_definitions(mzpico PRIVATE BOARD_DELUXE)
+
 # 16megs of flash on purple pico clones
 target_compile_definitions(mzpico PRIVATE
         #PICO_FLASH_SIZE_BYTES=16777216
@@ -25,9 +27,7 @@ target_compile_definitions(mzpico PRIVATE
 )
 
 # Generate PIO header from PIO source
-pico_generate_pio_header(mzpico ${CMAKE_CURRENT_LIST_DIR}/trap_reset.pio)
-pico_generate_pio_header(mzpico ${CMAKE_CURRENT_LIST_DIR}/trap_read.pio)
-pico_generate_pio_header(mzpico ${CMAKE_CURRENT_LIST_DIR}/trap_write.pio)
+pico_generate_pio_header(mzpico ${CMAKE_CURRENT_LIST_DIR}/bus_io.pio)
 
 target_sources(mzpico PUBLIC
     ${CMAKE_CURRENT_LIST_DIR}/main.cpp
@@ -42,9 +42,7 @@ target_sources(mzpico PUBLIC
     ${CMAKE_CURRENT_LIST_DIR}/mz_devices/pico_rd.cpp
     ${CMAKE_CURRENT_LIST_DIR}/iniparser/src/iniparser.c
     ${CMAKE_CURRENT_LIST_DIR}/iniparser/src/dictionary.c
-    ${CMAKE_CURRENT_LIST_DIR}/trap_reset.pio
-    ${CMAKE_CURRENT_LIST_DIR}/trap_read.pio
-    ${CMAKE_CURRENT_LIST_DIR}/trap_write.pio
+    ${CMAKE_CURRENT_LIST_DIR}/bus_io.pio
     ${CMAKE_CURRENT_LIST_DIR}/msc_disk.c
     ${CMAKE_CURRENT_LIST_DIR}/usb_descriptors.c
     ${CMAKE_CURRENT_LIST_DIR}/hw_config.c

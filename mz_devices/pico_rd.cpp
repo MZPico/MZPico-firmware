@@ -77,6 +77,13 @@ void PicoRD::setDriveContent(std::string content, bool in_ram) {
     */
 }
 
+int PicoRD::flush() {
+    if (!bs)
+        return -1;
+    
+    return bs->flush();
+}
+
 int PicoRD::writeControl(MZDevice* self, uint8_t, uint8_t, uint8_t) {
     auto* rd = static_cast<PicoRD*>(self);
     rd->bs->seek(0);

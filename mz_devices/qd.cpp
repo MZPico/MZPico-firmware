@@ -1,9 +1,3 @@
-/*
- * QDDevice.cpp — C++ class implementation converted from qdisk.c
- * 
- * License: GNU GPL v3 (or later), inherited from original source.
- */
-
 #include "qd.hpp"
 #include <cerrno>
 #include <sys/stat.h>
@@ -88,6 +82,13 @@ void QDDevice::setDriveContent(const std::string& path)  { stdPath  = path; open
 void QDDevice::driveReset() {
     image_position = 0;
     status |= QDSTS_HEAD_HOME;
+}
+
+int QDDevice::flush() {
+    if (!bs)
+        return -1;
+    
+    return bs->flush();
 }
 
 // --------------------------------- Opening ---------------------------------

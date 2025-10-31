@@ -36,8 +36,8 @@ int SRamDisk::readConfig(dictionary *ini) {
     if (!ini) return -1;
 
     allowBoot = iniparser_getboolean(ini, (getDevID() + ":allow_boot").c_str(), true);
-    readOnly = iniparser_getboolean(ini, (getDevID() + ":read_only").c_str(), false);
-    bool in_ram = iniparser_getboolean(ini, (getDevID() + ":in_ram").c_str(), true);
+    readOnly = iniparser_getboolean(ini, (getDevID() + ":read_only").c_str(), true);
+    bool in_ram = iniparser_getboolean(ini, (getDevID() + ":in_ram").c_str(), false);
     std::string image = iniparser_getstring(ini, (getDevID() + ":image").c_str(), "@menu");
     uint16_t sz = iniparser_getint(ini, (getDevID() + ":size").c_str(), 0);
     if (sz) size = sz;
@@ -84,6 +84,14 @@ int SRamDisk::setDriveContent(const std::string& content, bool in_ram) {
 
     return 0;
 }
+
+int SRamDisk::flush() {
+    if (!bs)
+        return -1;
+    
+    return bs->flush();
+}
+
 RAM_FUNC int SRamDisk::writePort(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr) {
     auto* disk = static_cast<SRamDisk*>(self);
 

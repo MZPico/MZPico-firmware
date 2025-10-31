@@ -47,6 +47,7 @@ public:
     virtual bool needsExwait() const = 0;
     virtual uint8_t getDefaultBasePort() const = 0;
     virtual int readConfig(dictionary *ini) = 0;
+    virtual int flush() = 0;
 
     const ReadPortMapping* getReadMappings() const { return readMappings; }
     const WritePortMapping* getWriteMappings() const { return writeMappings; }
@@ -83,6 +84,7 @@ public:
     }
 
     static MZDevice* createDevice(const std::string& devType, const std::string& id);
+    static void flushAll();
     static int disableDevice(MZDevice* dev);
     static int enableDevice(MZDevice* dev);
     static int setBasePort(MZDevice* dev, uint8_t basePort);

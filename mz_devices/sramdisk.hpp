@@ -18,6 +18,7 @@ public:
     bool needsExwait() const override { return SRAM_EXWAIT; }
     uint8_t getDefaultBasePort() const override { return SRAM_DEFAULT_BASE_PORT; }
     int readConfig(dictionary *ini) override;
+    int flush() override;
     int setDriveContent(const std::string &content, bool in_ram);
     static std::string getDevType() { return SRAM_ID; }
 

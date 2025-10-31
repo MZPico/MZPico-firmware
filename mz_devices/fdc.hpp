@@ -38,11 +38,12 @@ public:
     RAM_FUNC bool needsExwait() const override { return FDC_EXWAIT; }
     uint8_t getDefaultBasePort() const override { return FDC_DEFAULT_BASE_PORT; }
     int readConfig(dictionary *ini) override;
+    int flush() override;
     static ALWAYS_INLINE std::string getDevType() { return FDC_ID; }
     int setDriveContent(uint8_t drive_id, const char* file_path);
 
 private:
-    static int ReadThunk (MZDevice* dev, uint8_t port, uint8_t* dt, uint8_t high_addr);
+    static int ReadThunk(MZDevice* dev, uint8_t port, uint8_t* dt, uint8_t high_addr);
     static int WriteThunk(MZDevice* dev, uint8_t port, uint8_t  dt, uint8_t high_addr);
     int32_t getTrackOffset(uint8_t drive_id, uint8_t track, uint8_t side);
     uint8_t seekToSector(uint8_t drive_id, uint8_t sector);

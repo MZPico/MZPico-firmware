@@ -8,15 +8,28 @@
 #define ADDR_BUS_BASE    0
 #define ADDR_BUS_COUNT   8
 
-#define DATA_BUS_BASE    8
+#ifdef BOARD_DELUXE
+  #define DATA_BUS_BASE    0
+#else
+  #define DATA_BUS_BASE    8
+#endif
+
 #define DATA_BUS_COUNT   8
 
 #define IORQ_PIN         20
 #define RD_PIN           21
 #define WR_PIN           22
+#define RESET_PIN        19
 #define INT_PIN          18
 #define EXWAIT_PIN       16
 #define M1_PIN           17
+
+#ifdef BOARD_DELUXE
+  #define EN0_PIN          8
+  #define EN1_PIN          9
+  #define EN2_PIN          10
+  #define RD0_PIN          11
+#endif
 
 #define IO_REPO_BASE_ADDR  0x40
 

@@ -73,6 +73,7 @@ public:
     bool needsExwait() const override { return QD_EXWAIT; }
     uint8_t getDefaultBasePort() const override { return QD_DEFAULT_BASE_PORT; }
     int readConfig(dictionary *ini) override;
+    int flush() override;
     static std::string getDevType() { return QD_ID; }
 
     void open();

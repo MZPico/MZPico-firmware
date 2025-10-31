@@ -60,6 +60,16 @@ int FDCDevice::readConfig(dictionary *ini) {
     return 0;
 }
 
+int FDCDevice::flush() {
+    for (uint8_t i=0; i<FDC_NUM_DRIVES; i++) {
+        if (!drive[i].bs)
+            continue;
+        drive[i].bs->flush();
+    }
+    
+    return 0;
+}
+
 int FDCDevice::isInterrupt() {
     // Original behavior: if INT mode enabled and data is pending for
     bool pending = false;

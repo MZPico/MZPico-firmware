@@ -60,12 +60,13 @@ MZDevice* MZDeviceManager::createDevice(const std::string& devType, const std::s
         return nullptr;
 
     dev->setDevID(id);
-    //if (dev->isEnabled()) {
-    //    listenPorts(dev);
-    //}
-
     devices[deviceCount++] = dev;
     return dev;
+}
+
+void MZDeviceManager::flushAll() {
+    for (uint8_t i=0; i<deviceCount; i++)
+        devices[i]->flush();
 }
 
 int MZDeviceManager::enableDevice(MZDevice* dev) {
