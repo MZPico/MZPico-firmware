@@ -6,10 +6,23 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
-
-
 set(PICO_BOARD_HEADER_DIRS ${CMAKE_SOURCE_DIR})
 set(PICO_BOARD board)
+set(BOARD "FRUGAL" CACHE STRING "Select the board type (FRUGAL, DELUXE)")
+set_property(CACHE BOARD PROPERTY STRINGS FRUGAL DELUXE)
+set(FLASH_SIZE "2M" CACHE STRING "Flash size (use 2M or 16M)")
+set_property(CACHE FLASH_SIZE PROPERTY STRINGS 2M 16M)
+
+if(FLASH_SIZE STREQUAL "2M")
+    set(FLASH_SIZE_BYTES 2097152)
+elseif(FLASH_SIZE STREQUAL "16M")
+    set(FLASH_SIZE_BYTES 16777216)
+else()
+    message(FATAL_ERROR "Invalid FLASH_SIZE value. Use one of: 2M, 16M")
+endif()
+
+message(STATUS "Board type: ${BOARD}")
+message(STATUS "Flash size selected: ${FLASH_SIZE}")
 
 # Initialize the Raspberry Pi Pico SDK
 pico_sdk_init()
@@ -18,12 +31,17 @@ add_subdirectory(fatfs-sdk/src build)
 add_subdirectory(byte_source)
 add_executable(mzpico)
 
-target_compile_definitions(mzpico PRIVATE BOARD_DELUXE)
+string(TOLOWER ${BOARD} BOARD_L)
+string(TOLOWER ${FLASH_SIZE} FLASH_L)
 
-# 16megs of flash on purple pico clones
+set_target_properties(mzpico PROPERTIES
+    OUTPUT_NAME "mzpico_${BOARD_L}_${FLASH_L}"
+)
+
+target_compile_definitions(mzpico PRIVATE BOARD_${BOARD})
+
 target_compile_definitions(mzpico PRIVATE
-        #PICO_FLASH_SIZE_BYTES=16777216
-                PICO_FLASH_SIZE_BYTES=2097152
+    PICO_FLASH_SIZE_BYTES=${FLASH_SIZE_BYTES}
 )
 
 # Generate PIO header from PIO source
@@ -82,3 +100,39 @@ pico_enable_stdio_uart(mzpico 0)
 # Create UF2, bin, and hex files
 pico_add_extra_outputs(mzpico)
 
+add_executable(mzpico_format)
+
+set_target_properties(mzpico_format PROPERTIES
+    OUTPUT_NAME "mzpico_format_${FLASH_L}"
+)
+
+target_sources(mzpico_format PUBLIC
+    ${CMAKE_CURRENT_LIST_DIR}/format_flash.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/msc_disk.c
+    ${CMAKE_CURRENT_LIST_DIR}/usb_descriptors.c
+    ${CMAKE_CURRENT_LIST_DIR}/hw_config.c
+    ${CMAKE_CURRENT_LIST_DIR}/fatfs_disk.c
+    ${CMAKE_CURRENT_LIST_DIR}/flash_fs.c
+    ${CMAKE_CURRENT_LIST_DIR}/fatfs_glue.c
+)
+
+target_include_directories(mzpico_format PUBLIC
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/fatfs-sdk/src/ff15/source/
+)
+
+
+# inherit same compile definitions as mzpico
+target_compile_definitions(mzpico_format PRIVATE
+    PICO_FLASH_SIZE_BYTES=${FLASH_SIZE_BYTES}
+)
+
+target_link_libraries(mzpico_format
+    pico_stdlib
+    hardware_flash
+    tinyusb_device
+    no-OS-FatFS-SD-SDIO-SPI-RPi-Pico
+)
+
+# You need this so you get the UF2/bin/hex files
+pico_add_extra_outputs(mzpico_format)

@@ -54,6 +54,9 @@ void create_fatfs_disk()
     res = f_open(&fil, "WELCOME.TXT", FA_CREATE_NEW | FA_WRITE);
     f_puts("MZ800Pico\r\nDrag MZF files in here!\r\n", &fil);
     f_close(&fil);
+    res = f_open(&fil, "mzpico.ini", FA_CREATE_NEW | FA_WRITE);
+    f_puts("[menu]\r\nkey_b=Basic|@basic\r\nkey_e=Explorer|@explorer\r\n\r\n[sramdisk]\r\n\r\n[pico_rd]\r\n\r\n[pico_mgr]\r\n\r\n[fdc]\r\n\r\n[qd]\r\n\r\n", &fil);
+    f_close(&fil);
     f_mount(0, "", 0);
 }
 
