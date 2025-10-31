@@ -1,0 +1,78 @@
+nme: Create release on version tag
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  create_github_release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Z88DK Toolchain setup
+        run: |
+          sudo snap install z88dk --beta
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Fetch tags
+        run: git fetch --tags
+
+      - name: Get tag that triggered the workflow
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          echo "Version tag detected: $TAG"
+          echo "VERSION=$TAG" >> $GITHUB_ENV
+
+      - name: Create build directory
+        run: |
+          mkdir build
+
+      - name: Run CMake
+        run: |
+          cmake .. -DFLASH_SIZE=16M -DBOARD=FRUGAL
+        working-directory: build
+
+      - name: Build with make
+        run: |
+          make
+        working-directory: build
+
+      - name: Run CMake
+        run: |
+          cmake .. -DFLASH_SIZE=2M -DBOARD=FRUGAL
+        working-directory: build
+
+      - name: Build with make
+        run: |
+          make
+        working-directory: build
+
+      - name: Run CMake
+        run: |
+          cmake .. -DFLASH_SIZE=2M -DBOARD=DELUXE
+        working-directory: build
+
+      - name: Build with make
+        run: |
+          make
+        working-directory: build
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: ${{ env.VERSION }}
+          tag_name: ${{ env.VERSION }}
+          generate_release_notes: true
+          draft: true
+          files: |
+            build/mzpico_frugal_2m.uf2
+            build/mzpico_frugal_16m.uf2
+            build/mzpico_deluxe_2m.uf2
+            build/mzpico_format_16m.uf2
+            build/mzpico_format_2m.uf2

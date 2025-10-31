@@ -1,0 +1,30 @@
+name: Build
+
+on:
+  push:
+    branch: main
+
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Z88DK Toolchain setup
+      run: |
+        sudo snap install z88dk --edge
+
+    - name: Create build directory
+      run: |
+        mkdir build
+
+    - name: Run CMake
+      run: |
+        cmake ..
+      working-directory: build
+
+    - name: Build with make
+      run: |
+        make
+      working-directory: build
