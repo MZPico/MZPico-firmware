@@ -1,4 +1,4 @@
-nme: Create release on version tag
+name: Create release on version tag
 on:
   push:
     tags:
