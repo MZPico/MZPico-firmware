@@ -4,3 +4,6 @@
 [submodule "iniparser"]
 	path = iniparser
 	url = https://github.com/MZPico/iniparser
+[submodule "manager"]
+	path = manager
+	url = https://github.com/MZPico/MZPico-800-Manager

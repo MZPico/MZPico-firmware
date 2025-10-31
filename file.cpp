@@ -205,7 +205,7 @@ int mount_file(const char *path, PicoMgr *mgr) {
   } else if (!strcmp(path, "@explorer")) {
     mgr->addRaw(mzf_explorer, sizeof(mzf_explorer));
   } else if (!strcmp(path, "@basic")) {
-    mgr->addRaw(basic, sizeof(basic));
+    mgr->addRaw(mzf_basic, sizeof(mzf_basic));
   }
   return 0;
 }

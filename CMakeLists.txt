@@ -8,6 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
 set(PICO_BOARD_HEADER_DIRS ${CMAKE_SOURCE_DIR})
 set(PICO_BOARD board)
+set(GEN_MZF_SCRIPT ${CMAKE_SOURCE_DIR}/gen_mzf_array.py)
 set(BOARD "FRUGAL" CACHE STRING "Select the board type (FRUGAL, DELUXE)")
 set_property(CACHE BOARD PROPERTY STRINGS FRUGAL DELUXE)
 set(FLASH_SIZE "2M" CACHE STRING "Flash size (use 2M or 16M)")
@@ -24,12 +25,37 @@ endif()
 message(STATUS "Board type: ${BOARD}")
 message(STATUS "Flash size selected: ${FLASH_SIZE}")
 
+add_subdirectory(manager)
+
+set(GENERATED_MZF_DIR ${CMAKE_SOURCE_DIR})
+
+set(GENERATED_HEADERS "")
+foreach(MZF_FILE ${MZF_FILES})
+    get_filename_component(MZF_NAME ${MZF_FILE} NAME_WE)   # e.g. explorer.mzf → explorer
+    set(HEADER_FILE ${GENERATED_MZF_DIR}/mzf_${MZF_NAME}.hpp)
+    list(APPEND GENERATED_HEADERS ${HEADER_FILE})
+
+    add_custom_command(
+        OUTPUT ${HEADER_FILE}
+        COMMAND ${CMAKE_COMMAND} -E echo "Generating header from ${MZF_FILE}"
+        COMMAND ${GEN_MZF_SCRIPT}
+                ${MZF_FILE} ${HEADER_FILE}
+        DEPENDS ${MZF_FILE}
+        VERBATIM
+    )
+endforeach()
+
+add_custom_target(generate_mzf_headers ALL DEPENDS ${GENERATED_HEADERS})
+add_dependencies(generate_mzf_headers build_explorer build_menu)
+
 # Initialize the Raspberry Pi Pico SDK
 pico_sdk_init()
 
 add_subdirectory(fatfs-sdk/src build)
 add_subdirectory(byte_source)
 add_executable(mzpico)
+
+add_dependencies(mzpico generate_mzf_headers)
 
 string(TOLOWER ${BOARD} BOARD_L)
 string(TOLOWER ${FLASH_SIZE} FLASH_L)
