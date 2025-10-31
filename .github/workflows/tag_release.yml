@@ -11,6 +11,11 @@ jobs:
       contents: write
       actions: read
     steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake
+          
       - name: Z88DK Toolchain setup
         run: |
           sudo snap install z88dk --beta
