@@ -22,13 +22,13 @@ Related hardware:
 - **Native program execution**  
   Directly loads and runs:
   - `.MZF` (MZ program files)
-  - `.DSK` (floppy images)
+  - `.DSK` (Floppy images)
   - `.MZQ` (Quick Disk images)
 
 - **Storage device emulation**  
   Emulates multiple virtual devices:
   - Floppy disk controller
-  - Quick disk controller
+  - Quick disk
   - RAM disks
 
 - **User-friendly navigation interface**
@@ -71,10 +71,12 @@ Related hardware:
 |------------|----------------|---------------|
 | Frugal Board | 2MB (original Pico) | `mzpico_frugal_2m.uf2` |
 | Frugal Board | 16MB (purple Pico clone) | `mzpico_frugal_16m.uf2` |
-| Deluxe Board | 16MB (purple Pico clone) | `mzpico_deluxe_16m.uf2` |
+| Deluxe Board | 2MB (original Pico) | `mzpico_deluxe_2m.uf2` |
 
 3. Hold **BOOTSEL** on the Pico and connect to USB.
-4. Copy the `.uf2` file to the Pico drive — done.
+4. Copy the `.uf2` file to the Pico drive.
+5. Upload your Sharp MZ-800 software to the MZPico card using USB mass storage.
+6. Insert the card to a Sharp MZ-800 slot, switch it on - done!
 
 ---
 
@@ -248,6 +250,7 @@ The firmware uses code, libraries, or ideas from these excellent projects:
 - A8PicoCart https://github.com/robinhedwards/A8PicoCart
 - Sharp MZ-800 Emulator by Chaky https://sourceforge.net/projects/mz800emu/
 - Sharp MZ-800 Unicard https://sourceforge.net/projects/unicardmk3/
+- Atari ST SidecarTridge https://github.com/sidecartridge/atarist-sidecart-raspberry-pico
 - no-OS-FatFS-SD-SDIO-SPI-RPi-Pico https://github.com/carlk3/no-OS-FatFS-SD-SDIO-SPI-RPi-Pico
 - Iniparser https://gitlab.com/iniparser/iniparser
 - Raspberry Pico SDK https://github.com/raspberrypi/pico-sdk
