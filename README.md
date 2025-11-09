@@ -31,8 +31,11 @@ Related hardware:
   - RAM disks
 
 - **User-friendly navigation interface**
-  - **Customizable boot screen** with quick access to favorite programs
-  - **File explorer** supporting multiple storage devices, directory trees, and fast search
+  - **Customizable boot screen** with quick access to favorite programs  
+    ![MZPico Boot Menu](resources/MZPico-menu.png)
+
+  - **File explorer** supporting multiple storage devices, directory trees, and fast search  
+    ![MZPico File Explorer](resources/MZPico-explorer.png)
 
 - **Fast system boot via SRAM emulation**
   Allows instant startup on the MZ-800:
@@ -232,7 +235,8 @@ After build completion, the generated `.uf2` firmware file will appear in the `b
 
 ## Limitations
 
-All emulated MZ-800 devices are read-only. This limitation will be removed in future releases.
+- All emulated MZ-800 devices are read-only. This limitation will be removed in future releases.
+- No support yet for I2S card on the DELUXE board.
 
 ---
 
