@@ -5,11 +5,12 @@
 This repository contains the firmware that controls the system.
 
 Related hardware:
+![MZPico boards](resources/MZPico-all.jpg)
 
 | Board | Status | Notes |
 |--------|--------|-------|
-| [Frugal Board](https://github.com/MZPico/MZPico-800-Frugal-Board) | ✅ Supported | Minimal build with optional MicroSD slot, limited to 8-bit address bus |
-| [Deluxe Board](https://github.com/MZPico/MZPico-800-Deluxe-board) | ✅ Supported | Fits MZ-800 upper slot rails, adds level shifters, I2S sound card, Pico access for optional wireless connection |
+| [Frugal Board](https://github.com/MZPico/MZPico-800-Frugal-Board) | ✅ Supported | Minimal build with optional MicroSD slot, limited to 8-bit address bus ![MZPico Frugal board](resources/MZPico-frugal-Purple16m.jpg)|
+| [Deluxe Board](https://github.com/MZPico/MZPico-800-Deluxe-board) | ✅ Supported | Fits MZ-800 upper slot rails, adds level shifters, I2S sound card, Pico access for optional wireless connection ![MZPico Deluxe board](resources/MZPico-deluxe-inserted.jpg)|
 
 ---
 
@@ -210,14 +211,14 @@ Two CMake options must be specified:
 
 | Option | Values | Description |
 |--------|--------|-------------|
-| `-DFLASH_SIZE=` | `2M` or `16M` | Selects correct firmware for Pico flash size |
-| `-DBOARD=` | `FRUGAL` or `DELUXE` | Selects board wiring, available devices, and configuration |
+| `FLASH_SIZE` | `2M` or `16M` | Selects correct firmware for Pico flash size |
+| `BOARD` | `FRUGAL` or `DELUXE` | Selects board wiring, available devices, and configuration |
 
 #### Example: Frugal board + original Pico (2MB flash)
 
 ```bash
 mkdir build && cd build
-cmake .. -DFLASH_SIZE=2M -DBOARD=FRUGAL
+cmake .. -DFLASH_SIZE=16M -DBOARD=FRUGAL
 make
 ```
 
@@ -225,7 +226,7 @@ make
 
 ```bash
 mkdir build && cd build
-cmake .. -DFLASH_SIZE=16M -DBOARD=DELUXE
+cmake .. -DFLASH_SIZE=2M -DBOARD=DELUXE
 make
 ```
 
