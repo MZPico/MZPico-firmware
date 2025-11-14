@@ -40,7 +40,7 @@ jobs:
 
       - name: Run CMake
         run: |
-          cmake .. -DFLASH_SIZE=16M -DBOARD=FRUGAL
+          cmake .. -DFLASH_SIZE=16M -DBOARD=FRUGAL -DVERSION=$VERSION
         working-directory: build
 
       - name: Build with make
@@ -50,7 +50,7 @@ jobs:
 
       - name: Run CMake
         run: |
-          cmake .. -DFLASH_SIZE=2M -DBOARD=FRUGAL
+          cmake .. -DFLASH_SIZE=2M -DBOARD=FRUGAL -DVERSION=$VERSION
         working-directory: build
 
       - name: Build with make
@@ -60,7 +60,7 @@ jobs:
 
       - name: Run CMake
         run: |
-          cmake .. -DFLASH_SIZE=2M -DBOARD=DELUXE
+          cmake .. -DFLASH_SIZE=2M -DBOARD=DELUXE -DVERSION=$VERSION
         working-directory: build
 
       - name: Build with make
@@ -71,13 +71,9 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          name: ${{ env.VERSION }}
-          tag_name: ${{ env.VERSION }}
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
           generate_release_notes: true
           draft: true
           files: |
-            build/mzpico_frugal_2m.uf2
-            build/mzpico_frugal_16m.uf2
-            build/mzpico_deluxe_2m.uf2
-            build/mzpico_format_16m.uf2
-            build/mzpico_format_2m.uf2
+            build/*.uf2

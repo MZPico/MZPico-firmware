@@ -1,12 +1,12 @@
 [submodule "fatfs-sdk"]
-	path = fatfs-sdk
+	path = external/fatfs-sdk
 	url = https://github.com/carlk3/no-OS-FatFS-SD-SDIO-SPI-RPi-Pico
 [submodule "iniparser"]
-	path = iniparser
+	path = external/iniparser
 	url = https://github.com/MZPico/iniparser
 [submodule "manager"]
-	path = manager
+	path = external/manager
 	url = https://github.com/MZPico/MZPico-800-Manager
 [submodule "pico-sdk"]
-	path = pico-sdk
+	path = external/pico-sdk
 	url = https://github.com/raspberrypi/pico-sdk.git
