@@ -1,4 +1,6 @@
 cmake_minimum_required(VERSION 3.13)
+set(PICO_BOARD_HEADER_DIRS ${CMAKE_SOURCE_DIR})
+set(PICO_BOARD board)
 set(PICO_SDK_PATH "${CMAKE_SOURCE_DIR}/pico-sdk")
 include(${PICO_SDK_PATH}/external/pico_sdk_import.cmake)
 project(mzpico C CXX ASM)

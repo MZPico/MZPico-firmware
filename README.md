@@ -169,10 +169,6 @@ image=@menu
 [pico_mgr]
 
 [fdc]
-image_disk1=flash:/fd1.dsk
-image_disk2=flash:/fd2.dsk
-image_disk3=flash:/fd3.dsk
-image_disk4=flash:/fd4.dsk
 
 [qd]
 image=flash:/qd1.mzq

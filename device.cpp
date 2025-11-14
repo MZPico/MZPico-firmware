@@ -28,6 +28,8 @@
 #include "iniparser.h"
 #include "embedded_mzf.hpp"
 
+#define SYSCLOCK 180000
+
 // ---- PIO SM indices ----
 #define SM_RESET 0
 #define SM_READ  1
@@ -65,7 +67,6 @@ RAM_FUNC static void listen_loop(void) {
 
     while (true) {
         if (!pio_sm_is_rx_fifo_empty(pio, SM_READ)) {
-            set_exwait();
             addr = pio_sm_get(pio, SM_READ) >> 24;
             MZDevice* dev = MZDeviceManager::getReadDevice(addr);
             auto fn  = MZDeviceManager::getReadFunction(addr);
@@ -81,7 +82,6 @@ RAM_FUNC static void listen_loop(void) {
                 if (dev->needsExwait()) release_exwait();
                 if (dev->isInterrupt()) set_interrupt();
             }
-            release_exwait();
         }
         else if (!pio_sm_is_rx_fifo_empty(pio, SM_WRITE)) {
             addr = pio_sm_get(pio, SM_WRITE) >> 24;
@@ -155,33 +155,10 @@ void halt(void) {
 }
 
 void device_main(void) {
-    set_sys_clock_khz(180000, true);
+    set_sys_clock_khz(SYSCLOCK, true);
     init_gpio();
     mount_devices();
 
-/*
-    FIL fx;
-
-    uint8_t b[512];
-    uint8_t bt;
-    uint32_t rd;
-    unsigned int rd1;
-    blink(2);
-    std::unique_ptr<ByteSource> bs;
-    FileSource *fs;
-    f_open(&fx, "flash:/file.mzq", FA_READ | FA_WRITE | FA_CREATE_ALWAYS);
-    ByteSourceFactory::from_file("flash:/QDisk-5Z001_74.mzq", 0, 128, bs);
-    fs = static_cast<FileSource *>(bs.get());
-
-    uint32_t sz = fs->getSize();
-    for (int i=0; i<sz; i++) {
-        bs->getByte(bt);
-        f_write(&fx, &bt, 1, &rd1);
-    };
-    f_close(&fx);
-    return;
-*/
-    //set_exwait();
     dictionary *ini = iniparser_load("flash:/mzpico.ini");
     int sectionNumber = iniparser_getnsec(ini);
 
@@ -263,6 +240,5 @@ void device_main(void) {
         watchdog_reboot(0, 0, 0);
     }
 
-    //release_exwait();
     listen_loop();
 }
