@@ -68,33 +68,35 @@ RAM_FUNC static void listen_loop(void) {
     while (true) {
         if (!pio_sm_is_rx_fifo_empty(pio, SM_READ)) {
             addr = pio_sm_get(pio, SM_READ) >> 24;
-            MZDevice* dev = MZDeviceManager::getReadDevice(addr);
             auto fn  = MZDeviceManager::getReadFunction(addr);
 
-            if (fn && dev) {
-                if (dev->needsExwait()) set_exwait();
+            if (fn) {
+                MZDevice* dev = MZDeviceManager::getReadDevice(addr);
+
+                if (MZDeviceManager::portNeedsExwait(addr)) set_exwait();
 
                 fn(dev, addr, &data, 0);
 
                 acquire_data_bus_for_writing();
                 write_data_bus(data);
 
-                if (dev->needsExwait()) release_exwait();
                 if (dev->isInterrupt()) set_interrupt();
+                if (MZDeviceManager::portNeedsExwait(addr)) release_exwait();
             }
         }
         else if (!pio_sm_is_rx_fifo_empty(pio, SM_WRITE)) {
             addr = pio_sm_get(pio, SM_WRITE) >> 24;
 
-            MZDevice* dev = MZDeviceManager::getWriteDevice(addr);
             auto fn  = MZDeviceManager::getWriteFunction(addr);
 
-            if (fn && dev) {
-                if (dev->needsExwait()) set_exwait();
+            if (fn) {
+                MZDevice* dev = MZDeviceManager::getWriteDevice(addr);
+
+                if (MZDeviceManager::portNeedsExwait(addr)) set_exwait();
                 data = read_data_bus();
                 fn(dev, addr, data, 0);
-                if (dev->needsExwait()) release_exwait();
                 if (dev->isInterrupt()) set_interrupt();
+                if (MZDeviceManager::portNeedsExwait(addr)) release_exwait();
             }
         }
     }

@@ -55,14 +55,6 @@ wait_iorq_low:
     jmp pin, wait_iorq_low
     in pins, 8
 wait_iorq_high:
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
     wait 1 gpio 20
 .wrap
 

@@ -21,12 +21,14 @@ void MZDeviceManager::listenPorts(MZDevice* dev) {
         uint8_t port = dev->getReadMappings()[i].port;
         readPortMap[port] = dev;
         readFunctions[port] = dev->getReadMappings()[i].fn;
+        needsExwaitMap[port] = dev->needsExwait();
     }
 
     for (uint8_t i = 0; i < dev->getWriteCount(); i++) {
         uint8_t port = dev->getWriteMappings()[i].port;
         writePortMap[port] = dev;
         writeFunctions[port] = dev->getWriteMappings()[i].fn;
+        needsExwaitMap[port] = dev->needsExwait();
     }
 }
 
@@ -35,12 +37,14 @@ void MZDeviceManager::unListenPorts(MZDevice* dev) {
         uint8_t port = dev->getReadMappings()[i].port;
         readPortMap[port] = NULL;
         readFunctions[port] = NULL;
+        needsExwaitMap[port] = false;
     }
 
     for (uint8_t i = 0; i < dev->getWriteCount(); i++) {
         uint8_t port = dev->getWriteMappings()[i].port;
         writePortMap[port] = NULL;
         writeFunctions[port] = NULL;
+        needsExwaitMap[port] = false;
     }
 }
 

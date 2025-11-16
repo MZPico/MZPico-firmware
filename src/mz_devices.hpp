@@ -105,6 +105,10 @@ public:
         return writeFunctions[port];
     }
 
+    static inline bool portNeedsExwait(uint8_t port) {
+        return needsExwaitMap[port];
+    }
+
 private:
     static std::map<std::string, Creator>& getMap() { static std::map<std::string, Creator> creators; return creators; }
     static inline MZDevice* devices[MAX_MZ_DEVICES] = {nullptr};
@@ -114,6 +118,7 @@ private:
 
     static inline int (*readFunctions[MAX_PORTS])(MZDevice*, uint8_t, uint8_t*, uint8_t) = {nullptr};
     static inline int (*writeFunctions[MAX_PORTS])(MZDevice*, uint8_t, uint8_t, uint8_t) = {nullptr};
+    static inline bool needsExwaitMap[MAX_PORTS] = {false};
     static inline bool isRegistered(std::string devString);
     static void listenPorts(MZDevice *dev);
     static void unListenPorts(MZDevice *dev);
