@@ -13,7 +13,6 @@ wait_iorq_low:
     jmp pin, wait_iorq_low
     in pins, 8                  side GATES_WRITE_DATA
     wait 1 gpio 20
-    set pindirs, 0
 .wrap
 
 .program bus_read_frugal
@@ -24,7 +23,6 @@ wait_iorq_low:
     jmp pin, wait_iorq_low
     in pins, 8
     wait 1 gpio 20
-    set pindirs, 0
 .wrap 
 
 .program bus_write_deluxe
@@ -82,7 +80,6 @@ void bus_read_deluxe_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
     pio_sm_config c = bus_read_deluxe_program_get_default_config(offset);
 
     sm_config_set_in_pins(&c, base_gpio);
-    sm_config_set_set_pins(&c, 0, 8);
     sm_config_set_jmp_pin(&c, jump_gpio);
     sm_config_set_in_shift(&c, true, true, 8);
     sm_config_set_clkdiv(&c, 1.0f);
@@ -99,7 +96,6 @@ void bus_read_frugal_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
     pio_sm_config c = bus_read_frugal_program_get_default_config(offset);
 
     sm_config_set_in_pins(&c, base_gpio);
-    sm_config_set_set_pins(&c, 8, 8);
     sm_config_set_jmp_pin(&c, jump_gpio);
     sm_config_set_in_shift(&c, true, true, 8);
     sm_config_set_clkdiv(&c, 1.0f);

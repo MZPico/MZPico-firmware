@@ -82,6 +82,8 @@ RAM_FUNC static void listen_loop(void) {
 
                 if (dev->isInterrupt()) set_interrupt();
                 if (MZDeviceManager::portNeedsExwait(addr)) release_exwait();
+                while (!(sio_hw->gpio_in & (1u << IORQ_PIN)));
+                release_data_bus();
             }
         }
         else if (!pio_sm_is_rx_fifo_empty(pio, SM_WRITE)) {
