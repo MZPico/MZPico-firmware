@@ -13,6 +13,7 @@
  */
 
 #include "pico/stdlib.h"
+#include "pico/multicore.h"
 #include "hardware/flash.h"
 #include "hardware/sync.h"
 
@@ -59,6 +60,26 @@ void flash_read_sector(uint16_t sector, uint8_t offset, void *buffer, uint16_t s
 void flash_erase_sector(uint16_t sector);
 void flash_write_sector(uint16_t sector, uint8_t offset, const void *buffer, uint16_t size);
 void flash_erase_with_copy_sector(uint16_t sector, uint8_t preserve_bitmap);
+
+// Helpers to minimize repetition and keep flash critical sections consistent
+static inline bool flash_guard_enter(uint32_t *saved_ints) {
+    uint other_core = 1u - get_core_num();
+    bool lockout_started = false;
+    bool lockout_ready = multicore_lockout_victim_is_initialized(other_core);
+    if (lockout_ready) {
+        multicore_lockout_start_blocking();
+        lockout_started = true;
+    }
+    *saved_ints = save_and_disable_interrupts();
+    return lockout_started;
+}
+
+static inline void flash_guard_exit(uint32_t saved_ints, bool lockout_started) {
+    restore_interrupts(saved_ints);
+    if (lockout_started) {
+        multicore_lockout_end_blocking();
+    }
+}
 
 void debug_print_in_use() {
     return;
@@ -225,9 +246,11 @@ void flash_erase_sector(uint16_t sector)
 //  printf("[FS] ERASE: %d\n", sector);
     uint32_t fs_start = HW_FLASH_STORAGE_BASE;
     uint32_t offset = fs_start + (sector * FLASH_SECTOR_SIZE);
-    uint32_t ints = save_and_disable_interrupts();   
-    flash_range_erase(offset, FLASH_SECTOR_SIZE);  
-    restore_interrupts(ints);
+    uint32_t ints;
+    bool lockout_started = flash_guard_enter(&ints);
+    flash_range_erase(offset, FLASH_SECTOR_SIZE);
+    flash_guard_exit(ints, lockout_started);
+    return;
 }
 
 void flash_write_sector(uint16_t sector, uint8_t offset, const void *buffer, uint16_t size)
@@ -235,9 +258,10 @@ void flash_write_sector(uint16_t sector, uint8_t offset, const void *buffer, uin
 //  printf("[FS] WRITE: %d, %d (%d)\n", sector, offset, size);
     uint32_t fs_start = HW_FLASH_STORAGE_BASE;
     uint32_t addr = fs_start + (sector * FLASH_SECTOR_SIZE) + (offset * 512);
-    uint32_t ints = save_and_disable_interrupts();
+    uint32_t ints;
+    bool lockout_started = flash_guard_enter(&ints);
     flash_range_program(addr, (const uint8_t *)buffer, size);
-    restore_interrupts(ints);
+    flash_guard_exit(ints, lockout_started);
 }
 
 void flash_erase_with_copy_sector(uint16_t sector, uint8_t preserve_bitmap)

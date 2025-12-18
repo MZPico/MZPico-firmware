@@ -7,4 +7,8 @@
 #define PICO_FLASH_SPI_CLKDIV 2
 
 // pick up the rest of the settings
+#ifdef USE_PICO_W
+#include "boards/pico_w.h"
+#else
 #include "boards/pico.h"
+#endif

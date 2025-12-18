@@ -42,6 +42,7 @@
 #define REPO_CMD_LIST_REPOS 0x09
 #define REPO_CMD_CHREPO     0x0a
 #define REPO_CMD_GET_CONFIG     0x0b
+#define REPO_CMD_GET_WIFI_STATUS 0x0c
 
 #define PICO_MGR_BUFF_SIZE (0xd000 - 0x1200 + 128 + 2 + 4)
 

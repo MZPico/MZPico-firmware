@@ -57,7 +57,7 @@ int PicoRD::readConfig(dictionary *ini) {
         ByteSourceFactory::from_ram(data, size, bs);
     } else {
        ByteSourceFactory::from_file(image, size, 128, /* wrap =*/true, bs);
-       //     setDriveContent(image, in_ram);4
+       //     setDriveContent(image, in_ram);
     }
     return 0;
 }

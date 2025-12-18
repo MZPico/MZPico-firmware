@@ -2,6 +2,7 @@
 #include <cstring>
 
 #include "pico/stdlib.h"
+#include "pico/multicore.h"
 #include "hardware/pio.h"
 #include "hardware/irq.h"
 #include "hardware/sync.h"
@@ -27,6 +28,14 @@
 #include "fatfs_disk.h"
 #include "iniparser.h"
 #include "embedded_mzf.hpp"
+#ifdef USE_PICO_W
+#include "cloud_fs.hpp"
+#include "pico/cyw43_arch.h"
+#endif
+
+#include "hardware/regs/resets.h"
+#include "hardware/structs/resets.h"
+#include "hardware/resets.h"
 
 #define SYSCLOCK 180000
 
@@ -42,20 +51,29 @@ QDDevice *qd;
 static const uint control_pins[] = { IORQ_PIN, RD_PIN, WR_PIN };
 static const uint control_pins_count = sizeof(control_pins) / sizeof(control_pins[0]);
 
+volatile bool shutting_down = false;
+
 // ---- Globals ----
 static PIO  pio = pio1;
 
 void blink(uint8_t cnt) {
+#ifdef USE_PICO_W
+    // On Pico W, GPIO25 is used internally by the CYW43 SPI; avoid direct access.
+    // Optionally could use cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, value) after init.
+    (void)cnt; // no-op to prevent WiFi conflicts
+#else
     for (int i = 0; i < cnt; ++i) {
         gpio_put(25, true);
         sleep_ms(200);
         gpio_put(25, false);
         sleep_ms(200);
     }
+#endif
 }
 
 RAM_FUNC static void reset_handler(void) {
     pio_interrupt_clear(pio, 0);
+    shutting_down = true;
     MZDeviceManager::flushAll();
     watchdog_reboot(0, 0, 0);
 }
@@ -158,10 +176,12 @@ void halt(void) {
         tight_loop_contents();
 }
 
-void device_main(void) {
-    set_sys_clock_khz(SYSCLOCK, true);
-    init_gpio();
+
+void device_main1(void) {
+    // Ensure this core can be safely locked out during flash operations
+    multicore_lockout_victim_init();
     mount_devices();
+    // Clean up temporary cloud files: purge flash:/tmp directory on startup
 
     dictionary *ini = iniparser_load("flash:/mzpico.ini");
     int sectionNumber = iniparser_getnsec(ini);
@@ -221,7 +241,30 @@ void device_main(void) {
         }
     }
 
+    #ifdef USE_PICO_W
+    // Read WiFi credentials from cloud section
+    const char *ssid = iniparser_getstring(ini, "cloud:wifi_ssid", "");
+    const char *pass = iniparser_getstring(ini, "cloud:wifi_password", "");
+    if (ssid && ssid[0] && pass && pass[0]) {
+        CloudWifiConfig wifi_cfg{ssid, pass, CYW43_AUTH_WPA2_AES_PSK, 5};
+        cloud_wifi_set_config(wifi_cfg);
+    }
+    #endif
+
     iniparser_freedict(ini);
+
+    listen_loop();
+}
+
+void device_main() {
+    set_sys_clock_khz(SYSCLOCK, true);
+    init_gpio();
+
+
+    // Initialize lockout on this core before launching the other core
+    multicore_lockout_victim_init();
+
+    multicore_launch_core1(device_main1);
 
     #ifdef BOARD_DELUXE
         bus_read_deluxe_init(pio, SM_READ,  ADDR_BUS_BASE, RD_PIN);
@@ -232,17 +275,22 @@ void device_main(void) {
     #endif
 
 
-
-    bus_reset_init(pio, SM_RESET);
-    irq_set_exclusive_handler(PIO1_IRQ_0, reset_handler);
-    irq_set_enabled(PIO1_IRQ_0, true);
-    pio_set_irq0_source_enabled(pio, pis_interrupt0, true);
+    bus_reset_init(pio0, SM_RESET);
+    irq_set_exclusive_handler(PIO0_IRQ_0, reset_handler);
+    irq_set_enabled(PIO0_IRQ_0, true);
+    pio_set_irq0_source_enabled(pio0, pis_interrupt0, true);
 
     // workaround for unstability after cold boot
     if (!watchdog_caused_reboot()) {
-        busy_wait_ms(30);
+        busy_wait_ms(50);
         watchdog_reboot(0, 0, 0);
     }
 
-    listen_loop();
+#ifdef USE_PICO_W
+    cloud_init();
+#endif
+
+    while(1) {
+        tight_loop_contents();
+    }
 }

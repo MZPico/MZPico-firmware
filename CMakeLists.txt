@@ -1,10 +1,22 @@
 cmake_minimum_required(VERSION 3.13)
+
+set(BOARD "FRUGAL" CACHE STRING "Select the board type (FRUGAL, DELUXE)")
+set_property(CACHE BOARD PROPERTY STRINGS FRUGAL DELUXE)
+set(FLASH_SIZE "2M" CACHE STRING "Flash size (use 2M or 16M)")
+set_property(CACHE FLASH_SIZE PROPERTY STRINGS 2M 16M)
+option(USE_PICO_W "Enable Pico W WiFi cloud file support" OFF)
+
+
 set(SRC_ROOT ${CMAKE_SOURCE_DIR}/src)
 set(EXTERNAL_ROOT ${CMAKE_SOURCE_DIR}/external)
 set(SCRIPTS_ROOT ${CMAKE_SOURCE_DIR}/scripts)
 
 set(PICO_BOARD_HEADER_DIRS ${SRC_ROOT})
-set(PICO_BOARD board)
+if(USE_PICO_W)
+    set(PICO_BOARD pico_w)
+else()
+    set(PICO_BOARD board)
+endif()
 set(PICO_SDK_PATH "${EXTERNAL_ROOT}/pico-sdk")
 include(${PICO_SDK_PATH}/external/pico_sdk_import.cmake)
 project(mzpico C CXX ASM)
@@ -13,12 +25,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
 set(PICO_BOARD_HEADER_DIRS ${CMAKE_SOURCE_DIR})
-set(PICO_BOARD board)
 set(GEN_MZF_SCRIPT ${SCRIPTS_ROOT}/gen_mzf_array.py)
-set(BOARD "FRUGAL" CACHE STRING "Select the board type (FRUGAL, DELUXE)")
-set_property(CACHE BOARD PROPERTY STRINGS FRUGAL DELUXE)
-set(FLASH_SIZE "2M" CACHE STRING "Flash size (use 2M or 16M)")
-set_property(CACHE FLASH_SIZE PROPERTY STRINGS 2M 16M)
 
 if(FLASH_SIZE STREQUAL "2M")
     set(FLASH_SIZE_BYTES 2097152)
@@ -30,6 +37,7 @@ endif()
 
 message(STATUS "Board type: ${BOARD}")
 message(STATUS "Flash size selected: ${FLASH_SIZE}")
+message(STATUS "Pico W WiFi support: ${USE_PICO_W}")
 
 add_subdirectory(${EXTERNAL_ROOT}/manager)
 
@@ -76,6 +84,9 @@ string(TOLOWER ${BOARD} BOARD_L)
 string(TOLOWER ${FLASH_SIZE} FLASH_L)
 
 set(_MZPICO_OUT "mzpico_${BOARD_L}_${FLASH_L}")
+if(USE_PICO_W)
+    set(_MZPICO_OUT "${_MZPICO_OUT}_w")
+endif()
 if(VERSION_TAG)
     set(_MZPICO_OUT "${_MZPICO_OUT}_${VERSION_TAG}")
 endif()
@@ -97,6 +108,8 @@ target_sources(mzpico PUBLIC
     ${SRC_ROOT}/main.cpp
     ${SRC_ROOT}/device.cpp
     ${SRC_ROOT}/file.cpp
+    ${SRC_ROOT}/cloud_fs.cpp
+    ${SRC_ROOT}/http_utils.c
     ${SRC_ROOT}/config.cpp
     ${SRC_ROOT}/mz_devices.cpp
     ${SRC_ROOT}/mz_devices/qd.cpp
@@ -120,6 +133,7 @@ target_include_directories(mzpico PUBLIC
     ${SRC_ROOT}
     ${SRC_ROOT}/byte_source
     ${SRC_ROOT}/mz_devices
+    ${SRC_ROOT}
     ${EXTERNAL_ROOT}/iniparser/src
     ${EXTERNAL_ROOT}/fatfs-sdk/src/ff15/source/
 )
@@ -130,9 +144,17 @@ target_link_libraries(mzpico
     hardware_pio
     hardware_irq
     hardware_flash
+    pico_multicore
     tinyusb_device
     no-OS-FatFS-SD-SDIO-SPI-RPi-Pico
 )
+
+
+if(USE_PICO_W)
+    # Polling architecture (we will poll on core1)
+    target_link_libraries(mzpico pico_cyw43_arch_lwip_poll pico_lwip_http)
+    target_compile_definitions(mzpico PRIVATE USE_PICO_W PICO_CYW43_ARCH_POLL)
+endif()
 
 set_source_files_properties(
     ${EXTERNAL_ROOT}/fatfs-sdk/src/src/glue.c
@@ -181,6 +203,7 @@ endif()
 target_link_libraries(mzpico_format
     pico_stdlib
     hardware_flash
+    pico_multicore
     tinyusb_device
     no-OS-FatFS-SD-SDIO-SPI-RPi-Pico
 )

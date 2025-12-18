@@ -2,6 +2,7 @@
 #include "file.hpp"
 #include "bus.hpp"
 #include "config.hpp"
+#include "cloud_fs.hpp"
 #include <string.h>
 
 REGISTER_MZ_DEVICE(PicoMgr)
@@ -125,6 +126,14 @@ int PicoMgr::writeControl(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
             mgr->resetContent();
             ret = getConfig(sectionName, mgr);
             setResponse(ret);
+            break;
+        }
+        case REPO_CMD_GET_WIFI_STATUS: {
+            mgr->idx = 0;
+            mgr->resetContent();
+            uint8_t status = static_cast<uint8_t>(cloud_wifi_state());
+            mgr->addRaw(&status, 1);
+            setResponse(0);
             break;
         }
         default:

@@ -7,6 +7,8 @@
 
 extern FDCDevice *fdc;
 extern QDDevice *qd;
+extern volatile bool shutting_down;
+
 
 void device_main(void);
 void blink(uint8_t i);

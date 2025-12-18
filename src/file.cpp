@@ -15,6 +15,9 @@
 
 #define FLASH_ID "flash"
 #define SD_ID "sd"
+#ifdef USE_PICO_W
+#define CLOUD_ID "cloud"
+#endif
 
 uint8_t device_count;
 DEV_ENTRY devices[MAX_DEVICES];
@@ -57,7 +60,9 @@ int mount_devices(void) {
   }
   if (f_mount(&fatfs_flash, FLASH_ID":", 1) != FR_OK)
     return 1;
-  strcpy(devices[device_count++].name, FLASH_ID);
+  {
+    strcpy(devices[device_count++].name, FLASH_ID);
+  }
   return 0;
 }
 
@@ -86,6 +91,12 @@ int entry_compare(const void* p1, const void* p2) {
 }
 
 int read_directory(const char *path, PicoMgr *mgr) {
+  // Cloud prefix handling (virtual filesystem served over WiFi/HTTPS)
+#ifdef USE_PICO_W
+  if (strncmp(path, "cloud:/", 7) == 0 || strncmp(path, "cloud:", 6) == 0) {
+    return cloud_read_directory(path, mgr);
+  }
+#endif
   FILINFO fno;
   int ret = 0;
   uint16_t num_dir_entries = 0;
@@ -162,6 +173,12 @@ void get_uppercase_extension(const char* filename, char* extension) {
 }
 
 int mount_file(const char *path, PicoMgr *mgr) {
+  // Cloud file fetch handling
+#ifdef USE_PICO_W
+  if (strncmp(path, "cloud:/", 7) == 0 || strncmp(path, "cloud:", 6) == 0) {
+    return cloud_mount_file(path, mgr);
+  }
+#endif
   UINT br;
   uint16_t len;
   char extension[16];
@@ -211,7 +228,23 @@ int mount_file(const char *path, PicoMgr *mgr) {
 }
 
 int get_device_list(PicoMgr *mgr) {
-  for (uint8_t i = 0; i < device_count; i++)
+  for (uint8_t i = 0; i < device_count; i++) {
     mgr->addRaw((uint8_t *)devices[i].name, MAX_DEV_NAME_LENGTH);
+  }
   return 0;
 }
+
+#ifdef USE_PICO_W
+void cloud_add_device(std::string new_device) {
+  // Prevent duplicate insertion
+  for (uint8_t i = 0; i < device_count; ++i) {
+    if (strncmp(devices[i].name, new_device.c_str(), MAX_DEV_NAME_LENGTH) == 0)
+      return;
+  }
+  if (device_count < MAX_DEVICES) {
+    strncpy(devices[device_count].name, new_device.c_str(), MAX_DEV_NAME_LENGTH);
+    devices[device_count].name[MAX_DEV_NAME_LENGTH - 1] = '\0';
+    device_count++;
+  }
+}
+#endif

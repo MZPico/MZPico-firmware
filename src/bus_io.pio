@@ -60,7 +60,7 @@ wait_iorq_high:
 .wrap_target
 start:
     wait 1 gpio 19
-    set x, 2
+    set x, 30
 hold_high:
     jmp pin, still_high
     jmp start

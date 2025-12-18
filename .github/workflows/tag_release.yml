@@ -40,7 +40,7 @@ jobs:
 
       - name: Run CMake
         run: |
-          cmake .. -DFLASH_SIZE=16M -DBOARD=FRUGAL -DVERSION=$VERSION
+          cmake .. -DFLASH_SIZE=16M -DBOARD=FRUGAL -DUSE_PICO_W=OFF -DVERSION=$VERSION
         working-directory: build
 
       - name: Build with make
@@ -50,7 +50,7 @@ jobs:
 
       - name: Run CMake
         run: |
-          cmake .. -DFLASH_SIZE=2M -DBOARD=FRUGAL -DVERSION=$VERSION
+          cmake .. -DFLASH_SIZE=2M -DBOARD=FRUGAL -DUSE_PICO_W=OFF -DVERSION=$VERSION
         working-directory: build
 
       - name: Build with make
@@ -60,7 +60,27 @@ jobs:
 
       - name: Run CMake
         run: |
-          cmake .. -DFLASH_SIZE=2M -DBOARD=DELUXE -DVERSION=$VERSION
+          cmake .. -DFLASH_SIZE=2M -DBOARD=FRUGAL -DUSE_PICO_W=ON -DVERSION=$VERSION
+        working-directory: build
+
+      - name: Build with make
+        run: |
+          make
+        working-directory: build
+
+      - name: Run CMake
+        run: |
+          cmake .. -DFLASH_SIZE=2M -DBOARD=DELUXE -DUSE_PICO_W=OFF -DVERSION=$VERSION
+        working-directory: build
+
+      - name: Build with make
+        run: |
+          make
+        working-directory: build
+
+      - name: Run CMake
+        run: |
+          cmake .. -DFLASH_SIZE=2M -DBOARD=DELUXE -DUSE_PICO_W=ON -DVERSION=$VERSION
         working-directory: build
 
       - name: Build with make

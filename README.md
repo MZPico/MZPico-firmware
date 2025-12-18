@@ -58,6 +58,12 @@ Related hardware:
   - Uses Pico USB mass-storage upload (no special programmer required)
   - Flash and MicroSD contents remain untouched when updating firmware
 
+- **WiFi and cloud storage support** *(Requires Raspberry Pi Pico W)*
+  - Connect to WiFi networks
+  - Browse and load files from cloud storage
+  - Access cloud files as a virtual device `cloud:/`
+  - Simple WiFi credential configuration via INI file
+
 ---
 
 ## Getting Started
@@ -67,11 +73,15 @@ Related hardware:
 
 2. Choose the correct firmware file:
 
-| Board Type | Pico Flash Size | Firmware File |
-|------------|----------------|---------------|
-| Frugal Board | 2MB (original Pico) | `mzpico_frugal_2m.uf2` |
-| Frugal Board | 16MB (purple Pico clone) | `mzpico_frugal_16m.uf2` |
-| Deluxe Board | 2MB (original Pico) | `mzpico_deluxe_2m.uf2` |
+| Board Type | Pico Model | Flash Size | Firmware File |
+|------------|------------|------------|---------------|
+| Frugal Board | Pico | 2MB | `mzpico_frugal_2m.uf2` |
+| Frugal Board | Pico W (WiFi) | 2MB | `mzpico_frugal_2m_w.uf2` |
+| Frugal Board | Purple Pico clone | 16MB | `mzpico_frugal_16m.uf2` |
+| Deluxe Board | Pico | 2MB | `mzpico_deluxe_2m.uf2` |
+| Deluxe Board | Pico W (WiFi) | 2MB | `mzpico_deluxe_2m_w.uf2` |
+
+> 💡 **Note:** Use the `*_w.uf2` variants when using a Raspberry Pi Pico W to enable WiFi and cloud features.
 
 3. Hold **BOOTSEL** on the Pico and connect to USB.
 4. Copy the `.uf2` file to the Pico drive.
@@ -172,6 +182,10 @@ image=@menu
 
 [qd]
 image=flash:/qd1.mzq
+
+[cloud]
+wifi_ssid=MyWiFiNetwork
+wifi_password=MyPassword
 ```
 
 ### Notes
@@ -179,6 +193,43 @@ image=flash:/qd1.mzq
 - Any device can be disabled using `enabled=false`
 - Configuring multiple devices is supported, as long as each has non-conflicting ports
 - If a section does **not** exist in the `.ini` file, it will be disabled
+
+---
+
+## WiFi and Cloud Support
+
+MZPico supports **WiFi connectivity** and **cloud file storage** when using a **Raspberry Pi Pico W** board.
+
+### Requirements
+
+- **Raspberry Pi Pico W** (the wireless variant with built-in WiFi)
+- WiFi network with internet access
+- Valid WiFi credentials
+
+### Setup
+
+Add a `[cloud]` section to your `mzpico.ini` configuration file with your WiFi credentials:
+
+```ini
+[cloud]
+wifi_ssid=YourWiFiNetworkName
+wifi_password=YourWiFiPassword
+```
+
+### Usage
+
+1. Configure WiFi credentials in `mzpico.ini` as shown above
+2. Power on your MZ-800 with the MZPico board
+3. MZPico will automatically connect to WiFi on startup
+4. A new storage device **`cloud:/`** becomes available
+5. Use the file explorer or load programs directly from `cloud:/`
+
+### Features
+
+- Browse cloud-hosted MZ-800 software collection
+- Load `.MZF` files directly from the cloud
+- No local storage required for cloud files
+- Automatic connection on startup
 
 ---
 
