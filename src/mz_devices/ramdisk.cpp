@@ -56,12 +56,12 @@ int RamDisk::readConfig(dictionary *ini) {
     if (!size)
         size = RAMDISK_DEFAULT_SIZE;
     if (!image.empty()) {
-        ByteSourceFactory::from_file(image.c_str(), size, 128, false, bs, false);
+        ByteSourceFactory::from_file(image.c_str(), size, 128, /* wrap= */ false, bs, /* auto_increment= */ false);
     } else {
         data = (uint8_t *)malloc(size);
         if (!data)
             return 1;
-        ByteSourceFactory::from_ram(data, size, bs, false);
+        ByteSourceFactory::from_ram(data, size, bs, /* auto_increment= */ false);
     }
     return 0;
 }
@@ -106,8 +106,6 @@ RAM_FUNC int RamDisk::writeData(MZDevice* self, uint8_t port, uint8_t dt, uint8_
     int ret;
     if (!disk->readOnly)
         ret = disk->bs->setByte(dt);
-    else
-        ret = disk->bs->next();
     
     // Increment with 64K page wrapping
     disk->pos_++;
