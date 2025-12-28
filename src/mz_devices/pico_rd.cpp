@@ -25,13 +25,31 @@ PicoRD::PicoRD()
     writeMappings[PICO_RD_ADDRS_PORT_INDEX].fn = PicoRD::writeAddrs;
     writeMappings[PICO_RD_ADDRI_PORT_INDEX].fn = PicoRD::writeAddri;
 
-    readPortCount = PICO_RD_READ_PORT_COUNT;
-    writePortCount = PICO_RD_WRITE_PORT_COUNT;
+    // Initialize port mappings with defaults
+    auto readPorts = getReadPorts();
+    auto writePorts = getWritePorts();
+    initializePortMappings(readPorts, writePorts);
 
     readOnly = false;
     bs = nullptr;
     size = 0;
     data = nullptr;
+}
+
+std::vector<uint8_t> PicoRD::getReadPorts() const {
+    std::vector<uint8_t> ports;
+    for (uint8_t i = 0; i < PICO_RD_READ_PORT_COUNT; ++i) {
+        ports.push_back(PICO_RD_DEFAULT_BASE_PORT + i);
+    }
+    return ports;
+}
+
+std::vector<uint8_t> PicoRD::getWritePorts() const {
+    std::vector<uint8_t> ports;
+    for (uint8_t i = 0; i < PICO_RD_WRITE_PORT_COUNT; ++i) {
+        ports.push_back(PICO_RD_DEFAULT_BASE_PORT + i);
+    }
+    return ports;
 }
 
 int PicoRD::init() {

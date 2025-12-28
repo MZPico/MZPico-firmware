@@ -20,7 +20,8 @@ public:
     int init() override;
     int isInterrupt() override { return 0; }
     bool needsExwait() const override { return CTC_EXWAIT; }
-    uint8_t getDefaultBasePort() const override { return CTC_PORT_BASE; }
+    std::vector<uint8_t> getReadPorts() const override;
+    std::vector<uint8_t> getWritePorts() const override;
     int readConfig(dictionary *ini) override;
     int flush() override { return 0; }
     static std::string getDevType() { return CTC_ID; }

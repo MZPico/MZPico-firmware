@@ -1,24 +1,38 @@
 #include "mz_devices.hpp"
 #include "device.hpp"
 
-void MZDevice::setPorts() {
-    for (int i = 0; i < readPortCount; i++)
-        readMappings[i].port  = basePort + i;
-    for (int i = 0; i < writePortCount; i++)
-        writeMappings[i].port  = basePort + i;
+// Default implementation: create consecutive ports from basePort
+std::pair<std::vector<uint8_t>, std::vector<uint8_t>> MZDevice::applyBasePort(uint8_t basePort) const {
+    std::vector<uint8_t> readPorts;
+    std::vector<uint8_t> writePorts;
+    
+    auto defaultReads = getReadPorts();
+    auto defaultWrites = getWritePorts();
+    
+    for (size_t i = 0; i < defaultReads.size(); ++i) {
+        readPorts.push_back(basePort + i);
+    }
+    for (size_t i = 0; i < defaultWrites.size(); ++i) {
+        writePorts.push_back(basePort + i);
+    }
+    
+    return {readPorts, writePorts};
 }
 
-void MZDevice::setPortsList(const std::vector<uint8_t>& readPorts,
-                            const std::vector<uint8_t>& writePorts) {
-    if (!readPorts.empty()) {
-        for (uint8_t i = 0; i < readPortCount && i < readPorts.size(); ++i) {
-            readMappings[i].port = readPorts[i];
-        }
+void MZDevice::initializePortMappings(const std::vector<uint8_t>& readPorts,
+                                      const std::vector<uint8_t>& writePorts) {
+    // Initialize read port mappings
+    readPortCount = readPorts.size();
+    if (readPortCount > MAX_DEVICE_PORTS) readPortCount = MAX_DEVICE_PORTS;
+    for (uint8_t i = 0; i < readPortCount; ++i) {
+        readMappings[i].port = readPorts[i];
     }
-    if (!writePorts.empty()) {
-        for (uint8_t i = 0; i < writePortCount && i < writePorts.size(); ++i) {
-            writeMappings[i].port = writePorts[i];
-        }
+    
+    // Initialize write port mappings
+    writePortCount = writePorts.size();
+    if (writePortCount > MAX_DEVICE_PORTS) writePortCount = MAX_DEVICE_PORTS;
+    for (uint8_t i = 0; i < writePortCount; ++i) {
+        writeMappings[i].port = writePorts[i];
     }
 }
 
@@ -31,35 +45,121 @@ bool MZDeviceManager::isRegistered(std::string devID) {
 }
 
 void MZDeviceManager::listenPorts(MZDevice* dev) {
+    // Register read listeners
     for (uint8_t i = 0; i < dev->getReadCount(); i++) {
         uint8_t port = dev->getReadMappings()[i].port;
-        readPortMap[port] = dev;
-        readFunctions[port] = dev->getReadMappings()[i].fn;
-        needsExwaitMap[port] = dev->needsExwait();
+        auto &L = readListeners[port];
+        if (L.count < MAX_DEVICES_PER_PORT) {
+            L.devs[L.count] = dev;
+            L.fns[L.count] = dev->getReadMappings()[i].fn;
+            L.count++;
+            if (dev->needsExwait()) L.needsExwaitAny = true;
+        }
     }
-
+    // Register write listeners
     for (uint8_t i = 0; i < dev->getWriteCount(); i++) {
         uint8_t port = dev->getWriteMappings()[i].port;
-        writePortMap[port] = dev;
-        writeFunctions[port] = dev->getWriteMappings()[i].fn;
-        needsExwaitMap[port] = dev->needsExwait();
+        auto &L = writeListeners[port];
+        if (L.count < MAX_DEVICES_PER_PORT) {
+            L.devs[L.count] = dev;
+            L.fns[L.count] = dev->getWriteMappings()[i].fn;
+            L.count++;
+            if (dev->needsExwait()) L.needsExwaitAny = true;
+        }
     }
 }
 
 void MZDeviceManager::unListenPorts(MZDevice* dev) {
+    // Remove from read listeners
     for (uint8_t i = 0; i < dev->getReadCount(); i++) {
         uint8_t port = dev->getReadMappings()[i].port;
-        readPortMap[port] = NULL;
-        readFunctions[port] = NULL;
-        needsExwaitMap[port] = false;
+        auto &L = readListeners[port];
+        for (uint8_t j = 0; j < L.count; ++j) {
+            if (L.devs[j] == dev) {
+                // Compact arrays
+                for (uint8_t k = j + 1; k < L.count; ++k) {
+                    L.devs[k-1] = L.devs[k];
+                    L.fns[k-1]  = L.fns[k];
+                }
+                L.devs[L.count-1] = nullptr;
+                L.fns[L.count-1]  = nullptr;
+                L.count--;
+                break;
+            }
+        }
+        recomputeExwait(port);
     }
-
+    // Remove from write listeners
     for (uint8_t i = 0; i < dev->getWriteCount(); i++) {
         uint8_t port = dev->getWriteMappings()[i].port;
-        writePortMap[port] = NULL;
-        writeFunctions[port] = NULL;
-        needsExwaitMap[port] = false;
+        auto &L = writeListeners[port];
+        for (uint8_t j = 0; j < L.count; ++j) {
+            if (L.devs[j] == dev) {
+                for (uint8_t k = j + 1; k < L.count; ++k) {
+                    L.devs[k-1] = L.devs[k];
+                    L.fns[k-1]  = L.fns[k];
+                }
+                L.devs[L.count-1] = nullptr;
+                L.fns[L.count-1]  = nullptr;
+                L.count--;
+                break;
+            }
+        }
+        recomputeExwait(port);
     }
+}
+
+void MZDeviceManager::recomputeExwait(uint8_t port) {
+    bool any = false;
+    auto &RL = readListeners[port];
+    for (uint8_t i = 0; i < RL.count; ++i) {
+        if (RL.devs[i] && RL.devs[i]->needsExwait()) { any = true; break; }
+    }
+    RL.needsExwaitAny = any;
+
+    any = false;
+    auto &WL = writeListeners[port];
+    for (uint8_t i = 0; i < WL.count; ++i) {
+        if (WL.devs[i] && WL.devs[i]->needsExwait()) { any = true; break; }
+    }
+    WL.needsExwaitAny = any;
+}
+
+RAM_FUNC bool MZDeviceManager::handleRead(uint8_t port, uint8_t* dt, uint8_t high_addr) {
+    auto &L = readListeners[port];
+    if (L.count == 0) return false;
+
+    bool wantsInterrupt = false;
+
+    // Execute read on all registered devices to allow side effects.
+    // The first device's returned value is used for the bus; others use a temporary.
+    for (uint8_t i = 0; i < L.count; ++i) {
+        if (!L.fns[i]) continue;
+        if (i == 0) {
+            L.fns[i](L.devs[i], port, dt, high_addr);
+        } else {
+            uint8_t tmp = 0;
+            L.fns[i](L.devs[i], port, &tmp, high_addr);
+        }
+        if (L.devs[i] && L.devs[i]->isInterrupt()) wantsInterrupt = true;
+    }
+
+    return wantsInterrupt;
+}
+
+RAM_FUNC bool MZDeviceManager::handleWrite(uint8_t port, uint8_t dt, uint8_t high_addr) {
+    auto &L = writeListeners[port];
+    if (L.count == 0) return false;
+
+    bool wantsInterrupt = false;
+    // Broadcast and aggregate interrupt in a single pass
+    for (uint8_t i = 0; i < L.count; ++i) {
+        if (L.fns[i]) {
+            L.fns[i](L.devs[i], port, dt, high_addr);
+        }
+        if (L.devs[i] && L.devs[i]->isInterrupt()) wantsInterrupt = true;
+    }
+    return wantsInterrupt;
 }
 
 MZDevice* MZDeviceManager::createDevice(const std::string& devType, const std::string& id) {
@@ -109,22 +209,6 @@ int MZDeviceManager::disableDevice(MZDevice* dev) {
     return 0;
 }
 
-int MZDeviceManager::setBasePort(MZDevice* dev, uint8_t basePort) {
-    if (!dev)
-        return 1;
-    if (!basePort)
-        return 1;
-    if (!isRegistered(dev->getDevID()))
-        return E_DEVICE_NOT_REGISTERED;
-    if (dev->isEnabled())
-        unListenPorts(dev);
-    dev->setBasePort(basePort);
-    dev->setPorts();
-    if (dev->isEnabled())
-        listenPorts(dev);
-    return 0;
-}
-
 int MZDeviceManager::setPortsList(MZDevice* dev,
                                   const std::vector<uint8_t>& readPorts,
                                   const std::vector<uint8_t>& writePorts) {
@@ -133,17 +217,17 @@ int MZDeviceManager::setPortsList(MZDevice* dev,
     if (!isRegistered(dev->getDevID()))
         return E_DEVICE_NOT_REGISTERED;
 
-    // Validate counts to keep device contract consistent
-    if (!readPorts.empty() && readPorts.size() != dev->getReadCount())
-        return E_PORT_ALLOCATED; // reuse code for invalid mapping
-    if (!writePorts.empty() && writePorts.size() != dev->getWriteCount())
+    // Validate counts match device capability
+    if (readPorts.size() != dev->getReadCount())
+        return E_PORT_ALLOCATED;
+    if (writePorts.size() != dev->getWriteCount())
         return E_PORT_ALLOCATED;
 
     if (dev->isEnabled())
         unListenPorts(dev);
 
-    // Assign ports explicitly if provided; otherwise leave as-is
-    dev->setPortsList(readPorts, writePorts);
+    // Initialize port mappings with provided lists
+    dev->initializePortMappings(readPorts, writePorts);
 
     if (dev->isEnabled())
         listenPorts(dev);

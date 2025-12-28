@@ -33,7 +33,8 @@ public:
     uint8_t *allocateRaw(uint16_t sz);
     int  isInterrupt() override { return 0; }
     bool needsExwait() const override { return PICO_MGR_EXWAIT; }
-    uint8_t getDefaultBasePort() const override { return PICO_MGR_DEFAULT_BASE_PORT; }
+    std::vector<uint8_t> getReadPorts() const override;
+    std::vector<uint8_t> getWritePorts() const override;
     static std::string getDevType() { return PICO_MGR_ID; }
     int readConfig(dictionary *ini) override;
     int flush() override { return 0; }

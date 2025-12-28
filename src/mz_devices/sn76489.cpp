@@ -17,9 +17,12 @@ const int16_t SN76489Device::volumeTable[16] = {
 
 SN76489Device::SN76489Device() {
     writeMappings[0].fn = SN76489Device::writeData;
-    readPortCount = 0;
-    writePortCount = 1;
-    
+
+    // Initialize port mappings with defaults
+    auto readPorts = getReadPorts();
+    auto writePorts = getWritePorts();
+    initializePortMappings(readPorts, writePorts);
+
     for (int i = 0; i < 3; i++) {
         toneChannels[i].frequency = 0;
         toneChannels[i].counter = 0x400;
@@ -58,6 +61,14 @@ SN76489Device::~SN76489Device() {
 
 int SN76489Device::init() {
     return i2s_audio_register_source(this);
+}
+
+std::vector<uint8_t> SN76489Device::getReadPorts() const {
+    return {};
+}
+
+std::vector<uint8_t> SN76489Device::getWritePorts() const {
+    return {SN76489_PORT};
 }
 
 int SN76489Device::readConfig(dictionary *ini) {

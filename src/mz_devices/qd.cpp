@@ -11,17 +11,35 @@ REGISTER_MZ_DEVICE(QDDevice)
 // -------------------------------- Lifecycle --------------------------------
 
 QDDevice::QDDevice() {
-    readPortCount = QD_PORTS;
-    writePortCount = QD_PORTS;
-
-    for (int i = 0; i < readPortCount; i++)
+    for (int i = 0; i < QD_PORTS; i++)
         readMappings[i].fn  = QDDevice::readByte;
-    for (int i = 0; i < writePortCount; i++)
+    for (int i = 0; i < QD_PORTS; i++)
         writeMappings[i].fn  = QDDevice::writeByte;
+    
+    // Initialize port mappings with defaults
+    auto readPorts = getReadPorts();
+    auto writePorts = getWritePorts();
+    initializePortMappings(readPorts, writePorts);
     bs = nullptr;
 }
 
 QDDevice::~QDDevice() { close(); }
+
+std::vector<uint8_t> QDDevice::getReadPorts() const {
+    std::vector<uint8_t> ports;
+    for (uint8_t i = 0; i < QD_PORTS; ++i) {
+        ports.push_back(QD_DEFAULT_BASE_PORT + i);
+    }
+    return ports;
+}
+
+std::vector<uint8_t> QDDevice::getWritePorts() const {
+    std::vector<uint8_t> ports;
+    for (uint8_t i = 0; i < QD_PORTS; ++i) {
+        ports.push_back(QD_DEFAULT_BASE_PORT + i);
+    }
+    return ports;
+}
 
 int QDDevice::init() {
 
