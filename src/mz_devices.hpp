@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <map>
+#include <vector>
 
 #include "iniparser.h"
 
@@ -63,6 +64,8 @@ public:
     void setBasePort(uint8_t newBasePort) { basePort = newBasePort; }
     uint8_t getBasePort() { return basePort; }
     void setPorts();
+    void setPortsList(const std::vector<uint8_t>& readPorts,
+                      const std::vector<uint8_t>& writePorts);
 
 protected:
     ReadPortMapping readMappings[MAX_DEVICE_PORTS];
@@ -87,6 +90,10 @@ public:
     static int disableDevice(MZDevice* dev);
     static int enableDevice(MZDevice* dev);
     static int setBasePort(MZDevice* dev, uint8_t basePort);
+    // Alternate mapping: explicitly set lists of ports for read/write
+    static int setPortsList(MZDevice* dev,
+                            const std::vector<uint8_t>& readPorts,
+                            const std::vector<uint8_t>& writePorts);
 
     static inline MZDevice* getReadDevice(uint8_t port) {
         return readPortMap[port];
