@@ -34,6 +34,7 @@ private:
     uint8_t* data;
     bool readOnly;
     uint32_t size;
+    uint32_t pos_;
     int loadMzf(const uint8_t* src, size_t src_size, bool in_ram);
     std::unique_ptr<ByteSource> bs;
 };

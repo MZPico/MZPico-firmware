@@ -3,27 +3,16 @@
 #include <string>
 #include <algorithm>
 
-
-RamSource::RamSource(std::uint8_t *data, std::uint32_t size)
+// Template definitions
+template<bool AUTO_INCREMENT>
+RamSourceImpl<AUTO_INCREMENT>::RamSourceImpl(std::uint8_t *data, std::uint32_t size)
 : base_(data), size_(size) {
     pos_ = 0;
 }
 
-int RamSource::getByte(std::uint8_t &out) {
-    out = base_[pos_++];
-    if (pos_ >= size_)
-        pos_ = 0;
-    return 0;
-}
-
-int RamSource::setByte(std::uint8_t in) {
-    base_[pos_++] = in;
-    if (pos_ >= size_)
-        pos_ = 0;
-    return 0;
-}
-
-int RamSource::get(std::uint8_t *out, std::uint32_t size, std::uint32_t &read) {
+// Unified get() - works for both AUTO_INCREMENT states
+template<bool AUTO_INCREMENT>
+RAM_FUNC int RamSourceImpl<AUTO_INCREMENT>::get(std::uint8_t *out, std::uint32_t size, std::uint32_t &read) {
     read = 0;
     std::uint32_t remaining = size;
 
@@ -33,9 +22,11 @@ int RamSource::get(std::uint8_t *out, std::uint32_t size, std::uint32_t &read) {
 
         std::copy(base_ + pos_, base_ + pos_ + chunk, out + read);
 
-        pos_ += chunk;
-        if (pos_ >= size_)
-            pos_ = 0;
+        if constexpr (AUTO_INCREMENT) {
+            pos_ += chunk;
+            if (pos_ >= size_)
+                pos_ = 0;
+        }
 
         read += chunk;
         remaining -= chunk;
@@ -44,7 +35,9 @@ int RamSource::get(std::uint8_t *out, std::uint32_t size, std::uint32_t &read) {
     return 0;
 }
 
-int RamSource::set(const std::uint8_t *in, std::uint32_t size, std::uint32_t &written) {
+// Unified set() - works for both AUTO_INCREMENT states
+template<bool AUTO_INCREMENT>
+RAM_FUNC int RamSourceImpl<AUTO_INCREMENT>::set(const std::uint8_t *in, std::uint32_t size, std::uint32_t &written) {
     written = 0;
     std::uint32_t remaining = size;
 
@@ -54,9 +47,11 @@ int RamSource::set(const std::uint8_t *in, std::uint32_t size, std::uint32_t &wr
 
         std::copy(in + written, in + written + chunk, base_ + pos_);
 
-        pos_ += chunk;
-        if (pos_ >= size_)
-            pos_ = 0;
+        if constexpr (AUTO_INCREMENT) {
+            pos_ += chunk;
+            if (pos_ >= size_)
+                pos_ = 0;
+        }
 
         written += chunk;
         remaining -= chunk;
@@ -65,15 +60,56 @@ int RamSource::set(const std::uint8_t *in, std::uint32_t size, std::uint32_t &wr
     return 0;
 }
 
-int RamSource::seek(std::uint32_t new_pos) {
-    if (new_pos >= size_) return -1;
-    pos_ = new_pos;
+// Unified seek() - works for both specializations
+template<bool AUTO_INCREMENT>
+RAM_FUNC int RamSourceImpl<AUTO_INCREMENT>::seek(std::uint32_t new_pos) {
+    pos_ = new_pos % size_;
     return 0;
 }
 
-int RamSource::next() {
+// Unified next() - works for both specializations
+template<bool AUTO_INCREMENT>
+RAM_FUNC int RamSourceImpl<AUTO_INCREMENT>::next() {
     pos_++;
     if (pos_ >= size_)
         pos_ = 0;
     return 0;
 }
+
+// AUTO_INCREMENT=true: getByte auto-increments
+template<>
+RAM_FUNC int RamSourceImpl<true>::getByte(std::uint8_t &out) {
+    out = base_[pos_++];
+    if (pos_ >= size_)
+        pos_ = 0;
+    return 0;
+}
+
+// AUTO_INCREMENT=false: getByte does not auto-increment
+template<>
+RAM_FUNC int RamSourceImpl<false>::getByte(std::uint8_t &out) {
+    out = base_[pos_];
+    return 0;
+}
+
+// AUTO_INCREMENT=true: setByte auto-increments
+template<>
+RAM_FUNC int RamSourceImpl<true>::setByte(std::uint8_t in) {
+    base_[pos_++] = in;
+    if (pos_ >= size_)
+        pos_ = 0;
+    return 0;
+}
+
+// AUTO_INCREMENT=false: setByte does not auto-increment
+template<>
+RAM_FUNC int RamSourceImpl<false>::setByte(std::uint8_t in) {
+    base_[pos_] = in;
+    return 0;
+}
+
+// Explicit template instantiations
+template class RamSourceImpl<true>;
+template class RamSourceImpl<false>;
+
+

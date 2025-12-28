@@ -7,8 +7,9 @@
 FileSource::FileSource(const std::string& path, 
                        std::uint32_t size, 
                        std::uint32_t cache_size,
-                       bool wrap)
-    : CachedSource(this, &FileSource::fetch, &FileSource::store, size, cache_size, wrap)
+                       bool wrap,
+                       bool auto_increment)
+    : CachedSource(this, &FileSource::fetch, &FileSource::store, size, cache_size, wrap, auto_increment)
 {
     FRESULT fr;
     FILINFO finfo;

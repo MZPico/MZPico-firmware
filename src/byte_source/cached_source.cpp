@@ -6,7 +6,8 @@
 CachedSource::CachedSource(void* ctx, FetchFunc f, StoreFunc s, 
                            std::uint32_t storage_size,
                            std::uint32_t cache_size,
-                           bool wrap)
+                           bool wrap,
+                           bool auto_increment)
     : ctx_(ctx),
       fetch_(f),
       store_(s),
@@ -16,7 +17,8 @@ CachedSource::CachedSource(void* ctx, FetchFunc f, StoreFunc s,
       cache_valid_(0),
       cache_dirty_(false),
       storage_size_(storage_size),
-      wrap_(wrap)
+      wrap_(wrap),
+      auto_increment_(auto_increment)
 {
     if (cache_size_ > 0) {
         cache_ = new std::uint8_t[cache_size_];
@@ -121,10 +123,13 @@ int CachedSource::getByte(std::uint8_t &out) {
     std::uint32_t offset = pos_ - cache_start_;
     out = cache_[offset];
 
-    if (wrap_)
-        pos_ = (pos_ + 1) % storage_size_;
-    else
-        pos_++;
+    if (auto_increment_) {
+        if (wrap_) {
+            pos_ = (pos_ + 1) % storage_size_;
+        } else {
+            pos_++;
+        }
+    }
 
     return 0;
 }
@@ -150,10 +155,13 @@ int CachedSource::setByte(std::uint8_t in) {
     if (offset + 1 > cache_valid_)
         cache_valid_ = offset + 1;
 
-    if (wrap_)
-        pos_ = (pos_ + 1) % storage_size_;
-    else
-        pos_++;
+    if (auto_increment_) {
+        if (wrap_) {
+            pos_ = (pos_ + 1) % storage_size_;
+        } else {
+            pos_++;
+        }
+    }
 
     return 0;
 }
@@ -180,10 +188,12 @@ int CachedSource::get(std::uint8_t *out, std::uint32_t size, std::uint32_t &read
 
         std::memcpy(out, cache_ + offset, tocopy);
 
-        if (wrap_)
-            pos_ = (pos_ + tocopy) % storage_size_;
-        else
-            pos_ += tocopy;
+        if (auto_increment_) {
+            if (wrap_)
+                pos_ = (pos_ + tocopy) % storage_size_;
+            else
+                pos_ += tocopy;
+        }
 
         out += tocopy;
         size -= tocopy;
@@ -216,10 +226,12 @@ int CachedSource::set(const std::uint8_t *in, std::uint32_t size, std::uint32_t 
         if (offset + tocopy > cache_valid_)
             cache_valid_ = offset + tocopy;
 
-        if (wrap_)
-            pos_ = (pos_ + tocopy) % storage_size_;
-        else
-            pos_ += tocopy;
+        if (auto_increment_) {
+            if (wrap_)
+                pos_ = (pos_ + tocopy) % storage_size_;
+            else
+                pos_ += tocopy;
+        }
 
         in += tocopy;
         size -= tocopy;

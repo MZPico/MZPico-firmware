@@ -22,6 +22,7 @@ RamDisk::RamDisk()
     data = NULL;
     readOnly = false;
     size = 0;
+    pos_ = 0;
     bs = nullptr;
 }
 
@@ -55,12 +56,12 @@ int RamDisk::readConfig(dictionary *ini) {
     if (!size)
         size = RAMDISK_DEFAULT_SIZE;
     if (!image.empty()) {
-        ByteSourceFactory::from_file(image.c_str(), size, 128, true, bs);
+        ByteSourceFactory::from_file(image.c_str(), size, 128, false, bs, false);
     } else {
         data = (uint8_t *)malloc(size);
         if (!data)
             return 1;
-        ByteSourceFactory::from_ram(data, size, bs);
+        ByteSourceFactory::from_ram(data, size, bs, false);
     }
     return 0;
 }
@@ -70,53 +71,54 @@ int RamDisk::flush() {
 }
 
 RAM_FUNC int RamDisk::readData(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr) {
-    uint32_t next_pos = 1;
-    int ret;
     auto* disk = static_cast<RamDisk*>(self);
-
-    if (disk->bs->tell() & 0xffff == 0xffff)
-        next_pos = disk->bs->tell() & 0xffff0000;
     
-    ret = disk->bs->getByte(*dt);
-
-    if (next_pos != 1)
-        disk->bs->seek(next_pos);
+    disk->bs->seek(disk->pos_);
+    int ret = disk->bs->getByte(*dt);
+    
+    // Increment with 64K page wrapping
+    disk->pos_++;
+    if ((disk->pos_ & 0xffff) == 0)
+        disk->pos_ &= 0xffff0000;
+    
     return ret;
 }
 
 RAM_FUNC int RamDisk::resetCounter(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr) {
     auto* disk = static_cast<RamDisk*>(self);
     *dt = 0;
-    return disk->bs->seek(0);
+    disk->pos_ = 0;
+    return 0;
 }
 
 RAM_FUNC int RamDisk::writePageAddress(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr) {
     auto* disk = static_cast<RamDisk*>(self);
     dt = ((dt << 16) % disk->size) >> 16;
-    return disk->bs->seek((static_cast<uint32_t>(dt) << 16) + (disk->bs->tell() & 0xffff));
+    disk->pos_ = (static_cast<uint32_t>(dt) << 16) | (disk->pos_ & 0xffff);
+    return 0;
 }
 
 RAM_FUNC int RamDisk::writeData(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr) {
-    uint32_t next_pos = 1;
-    int ret;
     auto* disk = static_cast<RamDisk*>(self);
-
-    if (disk->bs->tell() & 0xffff == 0xffff) {
-        next_pos = disk->bs->tell() & 0xffff0000;
-    }
-
+    
+    disk->bs->seek(disk->pos_);
+    
+    int ret;
     if (!disk->readOnly)
         ret = disk->bs->setByte(dt);
     else
         ret = disk->bs->next();
-
-    if (next_pos != 1)
-        disk->bs->seek(next_pos);
-
+    
+    // Increment with 64K page wrapping
+    disk->pos_++;
+    if ((disk->pos_ & 0xffff) == 0)
+        disk->pos_ &= 0xffff0000;
+    
     return ret;
 }
 
 RAM_FUNC int RamDisk::writeAddress(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr) {
     auto* disk = static_cast<RamDisk*>(self);
-    return disk->bs->seek(disk->bs->tell() & 0xffff0000 | (static_cast<uint32_t>(high_addr) << 8) | static_cast<uint32_t>(dt));
+    disk->pos_ = (disk->pos_ & 0xffff0000) | (static_cast<uint32_t>(high_addr) << 8) | static_cast<uint32_t>(dt);
+    return 0;
 }
