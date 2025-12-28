@@ -26,7 +26,8 @@ public:
     int init() override;
     int isInterrupt() override { return 0; }
     bool needsExwait() const override { return PICO_RD_EXWAIT; }
-    uint8_t getDefaultBasePort() const override { return PICO_RD_DEFAULT_BASE_PORT; }
+    std::vector<uint8_t> getReadPorts() const override;
+    std::vector<uint8_t> getWritePorts() const override;
     static std::string getDevType() { return PICO_RD_ID; }
     int readConfig(dictionary *ini) override;
     int flush() override;

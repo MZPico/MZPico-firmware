@@ -7,6 +7,7 @@
 #include <map>
 #include <vector>
 
+#include "common.hpp"
 #include "iniparser.h"
 
 #define REGISTER_MZ_DEVICE(CLASS) \
@@ -24,6 +25,7 @@
 constexpr uint8_t MAX_MZ_DEVICES = 64;
 constexpr uint16_t MAX_PORTS = 256;
 constexpr uint8_t MAX_DEVICE_PORTS = 8;
+constexpr uint8_t MAX_DEVICES_PER_PORT = 2;
 
 constexpr uint8_t E_PORT_ALLOCATED = 255;
 constexpr uint8_t E_PORT_NOT_AVAILABLE = 254;
@@ -46,7 +48,11 @@ public:
     virtual int init() = 0;
     virtual int isInterrupt() = 0;
     virtual bool needsExwait() const = 0;
-    virtual uint8_t getDefaultBasePort() const = 0;
+    // Each device declares its port configuration
+    virtual std::vector<uint8_t> getReadPorts() const = 0;
+    virtual std::vector<uint8_t> getWritePorts() const = 0;
+    // Optionally override to customize how base_port remapping works
+    virtual std::pair<std::vector<uint8_t>, std::vector<uint8_t>> applyBasePort(uint8_t basePort) const;
     virtual int readConfig(dictionary *ini) = 0;
     virtual int flush() = 0;
 
@@ -61,18 +67,15 @@ public:
     bool isEnabled() const { return enabled; }
     void Enable() { enabled = true; }
     void Disable() { enabled = false; }
-    void setBasePort(uint8_t newBasePort) { basePort = newBasePort; }
-    uint8_t getBasePort() { return basePort; }
-    void setPorts();
-    void setPortsList(const std::vector<uint8_t>& readPorts,
-                      const std::vector<uint8_t>& writePorts);
+    // Helper to initialize port mappings from provided port lists
+    void initializePortMappings(const std::vector<uint8_t>& readPorts,
+                                const std::vector<uint8_t>& writePorts);
 
 protected:
     ReadPortMapping readMappings[MAX_DEVICE_PORTS];
     WritePortMapping writeMappings[MAX_DEVICE_PORTS];
     uint8_t readPortCount = 0;
     uint8_t writePortCount = 0;
-    uint8_t basePort;
     std::string devID;
     bool enabled = true;
 };
@@ -89,43 +92,43 @@ public:
     static void flushAll();
     static int disableDevice(MZDevice* dev);
     static int enableDevice(MZDevice* dev);
-    static int setBasePort(MZDevice* dev, uint8_t basePort);
-    // Alternate mapping: explicitly set lists of ports for read/write
+    // Configure a device with explicit port lists
     static int setPortsList(MZDevice* dev,
                             const std::vector<uint8_t>& readPorts,
                             const std::vector<uint8_t>& writePorts);
 
-    static inline MZDevice* getReadDevice(uint8_t port) {
-        return readPortMap[port];
-    }
-
-    static inline MZDevice* getWriteDevice(uint8_t port) {
-        return writePortMap[port];
-    }
-
-    static inline auto getReadFunction(uint8_t port) {
-        return readFunctions[port];
-    }
-
-    static inline auto getWriteFunction(uint8_t port) {
-        return writeFunctions[port];
-    }
-
-    static inline bool portNeedsExwait(uint8_t port) {
-        return needsExwaitMap[port];
-    }
+    // Aggregated, multi-listener helpers for fast dispatch from listen_loop
+    static inline bool portNeedsExwait(uint8_t port) { return readListeners[port].needsExwaitAny || writeListeners[port].needsExwaitAny; }
+    static inline bool hasReadListeners(uint8_t port) { return readListeners[port].count > 0; }
+    static inline bool hasWriteListeners(uint8_t port) { return writeListeners[port].count > 0; }
+    // Perform aggregated read: selects a device to provide data, and returns whether any device wants interrupt
+    static bool handleRead(uint8_t port, uint8_t* dt, uint8_t high_addr);
+    // Perform aggregated write: broadcasts to all listeners, and returns whether any device wants interrupt
+    static bool handleWrite(uint8_t port, uint8_t dt, uint8_t high_addr);
 
 private:
     static std::map<std::string, Creator>& getMap() { static std::map<std::string, Creator> creators; return creators; }
     static inline MZDevice* devices[MAX_MZ_DEVICES] = {nullptr};
-    static inline MZDevice* readPortMap[MAX_PORTS] = {nullptr};
-    static inline MZDevice* writePortMap[MAX_PORTS] = {nullptr};
     static inline uint8_t deviceCount = 0;
 
-    static inline int (*readFunctions[MAX_PORTS])(MZDevice*, uint8_t, uint8_t*, uint8_t) = {nullptr};
-    static inline int (*writeFunctions[MAX_PORTS])(MZDevice*, uint8_t, uint8_t, uint8_t) = {nullptr};
-    static inline bool needsExwaitMap[MAX_PORTS] = {false};
+    struct PortReadListeners {
+        uint8_t count;
+        MZDevice* devs[MAX_DEVICES_PER_PORT];
+        int (*fns[MAX_DEVICES_PER_PORT])(MZDevice*, uint8_t, uint8_t*, uint8_t);
+        bool needsExwaitAny;
+    };
+
+    struct PortWriteListeners {
+        uint8_t count;
+        MZDevice* devs[MAX_DEVICES_PER_PORT];
+        int (*fns[MAX_DEVICES_PER_PORT])(MZDevice*, uint8_t, uint8_t, uint8_t);
+        bool needsExwaitAny;
+    };
+
+    static inline PortReadListeners readListeners[MAX_PORTS];
+    static inline PortWriteListeners writeListeners[MAX_PORTS];
     static inline bool isRegistered(std::string devString);
     static void listenPorts(MZDevice *dev);
     static void unListenPorts(MZDevice *dev);
+    static void recomputeExwait(uint8_t port);
 };

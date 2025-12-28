@@ -16,13 +16,16 @@ public:
     int init() override;
     int isInterrupt() override { return 0; };
     bool needsExwait() const override { return RAMDISK_EXWAIT; }
-    uint8_t getDefaultBasePort() const override { return RAMDISK_DEFAULT_BASE_PORT; }
+    std::vector<uint8_t> getReadPorts() const override;
+    std::vector<uint8_t> getWritePorts() const override;
+    std::pair<std::vector<uint8_t>, std::vector<uint8_t>> applyBasePort(uint8_t basePort) const override;
     int readConfig(dictionary *ini) override;
     int flush() override;
     int setDriveContent(const std::string &content, bool in_ram);
     static std::string getDevType() { return RAMDISK_ID; }
 
     RAM_FUNC static int readData(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr);
+    RAM_FUNC static int resetCounter(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr);
     RAM_FUNC static int writePageAddress(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
     RAM_FUNC static int writeData(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
     RAM_FUNC static int writeAddress(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);

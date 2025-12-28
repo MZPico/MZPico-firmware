@@ -93,22 +93,18 @@ RAM_FUNC static void listen_loop(void) {
     while (true) {
         if (!pio_sm_is_rx_fifo_empty(pio, SM_READ)) {
             low_addr = pio_sm_get(pio, SM_READ) >> 24;
-            auto fn  = MZDeviceManager::getReadFunction(low_addr);
-
-            if (fn) {
-                MZDevice* dev = MZDeviceManager::getReadDevice(low_addr);
-
+            if (MZDeviceManager::hasReadListeners(low_addr)) {
                 if (MZDeviceManager::portNeedsExwait(low_addr)) set_exwait();
 
                 #ifdef BOARD_DELUXE
                 high_addr = pio_sm_get_blocking(pio, SM_READ) >> 24;
                 #endif
 
-                fn(dev, low_addr, &data, high_addr);
+                bool wantsInterrupt = MZDeviceManager::handleRead(low_addr, &data, high_addr);
                 acquire_data_bus_for_writing();
                 write_data_bus(data);
 
-                if (dev->isInterrupt()) set_interrupt();
+                if (wantsInterrupt) set_interrupt();
                 if (MZDeviceManager::portNeedsExwait(low_addr)) release_exwait();
                 while (!(sio_hw->gpio_in & (1u << IORQ_PIN)));
                 release_data_bus();
@@ -116,19 +112,14 @@ RAM_FUNC static void listen_loop(void) {
         }
         else if (!pio_sm_is_rx_fifo_empty(pio, SM_WRITE)) {
             low_addr = pio_sm_get(pio, SM_WRITE) >> 24;
-
-            auto fn  = MZDeviceManager::getWriteFunction(low_addr);
-
-            if (fn) {
-                MZDevice* dev = MZDeviceManager::getWriteDevice(low_addr);
-
+            if (MZDeviceManager::hasWriteListeners(low_addr)) {
                 if (MZDeviceManager::portNeedsExwait(low_addr)) set_exwait();
                 #ifdef BOARD_DELUXE
                 high_addr = pio_sm_get_blocking(pio, SM_WRITE) >> 24;
                 #endif
                 data = read_data_bus();
-                fn(dev, low_addr, data, high_addr);
-                if (dev->isInterrupt()) set_interrupt();
+                bool wantsInterrupt = MZDeviceManager::handleWrite(low_addr, data, high_addr);
+                if (wantsInterrupt) set_interrupt();
                 if (MZDeviceManager::portNeedsExwait(low_addr)) release_exwait();
             }
         }
@@ -209,6 +200,15 @@ static std::vector<uint8_t> parsePortsList(const char* s) {
     return out;
 }
 
+// Helper to create consecutive port list from base_port and count
+static std::vector<uint8_t> createConsecutivePorts(uint8_t basePort, uint8_t count) {
+    std::vector<uint8_t> ports;
+    for (uint8_t i = 0; i < count; ++i) {
+        ports.push_back(basePort + i);
+    }
+    return ports;
+}
+
 void halt(void) {
     while (true)
         tight_loop_contents();
@@ -283,26 +283,37 @@ void device_main1(void) {
             if (!enabled)
                 MZDeviceManager::disableDevice(dev);
 
-            // Allow either base_port or explicit read/write ports lists
+            // Get explicit port configuration from INI
             const char* read_ports_str  = iniparser_getstring(ini, (sectionName + ":read_ports").c_str(), "");
             const char* write_ports_str = iniparser_getstring(ini, (sectionName + ":write_ports").c_str(), "");
             auto read_ports  = parsePortsList(read_ports_str);
             auto write_ports = parsePortsList(write_ports_str);
 
-            if (!read_ports.empty() || !write_ports.empty()) {
-                // If lists are provided, both should match device-declared counts
-                int ret = MZDeviceManager::setPortsList(dev, read_ports, write_ports);
-                if (ret)
-                    halt();
-            } else {
-                uint8_t basePort = (uint8_t)iniparser_getint(ini, (sectionName + ":base_port").c_str(), dev->getDefaultBasePort());
-                MZDeviceManager::setBasePort(dev, basePort);
+            // If explicit lists not provided, try base_port shorthand
+            if (read_ports.empty() && write_ports.empty()) {
+                const char* base_port_str = iniparser_getstring(ini, (sectionName + ":base_port").c_str(), "");
+                if (base_port_str && *base_port_str) {
+                    // base_port provided: let device decide how to apply it
+                    uint8_t basePort = (uint8_t)std::strtoul(base_port_str, nullptr, 0);
+                    auto ports = dev->applyBasePort(basePort);
+                    read_ports = ports.first;
+                    write_ports = ports.second;
+                } else {
+                    // No config provided: use device defaults
+                    read_ports = dev->getReadPorts();
+                    write_ports = dev->getWritePorts();
+                }
             }
+
+            // Configure device with resolved ports
+            int ret = MZDeviceManager::setPortsList(dev, read_ports, write_ports);
+            if (ret)
+                halt();
 
             if (!enabled)
                 continue;
             dev->init();
-            int ret = dev->readConfig(ini);
+            ret = dev->readConfig(ini);
             if (ret)
                 halt();
             if (devName == "fdc")

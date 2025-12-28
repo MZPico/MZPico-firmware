@@ -20,8 +20,10 @@ PicoMgr::PicoMgr()
     writeMappings[PICO_MGR_ADDR1_PORT_INDEX].fn = PicoMgr::writeAddr1;
     writeMappings[PICO_MGR_RESET_PORT_INDEX].fn = PicoMgr::writeReset;
 
-    readPortCount = PICO_MGR_READ_PORT_COUNT;
-    writePortCount = PICO_MGR_WRITE_PORT_COUNT;
+    // Initialize port mappings with defaults
+    auto readPorts = getReadPorts();
+    auto writePorts = getWritePorts();
+    initializePortMappings(readPorts, writePorts);
     setLength(0);
 }
 
@@ -30,6 +32,22 @@ int PicoMgr::init() {
     response_command = 0;
     setLength(0);
     return 0;
+}
+
+std::vector<uint8_t> PicoMgr::getReadPorts() const {
+    std::vector<uint8_t> ports;
+    for (uint8_t i = 0; i < PICO_MGR_READ_PORT_COUNT; ++i) {
+        ports.push_back(PICO_MGR_DEFAULT_BASE_PORT + i);
+    }
+    return ports;
+}
+
+std::vector<uint8_t> PicoMgr::getWritePorts() const {
+    std::vector<uint8_t> ports;
+    for (uint8_t i = 0; i < PICO_MGR_WRITE_PORT_COUNT; ++i) {
+        ports.push_back(PICO_MGR_DEFAULT_BASE_PORT + i);
+    }
+    return ports;
 }
 
 int PicoMgr::readConfig(dictionary *ini) {

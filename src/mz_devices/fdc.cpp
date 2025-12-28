@@ -18,13 +18,15 @@ REGISTER_MZ_DEVICE(FDCDevice)
 // -------------------- Construction & registration --------------------
 
 FDCDevice::FDCDevice() {
-    readPortCount  = FDC_READ_PORTS;
-    writePortCount = FDC_WRITE_PORTS;
+    for (uint8_t i = 0; i < FDC_WRITE_PORTS; ++i)
+        writeMappings[i].fn   = FDCDevice::WriteThunk;
+    for (uint8_t i = 0; i < FDC_READ_PORTS; ++i)
+        readMappings[i].fn   = FDCDevice::ReadThunk;
 
-    for (uint8_t i = 0; i < readPortCount; ++i)
-        readMappings[i].fn  = FDCDevice::ReadThunk;
-    for (uint8_t i = 0; i < writePortCount; ++i)
-        writeMappings[i].fn = FDCDevice::WriteThunk;
+    // Initialize port mappings with defaults
+    auto readPorts = getReadPorts();
+    auto writePorts = getWritePorts();
+    initializePortMappings(readPorts, writePorts);
 }
 
 FDCDevice::~FDCDevice() {
@@ -39,6 +41,22 @@ FDCDevice::~FDCDevice() {
 
 
 // -------------------- MZDevice overrides --------------------
+
+std::vector<uint8_t> FDCDevice::getReadPorts() const {
+    std::vector<uint8_t> ports;
+    for (uint8_t i = 0; i < FDC_READ_PORTS; ++i) {
+        ports.push_back(FDC_DEFAULT_BASE_PORT + i);
+    }
+    return ports;
+}
+
+std::vector<uint8_t> FDCDevice::getWritePorts() const {
+    std::vector<uint8_t> ports;
+    for (uint8_t i = 0; i < FDC_WRITE_PORTS; ++i) {
+        ports.push_back(FDC_DEFAULT_BASE_PORT + i);
+    }
+    return ports;
+}
 
 int FDCDevice::init() {
     fd0disabled = -1;
@@ -213,7 +231,7 @@ uint8_t FDCDevice::setTrack() {
 // -------------------- Core I/O (ported main state machine) --------------------
 
 int FDCDevice::fdcWrite(uint8_t port, uint8_t dt, uint8_t /*high_addr*/) {
-    const uint8_t off = static_cast<uint8_t>(port - basePort) & 0x07;
+    const uint8_t off = static_cast<uint8_t>(port - FDC_DEFAULT_BASE_PORT) & 0x07;
 
     // Convenience aliases
     auto drvIdx = [&]() -> uint8_t   { return static_cast<uint8_t>(MOTOR & 0x03); };
@@ -387,7 +405,7 @@ int FDCDevice::fdcWrite(uint8_t port, uint8_t dt, uint8_t /*high_addr*/) {
 }
 
 int FDCDevice::fdcRead(uint8_t port, uint8_t* dt, uint8_t /*high_addr*/) {
-    const uint8_t off = static_cast<uint8_t>(port - basePort) & 0x07;
+    const uint8_t off = static_cast<uint8_t>(port - FDC_DEFAULT_BASE_PORT) & 0x07;
 
     auto curDrv = [&]() -> FDDrive& { return drive[MOTOR & 0x03]; };
     auto drvIdx = [&]() -> uint8_t   { return static_cast<uint8_t>(MOTOR & 0x03); };

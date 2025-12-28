@@ -36,7 +36,8 @@ public:
     int init() override;
     int isInterrupt() override;
     RAM_FUNC bool needsExwait() const override { return FDC_EXWAIT; }
-    uint8_t getDefaultBasePort() const override { return FDC_DEFAULT_BASE_PORT; }
+    std::vector<uint8_t> getReadPorts() const override;
+    std::vector<uint8_t> getWritePorts() const override;
     int readConfig(dictionary *ini) override;
     int flush() override;
     static ALWAYS_INLINE std::string getDevType() { return FDC_ID; }

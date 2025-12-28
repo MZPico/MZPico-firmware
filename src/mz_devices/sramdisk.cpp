@@ -17,14 +17,24 @@ SRamDisk::SRamDisk()
     writeMappings[1].fn = NULL;
     writeMappings[2].fn = SRamDisk::writePort;
 
-    readPortCount = 2;
-    writePortCount = 3;
+    // Initialize port mappings with defaults
+    auto readPorts = getReadPorts();
+    auto writePorts = getWritePorts();
+    initializePortMappings(readPorts, writePorts);
     data = NULL;
     readOnly = false;
     firstByte = -1;
     allowBoot = true;
     size = 0;
     bs = nullptr;
+}
+
+std::vector<uint8_t> SRamDisk::getReadPorts() const {
+    return {SRAM_DEFAULT_BASE_PORT, SRAM_DEFAULT_BASE_PORT + 1};
+}
+
+std::vector<uint8_t> SRamDisk::getWritePorts() const {
+    return {SRAM_DEFAULT_BASE_PORT, SRAM_DEFAULT_BASE_PORT + 1, SRAM_DEFAULT_BASE_PORT + 2};
 }
 
 int SRamDisk::init() {

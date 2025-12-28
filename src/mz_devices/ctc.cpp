@@ -4,10 +4,7 @@
 REGISTER_MZ_DEVICE(CTCDevice)
 
 CTCDevice::CTCDevice() {
-    readPortCount = 0;
-    writePortCount = 8; // D0..D7
-
-    for (int i = 0; i < writePortCount; i++) {
+    for (int i = 0; i < 8; i++) {
         writeMappings[i].fn = nullptr;
     }
 
@@ -15,6 +12,11 @@ CTCDevice::CTCDevice() {
     writeMappings[3].fn = CTCDevice::writePortCtrl;   // D3
     writeMappings[4].fn = CTCDevice::writeCounter0;   // D4
     writeMappings[7].fn = CTCDevice::writeCounterCtrl; // D7
+
+    // Initialize port mappings with defaults
+    auto readPorts = getReadPorts();
+    auto writePorts = getWritePorts();
+    initializePortMappings(readPorts, writePorts);
 
     gateEnabled = false;
     pcAllowsOutput = true;
@@ -37,6 +39,18 @@ CTCDevice::~CTCDevice() {
 
 int CTCDevice::init() {
     return i2s_audio_register_source(this);
+}
+
+std::vector<uint8_t> CTCDevice::getReadPorts() const {
+    return {};
+}
+
+std::vector<uint8_t> CTCDevice::getWritePorts() const {
+    std::vector<uint8_t> ports;
+    for (uint8_t i = 0; i < 8; ++i) {
+        ports.push_back(CTC_PORT_BASE + i);
+    }
+    return ports;
 }
 
 int CTCDevice::readConfig(dictionary *ini) {
