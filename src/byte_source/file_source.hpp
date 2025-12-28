@@ -12,7 +12,8 @@ public:
     FileSource(const std::string &path, 
                std::uint32_t size, 
                std::uint32_t cache_size,
-               bool wrap);
+               bool wrap = true,
+               bool auto_increment = true);
     ~FileSource();
 
 private:
@@ -29,9 +30,10 @@ namespace ByteSourceFactory {
                                 std::uint32_t size, 
                                 std::uint32_t cache_size, 
                                 bool wrap,
-                                std::unique_ptr<ByteSource> &out)
+                                std::unique_ptr<ByteSource> &out,
+                                bool auto_increment = true)
     { 
-        out = std::make_unique<FileSource>(path, size, cache_size, wrap); 
+        out = std::make_unique<FileSource>(path, size, cache_size, wrap, auto_increment);
         return 0; 
     }
 }

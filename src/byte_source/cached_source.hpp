@@ -20,7 +20,8 @@ public:
                  StoreFunc s,
                  std::uint32_t storage_size,
                  std::uint32_t cache_size,
-                 bool wrap);
+                 bool wrap = true,
+                 bool auto_increment = true);
 
     virtual ~CachedSource();
 
@@ -44,6 +45,7 @@ protected:
     bool cache_dirty_;
     std::uint32_t storage_size_;
     bool wrap_;
+    bool auto_increment_;
 
     int refill_cache();
 };
