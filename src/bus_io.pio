@@ -11,6 +11,9 @@
 wait_iorq_low:
     wait 0 gpio 20
     jmp pin, wait_iorq_low
+    in pins, 8                  side GATES_READ_HIGH_ADDR
+    nop
+    nop
     in pins, 8                  side GATES_WRITE_DATA
     wait 1 gpio 20
 .wrap
@@ -32,6 +35,9 @@ wait_iorq_low:
 wait_iorq_low:
     wait 0 gpio 20
     jmp pin, wait_iorq_low
+    in pins, 8                  side GATES_READ_HIGH_ADDR
+    nop
+    nop
     in pins, 8                  side GATES_READ_DATA
 wait_iorq_high:
     nop
