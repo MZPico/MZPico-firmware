@@ -103,6 +103,7 @@ target_compile_definitions(mzpico PRIVATE
 
 # Generate PIO header from PIO source
 pico_generate_pio_header(mzpico ${SRC_ROOT}/bus_io.pio)
+pico_generate_pio_header(mzpico ${SRC_ROOT}/i2s_audio.pio)
 
 target_sources(mzpico PUBLIC
     ${SRC_ROOT}/main.cpp
@@ -117,9 +118,11 @@ target_sources(mzpico PUBLIC
     ${SRC_ROOT}/mz_devices/fdc.cpp
     ${SRC_ROOT}/mz_devices/sramdisk.cpp
     ${SRC_ROOT}/mz_devices/pico_rd.cpp
+    ${SRC_ROOT}/mz_devices/sn76489.cpp
     ${EXTERNAL_ROOT}/iniparser/src/iniparser.c
     ${EXTERNAL_ROOT}/iniparser/src/dictionary.c
     ${SRC_ROOT}/bus_io.pio
+    ${SRC_ROOT}/i2s_audio.pio
     ${SRC_ROOT}/msc_disk.c
     ${SRC_ROOT}/usb_descriptors.c
     ${SRC_ROOT}/hw_config.c

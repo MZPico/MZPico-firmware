@@ -113,6 +113,7 @@ This file defines which virtual devices are enabled, their I/O base ports, and w
 | `fdc` (Floppy Disk Controller) | `0xd8` |
 | `pico_rd` (MZPico-type PicoRD RAM-disk) | `0x45` |
 | `pico_mgr` (MZPico management/control device) | `0x40` |
+| `psg` (SN76489 PSG) | `0xf2` |
 
 Default `enabled=true` for all devices.
 
@@ -193,6 +194,45 @@ wifi_password=MyPassword
 - Any device can be disabled using `enabled=false`
 - Configuring multiple devices is supported, as long as each has non-conflicting ports
 - If a section does **not** exist in the `.ini` file, it will be disabled
+
+---
+
+### PSG (SN76489)
+
+The Programmable Sound Generator (PSG) emulates the Texas Instruments SN76489 used in Sharp MZ-800. It provides 3 tone channels and 1 noise channel, mixed to stereo with per-channel panning.
+
+Config section name: `[psg]`
+
+Defaults:
+- `base_port=0xf2`
+- `enabled=true`
+- `tone0_pan=20`
+- `tone1_pan=80`
+- `tone2_pan=40`
+- `noise_pan=60`
+- `volume=20`
+
+Panning keys (0–100):
+- `tone0_pan` — left/right balance for tone channel 0
+- `tone1_pan` — left/right balance for tone channel 1
+- `tone2_pan` — left/right balance for tone channel 2
+- `noise_pan` — left/right balance for noise channel
+
+Master volume
+- `volume` - volume level, 0-100
+
+Example:
+
+```ini
+[psg]
+base_port=0xf2
+enabled=true
+tone0_pan=0
+tone1_pan=100
+tone2_pan=0
+noise_pan=100
+volume=60
+```
 
 ---
 

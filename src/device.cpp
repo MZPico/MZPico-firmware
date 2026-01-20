@@ -7,6 +7,7 @@
 #include "hardware/irq.h"
 #include "hardware/sync.h"
 #include "hardware/clocks.h"
+#include "hardware/dma.h"
 #include "hardware/structs/sio.h"
 #include "hardware/watchdog.h"
 #include "hardware/vreg.h"
@@ -23,6 +24,8 @@
 
 #include "mz_devices.hpp"
 #include "fdc.hpp"
+
+#include "i2s_audio.pio.h"
 
 #include "ff.h"
 #include "fatfs_disk.h"
@@ -46,6 +49,8 @@
 
 FDCDevice *fdc;
 QDDevice *qd;
+SN76489Device *sn76489 = nullptr;
+volatile bool sn76489_ready = false;  // Core1 signals when sn76489 is ready
 
 // Control pins
 static const uint control_pins[] = { IORQ_PIN, RD_PIN, WR_PIN };
@@ -221,6 +226,14 @@ void device_main1(void) {
             picoConfig.emplace_back(sectionName, std::move(config));
         } else { // devices
             std::string devName = stripTrailingNumbers(sectionName);
+            
+            // PSG (SN76489) only available on DELUXE board
+            #ifndef BOARD_DELUXE
+            if (devName == "psg") {
+                continue;
+            }
+            #endif
+            
             MZDevice* dev = MZDeviceManager::createDevice(devName, sectionName);
             if (!dev) continue;
             bool enabled = (bool)iniparser_getboolean(ini, (sectionName + ":enabled").c_str(), true);
@@ -238,8 +251,18 @@ void device_main1(void) {
                 fdc = (FDCDevice *)dev;
             else if (devName == "qd")
                 qd = (QDDevice *)dev;
+            else if (devName == "psg")
+                sn76489 = (SN76489Device *)dev;
         }
     }
+    
+    // Signal core0 that device initialization is complete and sn76489 pointer is ready
+    // Use memory barrier to ensure all writes are visible to core0
+    __asm volatile("" ::: "memory");
+    #ifdef BOARD_DELUXE
+    sn76489_ready = true;
+    #endif
+
 
     #ifdef USE_PICO_W
     // Read WiFi credentials from cloud section
@@ -286,11 +309,36 @@ void device_main() {
         watchdog_reboot(0, 0, 0);
     }
 
-#ifdef USE_PICO_W
-    cloud_init();
-#endif
-
-    while(1) {
+    // Wait for core1 to finish device initialization and set sn76489 pointer
+    // Use memory barrier to ensure we see the latest value
+    #ifdef BOARD_DELUXE
+    while (!sn76489_ready) {
         tight_loop_contents();
     }
+    __asm volatile("" ::: "memory");
+    #endif
+    
+    // Initialize SN76489 audio hardware on core0 (if device was registered on core1)
+    // Audio only works on DELUXE board where GPIOs 12,13,14 are not used for data bus
+    #ifdef BOARD_DELUXE
+    if (sn76489 && sn76489->isEnabled()) {
+        int result = sn76489->initAudioOnCore0();
+        if (result != 0) {
+            printf("Warning: Failed to initialize SN76489 audio on core0 (error %d)\n", result);
+        }
+    }
+    #endif
+
+#ifdef USE_PICO_W
+    cloud_init();
+#else
+    // Without WiFi, core0 just processes SN76489 writes in tight loop
+    // Note: sn76489 pointer is guaranteed to be valid after sn76489_ready flag
+    while(1) {
+        if (sn76489) {
+            sn76489->processWritesFromMainLoop();
+        }
+        tight_loop_contents();
+    }
+#endif
 }

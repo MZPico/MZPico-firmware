@@ -216,6 +216,12 @@ static void handle_reconnect_request(void) {
 
 static void core0_poll_loop(void) {
     while (!shutting_down) {
+        // Process SN76489 writes with minimal latency (must be on core0)
+        extern SN76489Device *sn76489;
+        if (sn76489) {
+            sn76489->processWritesFromMainLoop();
+        }
+        
         if (is_wifi_connecting()) {
             wifi_state_machine();
         } else if (g_state == CloudWifiState::CONNECTED) {

@@ -1,0 +1,94 @@
+; I2S audio output PIO program
+; Outputs stereo 16-bit audio samples via I2S
+; Adapted for non-consecutive pins: DATA=13, BCLK=12, LRCLK=14
+; Uses side-set for BCLK, SET for LRCLK, OUT for DATA
+
+.program i2s_audio
+.side_set 1
+
+; Pins:
+; - OUT pin: GPIO 13 (DATA)
+; - Side-set: GPIO 12 (BCLK)
+; - SET pins: GPIO 14 (LRCLK)
+
+.wrap_target
+.side_set 1
+
+; Minimal test: output all 1s on DATA (maximum positive value)
+; This should create a constant DC offset tone to verify audio path
+; If this works, we can add tone generation
+
+; ================= LEFT CHANNEL =================
+    set pins, 0         side 0          ; LRCLK = 0
+    pull noblock        side 0          ; load LEFT sample (32-bit)
+
+    set x, 30           side 1          ; Output 31 bits (0-30 = 31 iterations)
+    nop                 side 1
+
+left_loop:
+    out pins, 1         side 0          ; DATA bit
+    nop                 side 0
+    nop                 side 1          ; sample
+    jmp x-- left_loop   side 1
+
+; ================= RIGHT CHANNEL =================
+    set pins, 1         side 0
+    pull noblock        side 0          ; load RIGHT sample (32-bit)
+    set x, 30           side 1          ; Output 31 bits (0-30 = 31 iterations)
+    nop                 side 1
+
+right_loop:
+    out pins, 1         side 0
+    nop                 side 0
+    nop                 side 1
+    jmp x-- right_loop  side 1
+
+.wrap
+
+% c-sdk {
+
+static inline void i2s_audio_program_init(PIO pio, uint sm, uint audio_data_pin, uint audio_bclk_pin, uint audio_lrclk_pin) {
+    // Set up GPIO functions and directions
+    pio_gpio_init(pio, audio_data_pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, audio_data_pin, 1, true);
+    
+    pio_gpio_init(pio, audio_bclk_pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, audio_bclk_pin, 1, true);
+    
+    pio_gpio_init(pio, audio_lrclk_pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, audio_lrclk_pin, 1, true);
+
+
+    uint offset = pio_add_program(pio, &i2s_audio_program);
+
+    pio_sm_config c = i2s_audio_program_get_default_config(offset);
+
+    // DATA pin
+    sm_config_set_out_pins(&c, audio_data_pin, 1);
+
+    // LRCLK pin
+    sm_config_set_set_pins(&c, audio_lrclk_pin, 1);
+
+    // BCLK pin (sideset)
+    sm_config_set_sideset_pins(&c, audio_bclk_pin);
+
+    // Shift MSB first
+    sm_config_set_out_shift(&c, false, false, 32);
+
+    // Join FIFO for simplicity
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+
+
+    // I2S timing: Each stereo frame takes 256 PIO cycles
+    // - LEFT: 4 setup + (31 bits × 4 cycles/bit) = 128 cycles
+    // - RIGHT: 4 setup + (31 bits × 4 cycles/bit) = 128 cycles
+    // For 44.1kHz: 44100 frames/sec × 256 cycles/frame = 11.2896 MHz PIO clock
+    float div = (float)clock_get_hz(clk_sys) / (44100.0f * 256.0f);
+    sm_config_set_clkdiv(&c, div);
+
+    pio_sm_init(pio, sm, offset, &c);
+    // NOTE: PIO SM is NOT started here - caller must start it after DMA is ready
+    // pio_sm_set_enabled(pio, sm, true);
+}
+
+%}
