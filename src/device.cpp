@@ -305,7 +305,7 @@ void device_main() {
 
     // workaround for unstability after cold boot
     if (!watchdog_caused_reboot()) {
-        busy_wait_ms(50);
+        busy_wait_ms(100);
         watchdog_reboot(0, 0, 0);
     }
 

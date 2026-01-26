@@ -18,13 +18,13 @@ REGISTER_MZ_DEVICE(FDCDevice)
 // -------------------- Construction & registration --------------------
 
 FDCDevice::FDCDevice() {
-    for (uint8_t i = 0; i < FDC_WRITE_PORTS; ++i)
-        writeMappings[i].fn   = FDCDevice::WriteThunk;
-    for (uint8_t i = 0; i < FDC_READ_PORTS; ++i)
-        readMappings[i].fn   = FDCDevice::ReadThunk;
-
     readPortCount  = FDC_READ_PORTS;
     writePortCount = FDC_WRITE_PORTS;
+
+    for (uint8_t i = 0; i < readPortCount; ++i)
+        readMappings[i].fn  = FDCDevice::ReadThunk;
+    for (uint8_t i = 0; i < writePortCount; ++i)
+        writeMappings[i].fn = FDCDevice::WriteThunk;
 }
 
 FDCDevice::~FDCDevice() {

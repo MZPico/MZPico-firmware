@@ -67,11 +67,10 @@ public:
 protected:
     ReadPortMapping readMappings[MAX_DEVICE_PORTS];
     WritePortMapping writeMappings[MAX_DEVICE_PORTS];
-    static inline uint8_t readPortCount = 0;
-    static inline uint8_t writePortCount = 0;
+    uint8_t readPortCount = 0;
+    uint8_t writePortCount = 0;
     uint8_t basePort;
     std::string devID;
-    static inline std::string devType="none";
     bool enabled = true;
 };
 

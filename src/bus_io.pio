@@ -75,6 +75,7 @@ still_high:
 #include "bus_io.pio.h"
 
 void bus_read_deluxe_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
+    pio_sm_claim(pio, sm);
     uint offset = pio_add_program(pio, &bus_read_deluxe_program);
 
     pio_sm_config c = bus_read_deluxe_program_get_default_config(offset);
@@ -91,6 +92,7 @@ void bus_read_deluxe_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
 }
 
 void bus_read_frugal_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
+    pio_sm_claim(pio, sm);
     uint offset = pio_add_program(pio, &bus_read_frugal_program);
 
     pio_sm_config c = bus_read_frugal_program_get_default_config(offset);
@@ -105,6 +107,7 @@ void bus_read_frugal_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
 }
 
 void bus_write_deluxe_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
+    pio_sm_claim(pio, sm);
     uint offset = pio_add_program(pio, &bus_write_deluxe_program);
 
     pio_sm_config c = bus_write_deluxe_program_get_default_config(offset);
@@ -120,6 +123,7 @@ void bus_write_deluxe_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
 }
 
 void bus_write_frugal_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
+    pio_sm_claim(pio, sm);
     uint offset = pio_add_program(pio, &bus_write_frugal_program);
 
     pio_sm_config c = bus_write_frugal_program_get_default_config(offset);
@@ -133,6 +137,10 @@ void bus_write_frugal_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
 }
 
 void bus_reset_init(PIO pio, uint sm) {
+    // Reserve the requested state machine so other subsystems (e.g. SN76489 audio)
+    // cannot steal SM0 on pio0 and break reset IRQ handling.
+    pio_sm_claim(pio, sm);
+
     uint offset = pio_add_program(pio, &bus_reset_program);
 
     pio_sm_config c = bus_reset_program_get_default_config(offset);

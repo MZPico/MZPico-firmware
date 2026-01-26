@@ -11,12 +11,13 @@ REGISTER_MZ_DEVICE(QDDevice)
 // -------------------------------- Lifecycle --------------------------------
 
 QDDevice::QDDevice() {
+    readPortCount = QD_PORTS;
+    writePortCount = QD_PORTS;
+
     for (int i = 0; i < readPortCount; i++)
         readMappings[i].fn  = QDDevice::readByte;
     for (int i = 0; i < writePortCount; i++)
         writeMappings[i].fn  = QDDevice::writeByte;
-    readPortCount = QD_PORTS;
-    writePortCount = QD_PORTS;
     bs = nullptr;
 }
 
