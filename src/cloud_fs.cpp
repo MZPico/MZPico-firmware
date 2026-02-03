@@ -22,6 +22,7 @@ CloudWifiState cloud_wifi_state(void) {
 #include "lwip/pbuf.h"
 #include "lwip/altcp.h"
 #include "http_utils.h"
+#include "rest_api.hpp"
 #include "ff.h"
 #include "flash_fs.h"
 #include "device.hpp"
@@ -87,6 +88,7 @@ static struct {
 
 static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 30000;
 static const uint32_t WIFI_MAX_BACKOFF_MS = 10000;
+static bool g_rest_started = false;
 
 // WiFi state machine helpers
 static bool wifi_init_hardware(void) {
@@ -126,6 +128,11 @@ static void wifi_poll_connection_status(void) {
         wifi_state.connect_pending = false;
         set_state(CloudWifiState::CONNECTED);
         cloud_add_device("cloud");
+        if (!g_rest_started) {
+            if (rest_api_init() == 0) {
+                g_rest_started = true;
+            }
+        }
         return;
     }
     
@@ -209,6 +216,10 @@ static void handle_reconnect_request(void) {
     if (!g_reconnect_requested) return;
     
     g_reconnect_requested = false;
+    if (g_rest_started) {
+        rest_api_shutdown();
+        g_rest_started = false;
+    }
     set_state(CloudWifiState::DISCONNECTED);
     cyw43_arch_deinit();
     wifi_state.init_done = false;
@@ -223,6 +234,9 @@ static void core0_poll_loop(void) {
         if (is_wifi_connecting()) {
             wifi_state_machine();
         } else if (g_state == CloudWifiState::CONNECTED) {
+            if (!shutting_down) {
+                cyw43_arch_poll();
+            }
             handle_http_request();
             handle_reconnect_request();
         }
