@@ -23,6 +23,8 @@ CTCDevice::CTCDevice() {
     outputHigh = false;
     cycleResid = 0;
     volume = 100;
+    pan = 50;
+    pan256 = (uint16_t)((pan * 256) / 100);
 
     loadMode = LoadMode::None;
     waitingMsb = false;
@@ -44,6 +46,12 @@ int CTCDevice::readConfig(dictionary *ini) {
     if (vol < 0) vol = 0;
     if (vol > 100) vol = 100;
     volume = static_cast<uint8_t>(vol);
+
+    int pan_value = iniparser_getint(ini, (getDevID() + ":pan").c_str(), 50);
+    if (pan_value < 0) pan_value = 0;
+    if (pan_value > 100) pan_value = 100;
+    pan = static_cast<uint8_t>(pan_value);
+    pan256 = (uint16_t)((pan * 256) / 100);
 
     return 0;
 }
@@ -142,9 +150,9 @@ void CTCDevice::renderSample(int16_t& left, int16_t& right) {
         }
     }
 
-    int16_t amplitude = static_cast<int16_t>((CTC_BASE_AMPLITUDE * volume) / 100);
-    int16_t sample = outputHigh ? amplitude : -amplitude;
+    int32_t amplitude = (CTC_BASE_AMPLITUDE * volume) / 100;
+    int32_t sample = outputHigh ? amplitude : -amplitude;
 
-    left = sample;
-    right = sample;
+    left = static_cast<int16_t>((sample * (int32_t)(256 - pan256)) >> 8);
+    right = static_cast<int16_t>((sample * (int32_t)pan256) >> 8);
 }

@@ -50,6 +50,8 @@ private:
     bool outputHigh;
     uint32_t cycleResid;
     uint8_t volume;
+    uint8_t pan;
+    uint16_t pan256;
 
     LoadMode loadMode;
     bool waitingMsb;
