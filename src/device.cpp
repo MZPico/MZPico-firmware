@@ -188,7 +188,17 @@ void device_main1(void) {
     mount_devices();
     // Clean up temporary cloud files: purge flash:/tmp directory on startup
 
-    dictionary *ini = iniparser_load("flash:/mzpico.ini");
+    dictionary *ini = nullptr;
+    FILINFO fno;
+    if (f_stat("sd:/mzpico.ini", &fno) == FR_OK) {
+        ini = iniparser_load("sd:/mzpico.ini");
+    }
+    if (!ini) {
+        ini = iniparser_load("flash:/mzpico.ini");
+    }
+    if (!ini) {
+        halt();
+    }
     int sectionNumber = iniparser_getnsec(ini);
 
     for (int i=0; i < sectionNumber; i++) {
