@@ -112,6 +112,7 @@ target_sources(mzpico PUBLIC
     ${SRC_ROOT}/cloud_fs.cpp
     ${SRC_ROOT}/http_utils.c
     ${SRC_ROOT}/config.cpp
+    ${SRC_ROOT}/i2s_audio.cpp
     ${SRC_ROOT}/mz_devices.cpp
     ${SRC_ROOT}/mz_devices/qd.cpp
     ${SRC_ROOT}/mz_devices/pico_mgr.cpp

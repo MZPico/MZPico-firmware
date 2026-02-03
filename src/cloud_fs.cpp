@@ -26,6 +26,7 @@ CloudWifiState cloud_wifi_state(void) {
 #include "flash_fs.h"
 #include "device.hpp"
 #include "file.hpp"
+#include "i2s_audio.hpp"
 
 
 // ---- Default credentials (override via cloud_wifi_set_config before cloud_init) ----
@@ -216,11 +217,8 @@ static void handle_reconnect_request(void) {
 
 static void core0_poll_loop(void) {
     while (!shutting_down) {
-        // Process SN76489 writes with minimal latency (must be on core0)
-        extern SN76489Device *sn76489;
-        if (sn76489) {
-            sn76489->processWritesFromMainLoop();
-        }
+        // Process audio sources with minimal latency (must be on core0)
+        i2s_audio_poll();
         
         if (is_wifi_connecting()) {
             wifi_state_machine();
