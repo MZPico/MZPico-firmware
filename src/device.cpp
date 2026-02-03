@@ -238,7 +238,7 @@ void device_main1(void) {
             
             // PSG (SN76489) only available on DELUXE board
             #ifndef BOARD_DELUXE
-            if (devName == "psg") {
+            if (devName == "psg" || devName == "ctc") {
                 continue;
             }
             #endif

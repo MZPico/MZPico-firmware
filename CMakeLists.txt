@@ -120,6 +120,7 @@ target_sources(mzpico PUBLIC
     ${SRC_ROOT}/mz_devices/sramdisk.cpp
     ${SRC_ROOT}/mz_devices/pico_rd.cpp
     ${SRC_ROOT}/mz_devices/sn76489.cpp
+    ${SRC_ROOT}/mz_devices/ctc.cpp
     ${EXTERNAL_ROOT}/iniparser/src/iniparser.c
     ${EXTERNAL_ROOT}/iniparser/src/dictionary.c
     ${SRC_ROOT}/bus_io.pio
