@@ -49,7 +49,6 @@ int RamDisk::readConfig(dictionary *ini) {
     if (!ini) return -1;
 
     readOnly = iniparser_getboolean(ini, (getDevID() + ":read_only").c_str(), false);
-    bool in_ram = iniparser_getboolean(ini, (getDevID() + ":in_ram").c_str(), true);
     std::string image = iniparser_getstring(ini, (getDevID() + ":image").c_str(), "");
     uint32_t sz = iniparser_getint(ini, (getDevID() + ":size").c_str(), 0);
     if (sz) size = (sz + 0xffff) & 0xffff0000; // align to 65536 multiples
@@ -67,6 +66,9 @@ int RamDisk::readConfig(dictionary *ini) {
 }
 
 int RamDisk::flush() {
+    if (!bs)
+        return -1;
+
     return bs->flush();
 }
 

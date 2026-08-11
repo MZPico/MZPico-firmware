@@ -21,7 +21,6 @@ public:
     std::pair<std::vector<uint8_t>, std::vector<uint8_t>> applyBasePort(uint8_t basePort) const override;
     int readConfig(dictionary *ini) override;
     int flush() override;
-    int setDriveContent(const std::string &content, bool in_ram);
     static std::string getDevType() { return RAMDISK_ID; }
 
     RAM_FUNC static int readData(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr);
@@ -35,6 +34,5 @@ private:
     bool readOnly;
     uint32_t size;
     uint32_t pos_;
-    int loadMzf(const uint8_t* src, size_t src_size, bool in_ram);
     std::unique_ptr<ByteSource> bs;
 };

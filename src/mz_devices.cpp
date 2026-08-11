@@ -173,10 +173,10 @@ MZDevice* MZDeviceManager::createDevice(const std::string& devType, const std::s
     if (deviceCount >= MAX_MZ_DEVICES)
         return nullptr;
 
-    MZDevice* dev = (it->second)();
     if (isRegistered(id))
         return nullptr;
 
+    MZDevice* dev = (it->second)();
     dev->setDevID(id);
     devices[deviceCount++] = dev;
     return dev;
