@@ -122,16 +122,22 @@ RAM_FUNC static void listen_loop(void) {
             if (MZDeviceManager::hasWriteListeners(low_addr)) {
                 if (MZDeviceManager::portNeedsExwait(low_addr)) set_exwait();
                 #ifdef BOARD_DELUXE
+                // The PIO captures high address and data as further FIFO words,
+                // so the data byte is valid even if this loop runs late.
                 high_addr = pio_sm_get_blocking(pio, SM_WRITE) >> 24;
-                #endif
+                data = pio_sm_get_blocking(pio, SM_WRITE) >> 24;
+                #else
                 data = read_data_bus();
+                #endif
                 bool wantsInterrupt = MZDeviceManager::handleWrite(low_addr, data, high_addr);
                 if (wantsInterrupt) set_interrupt();
                 if (MZDeviceManager::portNeedsExwait(low_addr)) release_exwait();
             }
             #ifdef BOARD_DELUXE
             else {
-                // Drain the high address word even when no device listens on this port
+                // Drain the high address and data words even when no device
+                // listens on this port, otherwise the RX FIFO desyncs.
+                pio_sm_get_blocking(pio, SM_WRITE);
                 pio_sm_get_blocking(pio, SM_WRITE);
             }
             #endif

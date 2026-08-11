@@ -45,6 +45,14 @@ wait_iorq_low:
 high_settle_w:
     jmp x-- high_settle_w
     in pins, 8                  side GATES_READ_DATA
+    ; Capture the data byte as a third FIFO word once the data gate settles.
+    ; The Z80 drives write data for the whole IORQ cycle, so this sample is
+    ; timing-safe, and core1 no longer races the end of the cycle to read
+    ; the bus for non-exwait ports.
+    set x, 7
+data_settle_w:
+    jmp x-- data_settle_w
+    in pins, 8
 wait_iorq_high:
     wait 1 gpio 20
 .wrap
