@@ -93,8 +93,9 @@ RAM_FUNC int RamDisk::resetCounter(MZDevice* self, uint8_t port, uint8_t* dt, ui
 
 RAM_FUNC int RamDisk::writePageAddress(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr) {
     auto* disk = static_cast<RamDisk*>(self);
-    dt = ((dt << 16) % disk->size) >> 16;
-    disk->pos_ = (static_cast<uint32_t>(dt) << 16) | (disk->pos_ & 0xffff);
+
+    uint32_t pageAddr = (static_cast<uint32_t>(dt) << 16) % disk->size;
+    disk->pos_ = (pageAddr & 0xFFFF0000) | (disk->pos_ & 0xffff);
     return 0;
 }
 
@@ -103,7 +104,7 @@ RAM_FUNC int RamDisk::writeData(MZDevice* self, uint8_t port, uint8_t dt, uint8_
     
     disk->bs->seek(disk->pos_);
     
-    int ret;
+    int ret = 0;
     if (!disk->readOnly)
         ret = disk->bs->setByte(dt);
     
