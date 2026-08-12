@@ -5,10 +5,12 @@
 .define GATES_WRITE_DATA 0b0011
 
 ; Reads capture low and high address as two FIFO words, mirroring the write
-; program. Unlike the earlier (unreliable) variant, the high-address capture
-; is decoupled from enabling the data transceiver: the capture instruction
-; parks the gates at BLOCK_ALL (break-before-make), and only the following
-; instruction reverses the data gate toward the Z80 bus (RD0 low).
+; program, then park the gates at BLOCK_ALL. The program itself never
+; reverses the data transceiver toward the Z80 bus: core1 injects a
+; "nop side GATES_WRITE_DATA" via pio_sm_exec() only when it is about to
+; drive data for a listened port, keeping the direction-reversing edge
+; away from the Z80's /WAIT sampling points. Unlistened reads never enable
+; the data gate at all.
 .program bus_read_deluxe
 .side_set 4 opt
 .wrap_target
@@ -23,7 +25,6 @@ wait_iorq_low:
 high_settle_r:
     jmp x-- high_settle_r
     in pins, 8                  side GATES_BLOCK_ALL
-    nop                         side GATES_WRITE_DATA
     wait 1 gpio 20
 .wrap
 
