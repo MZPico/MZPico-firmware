@@ -62,6 +62,17 @@ volatile bool shutting_down = false;
 // ---- Globals ----
 static PIO  pio = pio1;
 
+#ifdef BOARD_DELUXE
+// Gate-control instructions core1 injects into SM_READ via pio_sm_exec():
+// the read program parks the gates at BLOCK_ALL after capturing, so the
+// data transceiver is only turned toward the Z80 bus when data is
+// actually about to be driven (see bus_io.pio).
+static const uint16_t gate_write_data_instr =
+    pio_encode_nop() | pio_encode_sideset_opt(4, 0x3);   // GATES_WRITE_DATA
+static const uint16_t gate_low_addr_instr =
+    pio_encode_nop() | pio_encode_sideset_opt(4, 0xE);   // GATES_READ_LOW_ADDR
+#endif
+
 void blink(uint8_t cnt) {
 #ifdef USE_PICO_W
     // On Pico W, GPIO25 is used internally by the CYW43 SPI; avoid direct access.
@@ -101,6 +112,9 @@ RAM_FUNC static void listen_loop(void) {
                 #endif
 
                 bool wantsInterrupt = MZDeviceManager::handleRead(low_addr, &data, high_addr);
+                #ifdef BOARD_DELUXE
+                pio_sm_exec(pio, SM_READ, gate_write_data_instr);
+                #endif
                 acquire_data_bus_for_writing();
                 write_data_bus(data);
 
@@ -108,6 +122,12 @@ RAM_FUNC static void listen_loop(void) {
                 if (MZDeviceManager::portNeedsExwait(low_addr)) release_exwait();
                 while (!(sio_hw->gpio_in & (1u << IORQ_PIN)));
                 release_data_bus();
+                #ifdef BOARD_DELUXE
+                // Re-arm the idle gate: normally the SM wrap already did this,
+                // but if the cycle ended before the exec above, the injected
+                // gate state would otherwise persist into the next capture.
+                pio_sm_exec(pio, SM_READ, gate_low_addr_instr);
+                #endif
             }
             #ifdef BOARD_DELUXE
             else {
