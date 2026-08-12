@@ -121,28 +121,34 @@ RAM_FUNC static void listen_loop(void) {
     pio_sm_set_enabled(pio, SM_READ, true);
     pio_sm_set_enabled(pio, SM_WRITE, true);
 
+    // Ensure the flat fast-path tables reflect the final device config
+    MZDeviceManager::buildFlatTables();
+
+    // Hot path: flat single-listener dispatch in v0.2.0 shape and order.
+    // The lookups before set_exwait() are timing-critical: the Z80 samples
+    // /WAIT ~423ns after IORQ falls, and marginal boards have little slack
+    // beyond that - keep this path to a bare minimum of loads.
     while (true) {
         if (!pio_sm_is_rx_fifo_empty(pio, SM_READ)) {
             low_addr = pio_sm_get(pio, SM_READ) >> 24;
-            if (MZDeviceManager::hasReadListeners(low_addr)) {
-                // Latch the decision: set and release must agree even if the
-                // listener tables were ever mutated while the handler runs
-                bool useExwait = MZDeviceManager::portNeedsExwait(low_addr);
-                if (useExwait) set_exwait();
+            auto fn = MZDeviceManager::flatReadFn[low_addr];
+            if (fn) {
+                MZDevice* dev = MZDeviceManager::flatReadDev[low_addr];
+                if (MZDeviceManager::flatExwait[low_addr]) set_exwait();
 
                 #ifdef BOARD_DELUXE
                 high_addr = pio_sm_get_blocking(pio, SM_READ) >> 24;
                 #endif
 
-                bool wantsInterrupt = MZDeviceManager::handleRead(low_addr, &data, high_addr);
+                fn(dev, low_addr, &data, high_addr);
                 #ifdef BOARD_DELUXE
                 pio_sm_exec(pio, SM_READ, gate_write_data_instr);
                 #endif
                 acquire_data_bus_for_writing();
                 write_data_bus(data);
 
-                if (wantsInterrupt) set_interrupt();
-                if (useExwait) release_exwait();
+                if (dev->isInterrupt()) set_interrupt();
+                if (MZDeviceManager::flatExwait[low_addr]) release_exwait();
                 while (!(sio_hw->gpio_in & (1u << IORQ_PIN)));
                 release_data_bus();
                 #ifdef BOARD_DELUXE
@@ -162,9 +168,10 @@ RAM_FUNC static void listen_loop(void) {
         }
         else if (!pio_sm_is_rx_fifo_empty(pio, SM_WRITE)) {
             low_addr = pio_sm_get(pio, SM_WRITE) >> 24;
-            if (MZDeviceManager::hasWriteListeners(low_addr)) {
-                bool useExwait = MZDeviceManager::portNeedsExwait(low_addr);
-                if (useExwait) set_exwait();
+            auto fn = MZDeviceManager::flatWriteFn[low_addr];
+            if (fn) {
+                MZDevice* dev = MZDeviceManager::flatWriteDev[low_addr];
+                if (MZDeviceManager::flatExwait[low_addr]) set_exwait();
                 #ifdef BOARD_DELUXE
                 // The PIO captures high address and data as further FIFO words,
                 // so the data byte is valid even if this loop runs late.
@@ -173,9 +180,9 @@ RAM_FUNC static void listen_loop(void) {
                 #else
                 data = read_data_bus();
                 #endif
-                bool wantsInterrupt = MZDeviceManager::handleWrite(low_addr, data, high_addr);
-                if (wantsInterrupt) set_interrupt();
-                if (useExwait) release_exwait();
+                fn(dev, low_addr, data, high_addr);
+                if (dev->isInterrupt()) set_interrupt();
+                if (MZDeviceManager::flatExwait[low_addr]) release_exwait();
             }
             #ifdef BOARD_DELUXE
             else {
