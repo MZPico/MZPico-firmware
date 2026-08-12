@@ -96,11 +96,9 @@ RAM_FUNC static void listen_loop(void) {
             if (MZDeviceManager::hasReadListeners(low_addr)) {
                 if (MZDeviceManager::portNeedsExwait(low_addr)) set_exwait();
 
-                #ifdef BOARD_DELUXE
-                high_addr = pio_sm_get_blocking(pio, SM_READ) >> 24;
-                #endif
-
-                bool wantsInterrupt = MZDeviceManager::handleRead(low_addr, &data, high_addr);
+                // Reads are a single FIFO word; no device consumes the high
+                // address on reads, so it is not captured (see bus_io.pio)
+                bool wantsInterrupt = MZDeviceManager::handleRead(low_addr, &data, 0);
                 acquire_data_bus_for_writing();
                 write_data_bus(data);
 
@@ -109,13 +107,6 @@ RAM_FUNC static void listen_loop(void) {
                 while (!(sio_hw->gpio_in & (1u << IORQ_PIN)));
                 release_data_bus();
             }
-            #ifdef BOARD_DELUXE
-            else {
-                // Drain the high address word even when no device listens on this
-                // port, otherwise the RX FIFO desyncs and later low/high words swap.
-                pio_sm_get_blocking(pio, SM_READ);
-            }
-            #endif
         }
         else if (!pio_sm_is_rx_fifo_empty(pio, SM_WRITE)) {
             low_addr = pio_sm_get(pio, SM_WRITE) >> 24;
