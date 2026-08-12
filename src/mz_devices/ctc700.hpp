@@ -52,7 +52,8 @@ private:
     volatile bool mz700Mode;
     volatile bool periMapped;
     volatile bool periLocked;
-    bool snoopActive() const { return mz700Mode && periMapped && !periLocked; }
+    bool forceActive;   // ini "force": bypass mode/bank gating (diagnostic)
+    bool snoopActive() const { return forceActive || (mz700Mode && periMapped && !periLocked); }
 
     // 8253 counter 0 model (same semantics as the I/O-mode CTC device);
     // written and read on core0 only, so no cross-core concerns
