@@ -8,21 +8,22 @@ CTCDevice::CTCDevice() {
         writeMappings[i].fn = nullptr;
     }
 
-    writeMappings[2].fn = CTCDevice::writePortC;      // D2
-    writeMappings[3].fn = CTCDevice::writePortCtrl;   // D3
-    writeMappings[4].fn = CTCDevice::writeCounter0;   // D4
-    writeMappings[7].fn = CTCDevice::writeCounterCtrl; // D7
+    writeMappings[2].fn = CTCDevice::writePortC;      // D2: 8255 port C data
+    writeMappings[3].fn = CTCDevice::writePortCtrl;   // D3: 8255 control (BSR/mode)
+    writeMappings[4].fn = CTCDevice::writeCounter0;   // D4: 8253 counter 0
+    writeMappings[7].fn = CTCDevice::writeCounterCtrl; // D7: 8253 control
 
     // Initialize port mappings with defaults
     auto readPorts = getReadPorts();
     auto writePorts = getWritePorts();
     initializePortMappings(readPorts, writePorts);
 
-    gateEnabled = false;
-    pcAllowsOutput = true;
+    gateOpen = false;
+    counterRunning = false;
+    squareWave = false;
     reloadValue = 0;
     counter = 0;
-    outputHigh = false;
+    outputHigh = true;
     cycleResid = 0;
     volume = 100;
     pan = 50;
@@ -70,18 +71,33 @@ int CTCDevice::readConfig(dictionary *ini) {
     return 0;
 }
 
+// 0xD2: direct 8255 port C write - PC0 is the sound gate
 RAM_FUNC int CTCDevice::writePortC(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
     auto* dev = static_cast<CTCDevice*>(self);
-    dev->pcAllowsOutput = (dt & 0x01) != 0; // active low prohibits output
+    dev->gateOpen = (dt & 0x01) != 0;
     return 0;
 }
 
+// 0xD3: 8255 control register. Bit 7 = 1 is a mode-set word (resets all
+// port C outputs on a real 8255 - gate closes). Bit 7 = 0 is a Bit
+// Set/Reset command: bits 3-1 select the PC bit, bit 0 is the value; only
+// PC0 is the sound gate - BSR commands for PC1-PC7 (tape motor, interrupt
+// mask, ...) must not touch it.
 RAM_FUNC int CTCDevice::writePortCtrl(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
     auto* dev = static_cast<CTCDevice*>(self);
-    dev->gateEnabled = (dt & 0x01) != 0;
+    if (dt & 0x80) {
+        dev->gateOpen = false;
+    } else if (((dt >> 1) & 0x07) == 0) {
+        dev->gateOpen = (dt & 0x01) != 0;
+    }
     return 0;
 }
 
+// 0xD7: 8253 control word. A control word for counter 0 halts the counter
+// (output parks high) until a full count is loaded - the ROM relies on this
+// as its silencing idiom ("control word + open gate", no count). A latch
+// command (RL = 00) only latches the count for reading; the programmed
+// access mode persists.
 RAM_FUNC int CTCDevice::writeCounterCtrl(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
     auto* dev = static_cast<CTCDevice*>(self);
     uint8_t counter_select = (dt >> 6) & 0x03;
@@ -90,14 +106,23 @@ RAM_FUNC int CTCDevice::writeCounterCtrl(MZDevice* self, uint8_t, uint8_t dt, ui
     }
 
     uint8_t rl = (dt >> 4) & 0x03;
+    if (rl == 0) {
+        return 0; // counter latch for reading; no state change for writes
+    }
+
     switch (rl) {
         case 1: dev->loadMode = LoadMode::LSB; break;
         case 2: dev->loadMode = LoadMode::MSB; break;
         case 3: dev->loadMode = LoadMode::LSB_MSB; break;
-        default: dev->loadMode = LoadMode::None; break;
     }
-
     dev->waitingMsb = false;
+
+    // Modes (M2 M1 M0 in bits 3-1): x11 = mode 3 square wave; everything
+    // else (mode 0 one-shot used as the 10ms MUSIC timebase, etc.) makes
+    // no audible tone.
+    dev->squareWave = ((dt >> 1) & 0x03) == 0x03;
+    dev->counterRunning = false;
+    dev->outputHigh = true;
     return 0;
 }
 
@@ -139,12 +164,14 @@ void CTCDevice::applyReload(uint16_t value) {
         effective = 0x10000;
     }
     reloadValue = effective;
-    counter = effective;
+    // Mode 3: output high for ceil(N/2) counts, low for floor(N/2)
+    counter = (effective + 1) >> 1;
     outputHigh = true;
+    counterRunning = true;
 }
 
 void CTCDevice::renderSample(int16_t& left, int16_t& right) {
-    if (!gateEnabled || !pcAllowsOutput || reloadValue == 0) {
+    if (!gateOpen || !counterRunning || !squareWave || reloadValue < 2) {
         left = 0;
         right = 0;
         return;
@@ -154,13 +181,17 @@ void CTCDevice::renderSample(int16_t& left, int16_t& right) {
     uint32_t cyclesToRun = cycleResid / AUDIO_SAMPLE_RATE;
     cycleResid %= AUDIO_SAMPLE_RATE;
 
+    // Mode 3 square wave: frequency = clock / N, i.e. the output toggles
+    // every half-period (N/2 counts), not every N counts
+    uint32_t reload = reloadValue;
+    if (counter == 0 || counter > reload) {
+        // reload raced in from core1 mid-render; resynchronize
+        counter = (reload + 1) >> 1;
+    }
     for (uint32_t i = 0; i < cyclesToRun; i++) {
-        if (counter == 0) {
-            counter = reloadValue;
-        }
-        counter--;
-        if (counter == 0) {
+        if (--counter == 0) {
             outputHigh = !outputHigh;
+            counter = outputHigh ? (reload + 1) >> 1 : reload >> 1;
         }
     }
 
