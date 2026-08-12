@@ -83,6 +83,16 @@ int i2s_audio_init_on_core0() {
 
     i2s_audio_program_init(g_audio_pio, g_audio_sm, I2S_DATA_PIN, I2S_BCLK_PIN, I2S_LRCLK_PIN);
 
+    // The I2S clocks run continuously at ~2.8MHz next to the bus wiring.
+    // Minimum edge rate and drive: fast edges on these pins couple into
+    // the Z80 bus on layout-sensitive board revisions and corrupt I/O
+    // (manifested as sramdisk boot checksum errors).
+    const uint8_t i2s_pins[3] = {I2S_DATA_PIN, I2S_BCLK_PIN, I2S_LRCLK_PIN};
+    for (int i = 0; i < 3; i++) {
+        gpio_set_slew_rate(i2s_pins[i], GPIO_SLEW_RATE_SLOW);
+        gpio_set_drive_strength(i2s_pins[i], GPIO_DRIVE_STRENGTH_2MA);
+    }
+
     g_audio_dma = dma_claim_unused_channel(false);
     if (g_audio_dma < 0) {
         pio_sm_set_enabled(g_audio_pio, g_audio_sm, false);
