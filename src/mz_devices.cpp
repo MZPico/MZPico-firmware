@@ -162,6 +162,52 @@ RAM_FUNC bool MZDeviceManager::handleWrite(uint8_t port, uint8_t dt, uint8_t hig
     return wantsInterrupt;
 }
 
+// Thunks for the rare multi-listener ports: route through the aggregated
+// dispatch. Interrupt aggregation note: listen_loop calls isInterrupt() on
+// the FIRST listener only for flat dispatch; today the only interrupt
+// source (FDC) never shares a port, so this is equivalent.
+RAM_FUNC static int multiReadThunk(MZDevice*, uint8_t port, uint8_t* dt, uint8_t high_addr) {
+    MZDeviceManager::handleRead(port, dt, high_addr);
+    return 0;
+}
+
+RAM_FUNC static int multiWriteThunk(MZDevice*, uint8_t port, uint8_t dt, uint8_t high_addr) {
+    MZDeviceManager::handleWrite(port, dt, high_addr);
+    return 0;
+}
+
+void MZDeviceManager::buildFlatTables() {
+    for (uint16_t p = 0; p < MAX_PORTS; ++p) {
+        auto &RL = readListeners[p];
+        if (RL.count == 1) {
+            // Single listener: direct dispatch (fn may be a null placeholder,
+            // which keeps the port unhandled, matching v0.2.0 semantics)
+            flatReadFn[p] = RL.fns[0];
+            flatReadDev[p] = RL.devs[0];
+        } else if (RL.count > 1) {
+            flatReadFn[p] = multiReadThunk;
+            flatReadDev[p] = RL.devs[0];
+        } else {
+            flatReadFn[p] = nullptr;
+            flatReadDev[p] = nullptr;
+        }
+
+        auto &WL = writeListeners[p];
+        if (WL.count == 1) {
+            flatWriteFn[p] = WL.fns[0];
+            flatWriteDev[p] = WL.devs[0];
+        } else if (WL.count > 1) {
+            flatWriteFn[p] = multiWriteThunk;
+            flatWriteDev[p] = WL.devs[0];
+        } else {
+            flatWriteFn[p] = nullptr;
+            flatWriteDev[p] = nullptr;
+        }
+
+        flatExwait[p] = RL.needsExwaitAny || WL.needsExwaitAny;
+    }
+}
+
 MZDevice* MZDeviceManager::createDevice(const std::string& devType, const std::string& id) {
     auto& creators = getMap();
     auto it = creators.find(devType);
@@ -194,6 +240,7 @@ int MZDeviceManager::enableDevice(MZDevice* dev) {
         return E_DEVICE_NOT_REGISTERED;
     dev->Enable();
     listenPorts(dev);
+    buildFlatTables();
 
     return 0;
 }
@@ -205,6 +252,7 @@ int MZDeviceManager::disableDevice(MZDevice* dev) {
         return E_DEVICE_NOT_REGISTERED;
     dev->Disable();
     unListenPorts(dev);
+    buildFlatTables();
 
     return 0;
 }
@@ -231,6 +279,7 @@ int MZDeviceManager::setPortsList(MZDevice* dev,
 
     if (dev->isEnabled())
         listenPorts(dev);
+    buildFlatTables();
 
     return 0;
 }

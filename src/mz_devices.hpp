@@ -106,6 +106,18 @@ public:
     // Perform aggregated write: broadcasts to all listeners, and returns whether any device wants interrupt
     static bool handleWrite(uint8_t port, uint8_t dt, uint8_t high_addr);
 
+    // Flat fast-path dispatch tables for listen_loop. Ports with a single
+    // listener dispatch directly (v0.2.0-equivalent hot path: minimal loads
+    // before EXWAIT assertion, which is timing-critical against the Z80's
+    // /WAIT sampling); ports with multiple listeners point at a thunk into
+    // the aggregated handleRead/handleWrite. Rebuilt on any listener change.
+    static inline int (*flatReadFn[MAX_PORTS])(MZDevice*, uint8_t, uint8_t*, uint8_t) = {nullptr};
+    static inline MZDevice* flatReadDev[MAX_PORTS] = {nullptr};
+    static inline int (*flatWriteFn[MAX_PORTS])(MZDevice*, uint8_t, uint8_t, uint8_t) = {nullptr};
+    static inline MZDevice* flatWriteDev[MAX_PORTS] = {nullptr};
+    static inline bool flatExwait[MAX_PORTS] = {false};
+    static void buildFlatTables();
+
 private:
     static std::map<std::string, Creator>& getMap() { static std::map<std::string, Creator> creators; return creators; }
     static inline MZDevice* devices[MAX_MZ_DEVICES] = {nullptr};
