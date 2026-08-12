@@ -41,7 +41,11 @@ message(STATUS "Pico W WiFi support: ${USE_PICO_W}")
 
 add_subdirectory(${EXTERNAL_ROOT}/manager)
 
-set(GENERATED_MZF_DIR ${SRC_ROOT})
+# Generate embedded-MZF headers into the build tree, not src/: a shared
+# source-dir location let one build directory's artifacts (built with
+# whatever z88dk happened to be installed) leak into every other build.
+set(GENERATED_MZF_DIR ${CMAKE_BINARY_DIR}/generated_mzf)
+file(MAKE_DIRECTORY ${GENERATED_MZF_DIR})
 
 set(GENERATED_HEADERS "")
 foreach(MZF_FILE ${MZF_FILES})
@@ -137,10 +141,10 @@ target_sources(mzpico PUBLIC
 )
 
 target_include_directories(mzpico PUBLIC
+    ${GENERATED_MZF_DIR}
     ${SRC_ROOT}
     ${SRC_ROOT}/byte_source
     ${SRC_ROOT}/mz_devices
-    ${SRC_ROOT}
     ${EXTERNAL_ROOT}/iniparser/src
     ${EXTERNAL_ROOT}/fatfs-sdk/src/ff15/source/
 )

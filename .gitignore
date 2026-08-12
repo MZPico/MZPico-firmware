@@ -1,4 +1,4 @@
-build/
+build*/
 mzf_menu.hpp
 mzf_explorer.hpp
 .vscode
