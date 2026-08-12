@@ -62,6 +62,11 @@ volatile bool shutting_down = false;
 // ---- Globals ----
 static PIO  pio = pio1;
 
+// Program load offsets, needed to restart the bus SMs from their entry
+// points when flushing pre-boot FIFO backlog (see listen_loop)
+static uint bus_read_prog_offset;
+static uint bus_write_prog_offset;
+
 #ifdef BOARD_DELUXE
 // Gate-control instructions core1 injects into SM_READ via pio_sm_exec():
 // the read program parks the gates at BLOCK_ALL after capturing, so the
@@ -101,11 +106,29 @@ RAM_FUNC static void listen_loop(void) {
     uint8_t data = 0;
     uint32_t raw_bus;
 
+    // The bus SMs have been capturing since long before the devices were
+    // configured; a SM may even be stalled mid-capture on a full FIFO.
+    // Discard the stale backlog and restart both SMs from their entry
+    // points so no pre-boot transaction is dispatched to live devices.
+    pio_sm_set_enabled(pio, SM_READ, false);
+    pio_sm_set_enabled(pio, SM_WRITE, false);
+    pio_sm_clear_fifos(pio, SM_READ);
+    pio_sm_clear_fifos(pio, SM_WRITE);
+    pio_sm_restart(pio, SM_READ);
+    pio_sm_restart(pio, SM_WRITE);
+    pio_sm_exec(pio, SM_READ, pio_encode_jmp(bus_read_prog_offset));
+    pio_sm_exec(pio, SM_WRITE, pio_encode_jmp(bus_write_prog_offset));
+    pio_sm_set_enabled(pio, SM_READ, true);
+    pio_sm_set_enabled(pio, SM_WRITE, true);
+
     while (true) {
         if (!pio_sm_is_rx_fifo_empty(pio, SM_READ)) {
             low_addr = pio_sm_get(pio, SM_READ) >> 24;
             if (MZDeviceManager::hasReadListeners(low_addr)) {
-                if (MZDeviceManager::portNeedsExwait(low_addr)) set_exwait();
+                // Latch the decision: set and release must agree even if the
+                // listener tables were ever mutated while the handler runs
+                bool useExwait = MZDeviceManager::portNeedsExwait(low_addr);
+                if (useExwait) set_exwait();
 
                 #ifdef BOARD_DELUXE
                 high_addr = pio_sm_get_blocking(pio, SM_READ) >> 24;
@@ -119,7 +142,7 @@ RAM_FUNC static void listen_loop(void) {
                 write_data_bus(data);
 
                 if (wantsInterrupt) set_interrupt();
-                if (MZDeviceManager::portNeedsExwait(low_addr)) release_exwait();
+                if (useExwait) release_exwait();
                 while (!(sio_hw->gpio_in & (1u << IORQ_PIN)));
                 release_data_bus();
                 #ifdef BOARD_DELUXE
@@ -140,7 +163,8 @@ RAM_FUNC static void listen_loop(void) {
         else if (!pio_sm_is_rx_fifo_empty(pio, SM_WRITE)) {
             low_addr = pio_sm_get(pio, SM_WRITE) >> 24;
             if (MZDeviceManager::hasWriteListeners(low_addr)) {
-                if (MZDeviceManager::portNeedsExwait(low_addr)) set_exwait();
+                bool useExwait = MZDeviceManager::portNeedsExwait(low_addr);
+                if (useExwait) set_exwait();
                 #ifdef BOARD_DELUXE
                 // The PIO captures high address and data as further FIFO words,
                 // so the data byte is valid even if this loop runs late.
@@ -151,7 +175,7 @@ RAM_FUNC static void listen_loop(void) {
                 #endif
                 bool wantsInterrupt = MZDeviceManager::handleWrite(low_addr, data, high_addr);
                 if (wantsInterrupt) set_interrupt();
-                if (MZDeviceManager::portNeedsExwait(low_addr)) release_exwait();
+                if (useExwait) release_exwait();
             }
             #ifdef BOARD_DELUXE
             else {
@@ -398,11 +422,11 @@ void device_main() {
     multicore_launch_core1(device_main1);
 
     #ifdef BOARD_DELUXE
-        bus_read_deluxe_init(pio, SM_READ,  ADDR_BUS_BASE, RD_PIN);
-        bus_write_deluxe_init(pio, SM_WRITE, ADDR_BUS_BASE, WR_PIN);
+        bus_read_prog_offset  = bus_read_deluxe_init(pio, SM_READ,  ADDR_BUS_BASE, RD_PIN);
+        bus_write_prog_offset = bus_write_deluxe_init(pio, SM_WRITE, ADDR_BUS_BASE, WR_PIN);
     #else
-        bus_read_frugal_init(pio, SM_READ,  ADDR_BUS_BASE, RD_PIN);
-        bus_write_frugal_init(pio, SM_WRITE, ADDR_BUS_BASE, WR_PIN);
+        bus_read_prog_offset  = bus_read_frugal_init(pio, SM_READ,  ADDR_BUS_BASE, RD_PIN);
+        bus_write_prog_offset = bus_write_frugal_init(pio, SM_WRITE, ADDR_BUS_BASE, WR_PIN);
     #endif
 
 
