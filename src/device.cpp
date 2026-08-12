@@ -136,14 +136,8 @@ RAM_FUNC static void listen_loop(void) {
                 MZDevice* dev = MZDeviceManager::flatReadDev[low_addr];
                 if (MZDeviceManager::flatExwait[low_addr]) set_exwait();
 
-                #ifdef BOARD_DELUXE
-                high_addr = pio_sm_get_blocking(pio, SM_READ) >> 24;
-                #endif
-
-                fn(dev, low_addr, &data, high_addr);
-                #ifdef BOARD_DELUXE
-                pio_sm_exec(pio, SM_READ, gate_write_data_instr);
-                #endif
+                // Reads are single-word; no read handler uses the high byte
+                fn(dev, low_addr, &data, 0);
                 acquire_data_bus_for_writing();
                 write_data_bus(data);
 
@@ -151,20 +145,7 @@ RAM_FUNC static void listen_loop(void) {
                 if (MZDeviceManager::flatExwait[low_addr]) release_exwait();
                 while (!(sio_hw->gpio_in & (1u << IORQ_PIN)));
                 release_data_bus();
-                #ifdef BOARD_DELUXE
-                // Re-arm the idle gate: normally the SM wrap already did this,
-                // but if the cycle ended before the exec above, the injected
-                // gate state would otherwise persist into the next capture.
-                pio_sm_exec(pio, SM_READ, gate_low_addr_instr);
-                #endif
             }
-            #ifdef BOARD_DELUXE
-            else {
-                // Drain the high address word even when no device listens on
-                // this port, otherwise the RX FIFO desyncs.
-                pio_sm_get_blocking(pio, SM_READ);
-            }
-            #endif
         }
         else if (!pio_sm_is_rx_fifo_empty(pio, SM_WRITE)) {
             low_addr = pio_sm_get(pio, SM_WRITE) >> 24;
