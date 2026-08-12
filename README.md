@@ -284,6 +284,12 @@ Make sure the following tools are installed on your system:
 - ARM GCC toolchain (`gcc-arm-none-eabi`)
 - `z88dk` (used to build the initial MZ-800 SRAM bootstrap code)
 
+> ⚠️ **Pin your z88dk version.** The z88dk snap tracks the auto-updating `latest/edge`
+> channel, and library behavior (e.g. keyboard mappings) changes between versions.
+> Hold it with `sudo snap refresh z88dk --hold`. Note also that the embedded
+> menu/explorer only rebuild when their sources change — after a z88dk update,
+> use a fresh build directory to make sure the Z80-side binaries are rebuilt.
+
 > 💡 Tip: On Linux these packages are typically available via the system package manager.  
 > On Windows, install using **MSYS2**, **WSL**, or the **Arm GNU Toolchain installer**.
 
