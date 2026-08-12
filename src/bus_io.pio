@@ -4,9 +4,11 @@
 .define GATES_READ_DATA 0b1011
 .define GATES_WRITE_DATA 0b0011
 
-; Reads capture only the low address byte: no current device consumes the
-; high address on reads, and the mid-cycle gate switching needed to fetch
-; it proved unreliable on real hardware. Writes (below) still capture it.
+; Reads capture low and high address as two FIFO words, mirroring the write
+; program. Unlike the earlier (unreliable) variant, the high-address capture
+; is decoupled from enabling the data transceiver: the capture instruction
+; parks the gates at BLOCK_ALL (break-before-make), and only the following
+; instruction reverses the data gate toward the Z80 bus (RD0 low).
 .program bus_read_deluxe
 .side_set 4 opt
 .wrap_target
@@ -14,7 +16,14 @@
 wait_iorq_low:
     wait 0 gpio 20
     jmp pin, wait_iorq_low
-    in pins, 8                  side GATES_WRITE_DATA
+    in pins, 8                  side GATES_READ_HIGH_ADDR
+    ; Settle: the 2-cycle input synchronizer eats short delays, so the loop
+    ; must cover gate enable time (~40ns) plus that lag. 1 set + 8 loop cycles.
+    set x, 7
+high_settle_r:
+    jmp x-- high_settle_r
+    in pins, 8                  side GATES_BLOCK_ALL
+    nop                         side GATES_WRITE_DATA
     wait 1 gpio 20
 .wrap
 
