@@ -67,17 +67,6 @@ static PIO  pio = pio1;
 static uint bus_read_prog_offset;
 static uint bus_write_prog_offset;
 
-#ifdef BOARD_DELUXE
-// Gate-control instructions core1 injects into SM_READ via pio_sm_exec():
-// the read program parks the gates at BLOCK_ALL after capturing, so the
-// data transceiver is only turned toward the Z80 bus when data is
-// actually about to be driven (see bus_io.pio).
-static const uint16_t gate_write_data_instr =
-    pio_encode_nop() | pio_encode_sideset_opt(4, 0x3);   // GATES_WRITE_DATA
-static const uint16_t gate_low_addr_instr =
-    pio_encode_nop() | pio_encode_sideset_opt(4, 0xE);   // GATES_READ_LOW_ADDR
-#endif
-
 void blink(uint8_t cnt) {
 #ifdef USE_PICO_W
     // On Pico W, GPIO25 is used internally by the CYW43 SPI; avoid direct access.
@@ -135,9 +124,13 @@ RAM_FUNC static void listen_loop(void) {
             if (fn) {
                 MZDevice* dev = MZDeviceManager::flatReadDev[low_addr];
                 if (MZDeviceManager::flatExwait[low_addr]) set_exwait();
-
-                // Reads are single-word; no read handler uses the high byte
-                fn(dev, low_addr, &data, 0);
+                #ifdef BOARD_DELUXE
+                // The high address arrives as a second FIFO word ~75ns after
+                // the low byte; popping it after set_exwait keeps the
+                // dispatch deadline unaffected by the second capture.
+                high_addr = pio_sm_get_blocking(pio, SM_READ) >> 24;
+                #endif
+                fn(dev, low_addr, &data, high_addr);
                 acquire_data_bus_for_writing();
                 write_data_bus(data);
 
@@ -146,6 +139,13 @@ RAM_FUNC static void listen_loop(void) {
                 while (!(sio_hw->gpio_in & (1u << IORQ_PIN)));
                 release_data_bus();
             }
+            #ifdef BOARD_DELUXE
+            else {
+                // Drain the high-address word even when no device listens on
+                // this port, otherwise the RX FIFO desyncs.
+                pio_sm_get_blocking(pio, SM_READ);
+            }
+            #endif
         }
         else if (!pio_sm_is_rx_fifo_empty(pio, SM_WRITE)) {
             low_addr = pio_sm_get(pio, SM_WRITE) >> 24;
