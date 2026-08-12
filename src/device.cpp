@@ -201,7 +201,12 @@ static void init_gpio(void) {
         for (size_t i = 0; i < 4; ++i) {
             gpio_init(EN0_PIN + i);
             gpio_set_dir(EN0_PIN + i, GPIO_OUT);
-            gpio_set_slew_rate(EN0_PIN + i, GPIO_SLEW_RATE_FAST);
+            // Minimal edge rate on the transceiver gate lines: they only
+            // drive a few pF of LVC245 enable/dir inputs, and fast edges
+            // here couple into adjacent bus/control traces on marginal
+            // layouts. The pio settle loops (~40ns) absorb the slower edge.
+            gpio_set_slew_rate(EN0_PIN + i, GPIO_SLEW_RATE_SLOW);
+            gpio_set_drive_strength(EN0_PIN + i, GPIO_DRIVE_STRENGTH_2MA);
             gpio_set_function(EN0_PIN + i, GPIO_FUNC_PIO1);
         }
     #endif
