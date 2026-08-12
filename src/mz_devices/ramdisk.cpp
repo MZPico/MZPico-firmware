@@ -11,6 +11,7 @@ RamDisk::RamDisk()
 {
     readMappings[0].fn = RamDisk::resetCounter;
     readMappings[1].fn = RamDisk::readData;
+    readMappings[2].fn = RamDisk::readHighAddr;
     writeMappings[0].fn = RamDisk::writePageAddress;
     writeMappings[1].fn = RamDisk::writeData;
     writeMappings[2].fn = RamDisk::writeAddress;
@@ -27,7 +28,7 @@ RamDisk::RamDisk()
 }
 
 std::vector<uint8_t> RamDisk::getReadPorts() const {
-    return {0xf8, RAMDISK_DEFAULT_BASE_PORT + 1};
+    return {0xf8, RAMDISK_DEFAULT_BASE_PORT + 1, RAMDISK_DEFAULT_BASE_PORT + 2};
 }
 
 std::vector<uint8_t> RamDisk::getWritePorts() const {
@@ -36,7 +37,7 @@ std::vector<uint8_t> RamDisk::getWritePorts() const {
 
 // Keep 0xf8 reset port fixed, shift only data interface ports
 std::pair<std::vector<uint8_t>, std::vector<uint8_t>> RamDisk::applyBasePort(uint8_t basePort) const {
-    std::vector<uint8_t> readPorts = {0xf8, static_cast<uint8_t>(basePort + 1)};
+    std::vector<uint8_t> readPorts = {0xf8, static_cast<uint8_t>(basePort + 1), static_cast<uint8_t>(basePort + 2)};
     std::vector<uint8_t> writePorts = {basePort, static_cast<uint8_t>(basePort + 1), static_cast<uint8_t>(basePort + 2)};
     return {readPorts, writePorts};
 }
@@ -121,5 +122,12 @@ RAM_FUNC int RamDisk::writeData(MZDevice* self, uint8_t port, uint8_t dt, uint8_
 RAM_FUNC int RamDisk::writeAddress(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr) {
     auto* disk = static_cast<RamDisk*>(self);
     disk->pos_ = (disk->pos_ & 0xffff0000) | (static_cast<uint32_t>(high_addr) << 8) | static_cast<uint32_t>(dt);
+    return 0;
+}
+
+// Diagnostic: reading the address port echoes the high address byte (B when
+// using IN r,(C)). Verifies 16-bit read addressing end to end (rdtest.mzf).
+RAM_FUNC int RamDisk::readHighAddr(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr) {
+    *dt = high_addr;
     return 0;
 }
