@@ -26,6 +26,17 @@ high_settle_r:
     jmp x-- high_settle_r
     in pins, 8                  side GATES_BLOCK_ALL
     nop                         side GATES_WRITE_DATA
+    ; End-of-cycle IORQ spike filter: a few-ns crosstalk spike (coupled from
+    ; a gate edge into the IORQ input trace) can be latched by the 2-cycle
+    ; input synchronizer and satisfy a single wait, wrapping the SM early -
+    ; a ghost capture that slips the device position counters. The real IORQ
+    ; high lasts hundreds of ns, so wait, outlast any spike (~90ns), then
+    ; re-verify. Runs in the dead time between cycles: zero latency cost.
+wait_iorq_high:
+    wait 1 gpio 20
+    set x, 15
+spike_flt_r:
+    jmp x-- spike_flt_r
     wait 1 gpio 20
 .wrap
 
