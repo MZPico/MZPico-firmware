@@ -84,7 +84,8 @@ static struct {
     bool init_done;
     bool connect_pending;
     uint32_t connect_start_ms;
-} wifi_state = {0, 1000, false, false, 0};
+    uint32_t next_attempt_ms;
+} wifi_state = {0, 1000, false, false, 0, 0};
 
 static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 30000;
 static const uint32_t WIFI_MAX_BACKOFF_MS = 10000;
@@ -103,6 +104,12 @@ static bool wifi_init_hardware(void) {
 }
 
 static void wifi_start_connection_attempt(void) {
+    // Backoff still running: do nothing this iteration. Signed diff so the
+    // comparison survives to_ms_since_boot() wraparound.
+    if ((int32_t)(to_ms_since_boot(get_absolute_time()) - wifi_state.next_attempt_ms) < 0) {
+        return;
+    }
+
     if (wifi_state.attempt >= g_cfg.maxRetries) {
         cyw43_arch_deinit();
         wifi_state.init_done = false;
@@ -140,8 +147,12 @@ static void wifi_poll_connection_status(void) {
         wifi_state.connect_pending = false;
         wifi_state.attempt++;
         set_state(CloudWifiState::CONNECTING, status);
-        sleep_ms(wifi_state.backoff_ms);
-        wifi_state.backoff_ms = (wifi_state.backoff_ms < WIFI_MAX_BACKOFF_MS) ? 
+        // Non-blocking backoff: core0 also renders I2S audio in this poll
+        // loop, and a blocked core0 leaves the DMA replaying the last
+        // buffer as a steady tone (and overflows the PSG write queue).
+        // Defer the next attempt via a deadline instead of sleeping.
+        wifi_state.next_attempt_ms = to_ms_since_boot(get_absolute_time()) + wifi_state.backoff_ms;
+        wifi_state.backoff_ms = (wifi_state.backoff_ms < WIFI_MAX_BACKOFF_MS) ?
                                  wifi_state.backoff_ms * 2 : WIFI_MAX_BACKOFF_MS;
         return;
     }
@@ -170,6 +181,7 @@ static void wifi_state_machine(void) {
             wifi_state.attempt = 0;
             wifi_state.backoff_ms = 1000;
             wifi_state.connect_pending = false;
+            wifi_state.next_attempt_ms = 0;
             break;
             
         case CloudWifiState::CONNECTING:
