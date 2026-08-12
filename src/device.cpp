@@ -26,6 +26,7 @@
 
 #include "mz_devices.hpp"
 #include "fdc.hpp"
+#include "mem_snoop.hpp"
 
 #include "i2s_audio.hpp"
 
@@ -48,6 +49,7 @@
 #define SM_RESET 0
 #define SM_READ  1
 #define SM_WRITE 2
+#define SM_SNOOP 3   // Deluxe: MZ-700 memory-mapped peripheral write snoop
 
 FDCDevice *fdc;
 QDDevice *qd;
@@ -326,9 +328,9 @@ void device_main1(void) {
         } else { // devices
             std::string devName = stripTrailingNumbers(sectionName);
             
-            // PSG (SN76489) only available on DELUXE board
+            // Sound devices only available on DELUXE board
             #ifndef BOARD_DELUXE
-            if (devName == "psg" || devName == "ctc") {
+            if (devName == "psg" || devName == "ctc" || devName == "ctc700") {
                 continue;
             }
             #endif
@@ -416,7 +418,12 @@ void device_main() {
 
     #ifdef BOARD_DELUXE
         bus_read_prog_offset  = bus_read_deluxe_init(pio, SM_READ,  ADDR_BUS_BASE, RD_PIN);
-        bus_write_prog_offset = bus_write_deluxe_init(pio, SM_WRITE, ADDR_BUS_BASE, WR_PIN);
+        // The write program hosts two entry points; the restartable I/O
+        // entry is io_entry, and the base doubles as the snoop SM's home
+        uint write_prog_base  = bus_write_deluxe_init(pio, SM_WRITE, ADDR_BUS_BASE, WR_PIN);
+        bus_write_prog_offset = write_prog_base + bus_write_deluxe_offset_io_entry;
+        bus_mem_snoop_init(pio, SM_SNOOP, ADDR_BUS_BASE, write_prog_base);
+        mem_snoop_start(pio, SM_SNOOP);
     #else
         bus_read_prog_offset  = bus_read_frugal_init(pio, SM_READ,  ADDR_BUS_BASE, RD_PIN);
         bus_write_prog_offset = bus_write_frugal_init(pio, SM_WRITE, ADDR_BUS_BASE, WR_PIN);

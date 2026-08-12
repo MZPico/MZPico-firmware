@@ -50,13 +50,38 @@ wait_iorq_low:
     wait 1 gpio 20
 .wrap 
 
+; One program, two state machines: SM_WRITE captures I/O writes (entry at
+; io_entry, autopush 8 -> three FIFO words), and SM_SNOOP watches MZ-700
+; memory-mapped peripheral writes (entry at mem_entry, autopush off -> one
+; 24-bit packed word). /MREQ is not wired to the Pico, but a /WR falling
+; edge with /IORQ still high identifies a memory write exactly (refresh
+; and opcode fetches never assert /WR). Both SMs execute the shared
+; capture tail with their own PC and their own wrap window; bus cycles
+; are time-exclusive, so their gate side-sets never overlap.
 .program bus_write_deluxe
 .side_set 4 opt
+public mem_entry:
+mem_wait:
+    wait 0 gpio 22              ; /WR falls
+    jmp pin, capture            ; snoop SM maps jmp pin = IORQ: high -> memory write
+    wait 1 gpio 22              ; I/O write - the write SM's business
+    jmp mem_wait
+public mem_done:                ; snoop SM wrap target (reached after the tail)
+    ; One packed event word: (data<<24)|(high<<16)|(low<<8). Noblock: if
+    ; the FIFO is full the event is dropped - the snoop SM must NEVER
+    ; stall mid-dance or it parks the gates in the wrong state and
+    ; corrupts subsequent I/O captures.
+    push noblock
+    nop                         side GATES_READ_LOW_ADDR
+    wait 1 gpio 22              ; wait out the memory write
+    jmp mem_wait
 .wrap_target
+public io_entry:
     nop                         side GATES_READ_LOW_ADDR
 wait_iorq_low:
     wait 0 gpio 20
     jmp pin, wait_iorq_low
+capture:
     in pins, 8                  side GATES_READ_HIGH_ADDR
     ; Let the high-address transceiver settle before sampling. The 2-cycle
     ; input synchronizer means the sample lags the pins, so the delay must
@@ -74,7 +99,7 @@ data_settle_w:
     jmp x-- data_settle_w
     in pins, 8
 wait_iorq_high:
-    wait 1 gpio 20
+    wait 1 gpio 20              ; io: cycle end; mem: IORQ already high, falls through
 .wrap
 
 .program bus_write_frugal
@@ -143,6 +168,9 @@ uint bus_read_frugal_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
     return offset;
 }
 
+// Returns the program BASE offset. The I/O write SM starts at
+// base + bus_write_deluxe_offset_io_entry (use that as the restart target,
+// not the base - the base is the memory-snoop entry).
 uint bus_write_deluxe_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
     pio_sm_claim(pio, sm);
     uint offset = pio_add_program(pio, &bus_write_deluxe_program);
@@ -156,9 +184,31 @@ uint bus_write_deluxe_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
     pio_sm_set_consecutive_pindirs(pio, sm, 8, 4, true);
     sm_config_set_clkdiv(&c, 1.0f);
     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
-    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_init(pio, sm, offset + bus_write_deluxe_offset_io_entry, &c);
     pio_sm_set_enabled(pio, sm, true);
     return offset;
+}
+
+// MZ-700 memory-write snoop SM: same program, mem_entry entry point, own
+// wrap window (tail end -> mem_done). jmp pin is IORQ here, autopush is
+// off (24-bit packed event pushed explicitly with noblock).
+void bus_mem_snoop_init(PIO pio, uint sm, uint base_gpio, uint write_prog_base) {
+    pio_sm_claim(pio, sm);
+
+    pio_sm_config c = bus_write_deluxe_program_get_default_config(write_prog_base);
+
+    sm_config_set_in_pins(&c, base_gpio);
+    sm_config_set_jmp_pin(&c, 20);           // IORQ
+    sm_config_set_in_shift(&c, true, false, 32);
+    sm_config_set_sideset_pins(&c, 8);
+    sm_config_set_clkdiv(&c, 1.0f);
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
+    sm_config_set_wrap(&c,
+        write_prog_base + bus_write_deluxe_offset_mem_done,
+        write_prog_base + bus_write_deluxe_program.length - 1);
+    pio_sm_set_consecutive_pindirs(pio, sm, 8, 4, true);
+    pio_sm_init(pio, sm, write_prog_base + bus_write_deluxe_offset_mem_entry, &c);
+    pio_sm_set_enabled(pio, sm, true);
 }
 
 uint bus_write_frugal_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
