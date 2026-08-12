@@ -32,6 +32,7 @@ CTC700Device::CTC700Device() {
     mz700Mode = true;
     periMapped = true;
     periLocked = false;
+    forceActive = false;
 
     gateOpen = false;
     counterRunning = false;
@@ -86,6 +87,10 @@ int CTC700Device::readConfig(dictionary *ini) {
     if (pan_value > 100) pan_value = 100;
     pan = static_cast<uint8_t>(pan_value);
     pan256 = (uint16_t)((pan * 256) / 100);
+
+    // Diagnostic: render regardless of mode/bank state, so the capture
+    // chain can be exercised from MZ-800 mode with plain POKEs to E004+
+    forceActive = iniparser_getboolean(ini, (getDevID() + ":force").c_str(), false);
 
     return 0;
 }
