@@ -1,8 +1,11 @@
 #include "ctc.hpp"
 #include "common.hpp"
+#include "ctc_diag.hpp"
 #include "pico/time.h"
 
 REGISTER_MZ_DEVICE(CTCDevice)
+
+CtcDiag g_ctc_diag = {};
 
 CTCDevice::CTCDevice() {
     for (int i = 0; i < 8; i++) {
@@ -115,6 +118,13 @@ void CTCDevice::processWrites() {
         uint32_t ts = ioq[i].ts;
         // Leave events beyond this buffer's window queued for the next one
         if (!timeline.accepts(ts)) break;
+
+        g_ctc_diag.ioTotal++;
+        g_ctc_diag.ioPort[ioq[i].port & 0x07]++;
+        uint32_t lp = (g_ctc_diag.lastIoPos++ & 31) * 2;
+        g_ctc_diag.lastIo[lp] = ioq[i].port;
+        g_ctc_diag.lastIo[lp + 1] = ioq[i].data;
+
         if (!timeline.push(ts, ioq[i].port, ioq[i].data)) {
             applyWrite(ioq[i].port, ioq[i].data);   // overflow: coarse > dropped
         }

@@ -10,6 +10,10 @@
 #include "pico/stdlib.h"
 #include "lwip/tcp.h"
 
+#ifdef BOARD_DELUXE
+#include "ctc_diag.hpp"
+#endif
+
 #ifndef REST_API_PORT
 #define REST_API_PORT 8080
 #endif
@@ -175,6 +179,44 @@ static void rest_parse_and_handle(RestConn *conn) {
         rest_send_response(conn, "200 OK", "application/json", body_json);
         return;
     }
+
+#ifdef BOARD_DELUXE
+    if (strcasecmp(method, "GET") == 0 && strncmp(uri, "/api/ctcdiag", 12) == 0) {
+        // Live CTC/melody capture counters; poll with curl while a game
+        // runs to observe its actual sound-write technique
+        static char diag[1100];
+        CtcDiag& d = g_ctc_diag;
+        int n = snprintf(diag, sizeof(diag),
+            "mem: total=%lu e0page=%lu rejected=%lu\n"
+            "E00x: %lu %lu %lu %lu | %lu %lu %lu %lu %lu | %lu %lu %lu %lu %lu %lu %lu\n"
+            "bank: E1=%lu E3=%lu E4=%lu E5=%lu E6=%lu\n"
+            "io: total=%lu D0-D7: %lu %lu %lu %lu %lu %lu %lu %lu\n"
+            "lastMem(low:data):",
+            (unsigned long)d.memTotal, (unsigned long)d.memE0Page, (unsigned long)d.memRejected,
+            (unsigned long)d.memLow[0], (unsigned long)d.memLow[1], (unsigned long)d.memLow[2], (unsigned long)d.memLow[3],
+            (unsigned long)d.memLow[4], (unsigned long)d.memLow[5], (unsigned long)d.memLow[6], (unsigned long)d.memLow[7],
+            (unsigned long)d.memLow[8],
+            (unsigned long)d.memLow[9], (unsigned long)d.memLow[10], (unsigned long)d.memLow[11], (unsigned long)d.memLow[12],
+            (unsigned long)d.memLow[13], (unsigned long)d.memLow[14], (unsigned long)d.memLow[15],
+            (unsigned long)d.bank[0], (unsigned long)d.bank[1], (unsigned long)d.bank[2],
+            (unsigned long)d.bank[3], (unsigned long)d.bank[4],
+            (unsigned long)d.ioTotal,
+            (unsigned long)d.ioPort[0], (unsigned long)d.ioPort[1], (unsigned long)d.ioPort[2], (unsigned long)d.ioPort[3],
+            (unsigned long)d.ioPort[4], (unsigned long)d.ioPort[5], (unsigned long)d.ioPort[6], (unsigned long)d.ioPort[7]);
+        for (int i = 0; i < 32 && n < (int)sizeof(diag) - 8; i++) {
+            uint32_t p = ((d.lastMemPos + i) & 31) * 2;
+            n += snprintf(diag + n, sizeof(diag) - n, " %02x:%02x", d.lastMem[p], d.lastMem[p + 1]);
+        }
+        n += snprintf(diag + n, sizeof(diag) - n, "\nlastIo(port:data):");
+        for (int i = 0; i < 32 && n < (int)sizeof(diag) - 8; i++) {
+            uint32_t p = ((d.lastIoPos + i) & 31) * 2;
+            n += snprintf(diag + n, sizeof(diag) - n, " %02x:%02x", d.lastIo[p], d.lastIo[p + 1]);
+        }
+        snprintf(diag + n, sizeof(diag) - n, "\n");
+        rest_send_response(conn, "200 OK", "text/plain", diag);
+        return;
+    }
+#endif
 
     if (strcasecmp(method, "GET") == 0 && strncmp(uri, "/api/last", 9) == 0) {
         char body_json[REST_MAX_CMD_SIZE + 32];

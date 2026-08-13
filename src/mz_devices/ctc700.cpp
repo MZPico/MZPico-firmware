@@ -4,6 +4,7 @@
 
 #include "ctc700.hpp"
 #include "mem_snoop.hpp"
+#include "ctc_diag.hpp"
 
 REGISTER_MZ_DEVICE(CTC700Device)
 
@@ -97,11 +98,11 @@ RAM_FUNC int CTC700Device::writeBankPort(MZDevice* self, uint8_t port, uint8_t, 
 
 void CTC700Device::applyBankEvent(uint8_t port) {
     switch (port) {
-        case 0xE1: periMapped = false; break;
-        case 0xE3:
-        case 0xE4: periMapped = true; periLocked = false; break;
-        case 0xE5: periLocked = true; break;
-        case 0xE6: periLocked = false; break;
+        case 0xE1: periMapped = false; g_ctc_diag.bank[0]++; break;
+        case 0xE3: periMapped = true; periLocked = false; g_ctc_diag.bank[1]++; break;
+        case 0xE4: periMapped = true; periLocked = false; g_ctc_diag.bank[2]++; break;
+        case 0xE5: periLocked = true; g_ctc_diag.bank[3]++; break;
+        case 0xE6: periLocked = false; g_ctc_diag.bank[4]++; break;
         default: break;
     }
 }
@@ -156,14 +157,25 @@ void CTC700Device::processWrites() {
         uint32_t w = mem_snoop_read(idx);
         cursor = (cursor + 1) & mask;
 
+        g_ctc_diag.memTotal++;
         uint8_t high = (w >> 16) & 0xFF;
         if (high != 0xE0) continue;
+        g_ctc_diag.memE0Page++;
         uint8_t low = (w >> 8) & 0xFF;
+        if (low < 16) g_ctc_diag.memLow[low]++;
         if (low < 0x04 || low > 0x08) continue;
-        if (!snoopActive()) continue;
+        if (!snoopActive()) {
+            g_ctc_diag.memRejected++;
+            continue;
+        }
 
-        if (!timeline.push(ts, low, (w >> 24) & 0xFF)) {
-            handlePeripheralWrite(low, (w >> 24) & 0xFF);   // overflow: coarse > dropped
+        uint8_t data = (w >> 24) & 0xFF;
+        uint32_t lp = (g_ctc_diag.lastMemPos++ & 31) * 2;
+        g_ctc_diag.lastMem[lp] = low;
+        g_ctc_diag.lastMem[lp + 1] = data;
+
+        if (!timeline.push(ts, low, data)) {
+            handlePeripheralWrite(low, data);   // overflow: coarse > dropped
         }
     }
 }
