@@ -147,14 +147,7 @@ struct Pit8253Tone {
     uint32_t cycleResid = 0;
     int32_t dcPrevIn = 0;
     int32_t dcPrevOut = 0;
-
-    // Speaker resonance simulation: the real machine's small cone rings at
-    // its ~1.4 kHz mechanical resonance after each edge - short tonebursts
-    // and clicks carry a tonal "echo" a flat DAC reproduces as a dry pop.
-    // Second-order band-pass (Q~4), mixed with the dry signal per the
-    // "speaker" ini setting (0 = off).
-    uint8_t speakerMix = 0;     // 0..255 wet amount
-    int32_t bqX1 = 0, bqX2 = 0, bqY1 = 0, bqY2 = 0;
+    bool dcPrimed = false;
 
     void setAudioMask(bool open) { audioMask = open; }
 
@@ -290,23 +283,18 @@ struct Pit8253Tone {
             curDone = curCycles;
         }
         int32_t x = (int32_t)(((int64_t)amplitude * curArea) / (int32_t)curCycles);
+        // Prime the DC blocker with the initial line level: the models
+        // power up with the line logically high, and an unprimed blocker
+        // would ring that step down audibly at every audio start
+        if (!dcPrimed) {
+            dcPrevIn = x;
+            dcPrimed = true;
+        }
         // One-pole DC blocker (~27 Hz at 44.1 kHz): static levels decay to
         // silence; transitions - the actual 1-bit audio - pass through
         int32_t y = x - dcPrevIn + dcPrevOut - (dcPrevOut >> 8);
         dcPrevIn = x;
         dcPrevOut = y;
-
-        if (speakerMix) {
-            // Band-pass biquad, f0 ~1.4 kHz, Q ~4 at 44.1 kHz (Q14 coeffs):
-            // rings after edges like the physical cone
-            int32_t bp = (396 * (y - bqX2) + 31347 * bqY1 - 15592 * bqY2) >> 14;
-            bqX2 = bqX1;
-            bqX1 = y;
-            bqY2 = bqY1;
-            bqY1 = bp;
-            y = (y * (int32_t)(256 - speakerMix) + bp * (int32_t)speakerMix) >> 8;
-        }
-
         if (y > 32767) y = 32767;
         if (y < -32767) y = -32767;
         return y;
