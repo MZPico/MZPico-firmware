@@ -45,7 +45,7 @@ CTCDevice::CTCDevice() {
     cursorValid = false;
     cursor = 0;
 
-    volume = 100;
+    volume = 20;
     pan = 50;
     pan256 = (uint16_t)((pan * 256) / 100);
 }
@@ -82,7 +82,9 @@ std::pair<std::vector<uint8_t>, std::vector<uint8_t>> CTCDevice::applyBasePort(u
 int CTCDevice::readConfig(dictionary *ini) {
     if (!ini) return -1;
 
-    int vol = iniparser_getint(ini, (getDevID() + ":volume").c_str(), 100);
+    // Default matches the PSG's masterVolume default, so a bare ini has
+    // both sound sources balanced out of the box
+    int vol = iniparser_getint(ini, (getDevID() + ":volume").c_str(), 20);
     if (vol < 0) vol = 0;
     if (vol > 100) vol = 100;
     volume = static_cast<uint8_t>(vol);
