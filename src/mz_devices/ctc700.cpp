@@ -198,11 +198,15 @@ void CTC700Device::handlePeripheralWrite(uint8_t low, uint8_t data) {
         case 0x02:   // E002: direct 8255 port C write - PC0 is the audio mask
             tone.setAudioMask((data & 0x01) != 0);
             break;
-        case 0x03:   // E003: 8255 control - mode-set resets port C, BSR
-                     // touches the mask only when it selects PC0
-            if (data & 0x80) {
-                tone.setAudioMask(false);
-            } else if (((data >> 1) & 0x07) == 0) {
+        case 0x03:   // E003: 8255 control - BSR touches the mask only when
+                     // it selects PC0. Mode-set words (bit 7) technically
+                     // reset port C, but they occur during early monitor
+                     // init, which races the snoop consumer coming up: the
+                     // reopening PC0 BSR can land in the skipped pre-ready
+                     // history and the mask would stay closed - killing the
+                     // power-on beep. BSR pairs are self-correcting, so
+                     // honor only those here.
+            if (!(data & 0x80) && ((data >> 1) & 0x07) == 0) {
                 tone.setAudioMask((data & 0x01) != 0);
             }
             break;
