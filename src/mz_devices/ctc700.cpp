@@ -8,8 +8,10 @@
 
 REGISTER_MZ_DEVICE(CTC700Device)
 
-static constexpr uint8_t PORT_DIAG_CURSOR = 0xDE;
-static constexpr uint8_t PORT_DIAG_EVENTS = 0xDF;
+// Diagnostic ports live in MZPico's private 0x40 block (pico_mgr 0x40-0x44,
+// pico_rd 0x45-0x4B), clear of anything the machine itself decodes
+static constexpr uint8_t PORT_DIAG_CURSOR = 0x4E;
+static constexpr uint8_t PORT_DIAG_EVENTS = 0x4F;
 
 // Write-listener port order (positional match with writeMappings)
 static constexpr uint8_t PORT_BANK_E1 = 0xE1;  // DRAM over D000-FFFF: peripherals unmapped
