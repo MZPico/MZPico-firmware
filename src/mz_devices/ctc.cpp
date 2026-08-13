@@ -90,16 +90,16 @@ RAM_FUNC int CTCDevice::writePort(MZDevice* self, uint8_t port, uint8_t dt, uint
 
 void CTCDevice::applyWrite(uint8_t port, uint8_t dt) {
     switch (port & 0x07) {
-        case 2:   // 0xD2: direct 8255 port C write - PC0 is the sound gate
-            tone.setGate((dt & 0x01) != 0);
+        case 2:   // 0xD2: direct 8255 port C write - PC0 is the audio mask
+            tone.setAudioMask((dt & 0x01) != 0);
             break;
         case 3:   // 0xD3: 8255 control. Mode-set (bit 7) resets port C ->
-                  // gate closes; BSR touches the gate only when it selects
-                  // PC0 (tape motor / interrupt mask BSRs must not)
+                  // mask closes; BSR touches it only when it selects PC0
+                  // (tape motor / interrupt mask BSRs must not)
             if (dt & 0x80) {
-                tone.setGate(false);
+                tone.setAudioMask(false);
             } else if (((dt >> 1) & 0x07) == 0) {
-                tone.setGate((dt & 0x01) != 0);
+                tone.setAudioMask((dt & 0x01) != 0);
             }
             break;
         case 4:   // 0xD4: 8253 counter 0 data
@@ -114,8 +114,9 @@ void CTCDevice::applyWrite(uint8_t port, uint8_t dt) {
 }
 
 void CTCDevice::processWrites() {
-    g_ctc_diag.ioToneState = (tone.gate ? 1 : 0) | (tone.outLevel ? 2 : 0) |
-                             (tone.running ? 4 : 0) | ((tone.mode & 7) << 4);
+    g_ctc_diag.ioToneState = (tone.audioMask ? 1 : 0) | (tone.outLevel ? 2 : 0) |
+                             (tone.running ? 4 : 0) | (tone.gate0 ? 8 : 0) |
+                             ((tone.mode & 7) << 4);
     g_ctc_diag.ioToneReload = tone.reloadValue;
 
     uint32_t head = ioqHead;   // snapshot; core1 keeps appending
