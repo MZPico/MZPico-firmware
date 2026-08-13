@@ -174,9 +174,8 @@ void CTC700Device::processWrites() {
         g_ctc_diag.memE0Page++;
         uint8_t low = (w >> 8) & 0xFF;
         if (low < 16) g_ctc_diag.memLow[low]++;
-        // E002/E003: memory-mapped 8255 port C / control (audio mask);
         // E004-E008: 8253 counter 0, control word, GATE0 latch
-        if (low < 0x02 || low > 0x08) continue;
+        if (low < 0x04 || low > 0x08) continue;
         if (!snoopActive()) {
             g_ctc_diag.memRejected++;
             continue;
@@ -193,27 +192,18 @@ void CTC700Device::processWrites() {
     }
 }
 
+// The 8255 PC0 audio mask is deliberately NOT tracked on the memory path
+// (E002/E003): the monitor initializes the 8255 during early boot, which
+// races the snoop consumer coming up - pre-ready history is skipped, so
+// mask state derived from it is unreliable and twice killed the power-on
+// beep. No observed software drives the mask memory-mapped; the mask
+// stays open here and is fully modeled on the I/O path (0xD2/0xD3).
 void CTC700Device::handlePeripheralWrite(uint8_t low, uint8_t data) {
     switch (low) {
-        case 0x02:   // E002: direct 8255 port C write - PC0 is the audio mask
-            tone.setAudioMask((data & 0x01) != 0);
-            break;
-        case 0x03:   // E003: 8255 control - BSR touches the mask only when
-                     // it selects PC0. Mode-set words (bit 7) technically
-                     // reset port C, but they occur during early monitor
-                     // init, which races the snoop consumer coming up: the
-                     // reopening PC0 BSR can land in the skipped pre-ready
-                     // history and the mask would stay closed - killing the
-                     // power-on beep. BSR pairs are self-correcting, so
-                     // honor only those here.
-            if (!(data & 0x80) && ((data >> 1) & 0x07) == 0) {
-                tone.setAudioMask((data & 0x01) != 0);
-            }
-            break;
         case 0x04: tone.countWrite(data); break;              // 8253 counter 0
         case 0x07: tone.ctrlWrite(data); break;               // 8253 control word
         case 0x08: tone.setGate0((data & 0x01) != 0); break;  // E008 latch -> GATE0 pin
-        default: break;                                        // counters 1/2: not sound
+        default: break;                                        // counters 1/2, 8255: not sound
     }
 }
 
