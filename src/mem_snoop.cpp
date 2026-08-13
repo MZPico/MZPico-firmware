@@ -46,8 +46,4 @@ void mem_snoop_service(void) {
     }
 }
 
-int mem_snoop_channel(void) {
-    return dma_ch;
-}
-
 #endif
