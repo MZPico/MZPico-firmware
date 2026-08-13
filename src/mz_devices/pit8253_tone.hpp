@@ -43,6 +43,13 @@ struct ToneTimeline {
     uint32_t playheadTs = 0;
     bool inited = false;
 
+    // Diagnostics: where events land on the timeline
+    uint32_t negClamped = 0;     // events with ts before the window start
+    uint32_t pushedTotal = 0;
+    int32_t lastBacklogUs = 0;   // newestTs - playheadTs at buffer start
+    uint16_t lastRel[8] = {0};   // last raw rel offsets (us, clamped)
+    uint32_t lastRelPos = 0;
+
     // Call at buffer start, with the newest pending event's timestamp (if any)
     void beginBuffer(uint32_t newestTs, bool haveNewest) {
         len = 0;
@@ -60,6 +67,7 @@ struct ToneTimeline {
                 playheadTs = newestTs - 2 * BUFFER_US;
             }
         }
+        if (haveNewest) lastBacklogUs = (int32_t)(newestTs - playheadTs);
     }
 
     // Does this timestamp fall inside the current buffer window?
@@ -72,6 +80,9 @@ struct ToneTimeline {
     bool push(uint32_t ts, uint8_t a, uint8_t b) {
         if (len >= QUEUE_SIZE) return false;
         int32_t rel = (int32_t)(ts - playheadTs);
+        pushedTotal++;
+        if (rel < 0) negClamped++;
+        lastRel[lastRelPos++ & 7] = (rel < 0) ? 0 : ((rel > 0xFFFF) ? 0xFFFF : (uint16_t)rel);
         if (rel < 0) rel = 0;
         if ((uint32_t)rel > BUFFER_US) rel = BUFFER_US;
         q[len].offUs = (uint16_t)rel;

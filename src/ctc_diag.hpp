@@ -39,6 +39,14 @@ struct CtcDiag {
     uint32_t ioToneReload;
     uint8_t memToneState;
     uint32_t memToneReload;
+
+    // Timeline placement (I/O path): total events pushed, how many were
+    // clamped to the window start (collapsed edges!), the playhead backlog
+    // and the last raw rel offsets in us
+    uint32_t ioPushed;
+    uint32_t ioNegClamped;
+    int32_t ioBacklogUs;
+    uint16_t ioLastRel[8];
 };
 
 extern CtcDiag g_ctc_diag;

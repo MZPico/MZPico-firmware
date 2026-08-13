@@ -214,13 +214,17 @@ static void rest_parse_and_handle(RestConn *conn) {
         }
         n += snprintf(diag + n, sizeof(diag) - n,
             "\nd2widthUs: %u %u %u %u %u %u %u %u  d2periodUs: %u %u %u %u %u %u %u %u\n"
-            "ioTone: st=%02x reload=%lu  memTone: st=%02x reload=%lu\n",
+            "ioTone: st=%02x reload=%lu  memTone: st=%02x reload=%lu\n"
+            "ioTl: pushed=%lu neg=%lu backlogUs=%ld rel: %u %u %u %u %u %u %u %u\n",
             d.d2Width[0], d.d2Width[1], d.d2Width[2], d.d2Width[3],
             d.d2Width[4], d.d2Width[5], d.d2Width[6], d.d2Width[7],
             d.d2Period[0], d.d2Period[1], d.d2Period[2], d.d2Period[3],
             d.d2Period[4], d.d2Period[5], d.d2Period[6], d.d2Period[7],
             d.ioToneState, (unsigned long)d.ioToneReload,
-            d.memToneState, (unsigned long)d.memToneReload);
+            d.memToneState, (unsigned long)d.memToneReload,
+            (unsigned long)d.ioPushed, (unsigned long)d.ioNegClamped, (long)d.ioBacklogUs,
+            d.ioLastRel[0], d.ioLastRel[1], d.ioLastRel[2], d.ioLastRel[3],
+            d.ioLastRel[4], d.ioLastRel[5], d.ioLastRel[6], d.ioLastRel[7]);
         (void)n;
         rest_send_response(conn, "200 OK", "text/plain", diag);
         return;
