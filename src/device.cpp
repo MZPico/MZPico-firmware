@@ -330,7 +330,7 @@ void device_main1(void) {
             
             // Sound devices only available on DELUXE board
             #ifndef BOARD_DELUXE
-            if (devName == "psg" || devName == "ctc" || devName == "melody") {
+            if (devName == "psg" || devName == "ctc") {
                 continue;
             }
             #endif

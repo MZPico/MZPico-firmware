@@ -24,7 +24,7 @@
 
 constexpr uint8_t MAX_MZ_DEVICES = 64;
 constexpr uint16_t MAX_PORTS = 256;
-constexpr uint8_t MAX_DEVICE_PORTS = 8;
+constexpr uint8_t MAX_DEVICE_PORTS = 16;
 constexpr uint8_t MAX_DEVICES_PER_PORT = 2;
 
 constexpr uint8_t E_PORT_ALLOCATED = 255;
