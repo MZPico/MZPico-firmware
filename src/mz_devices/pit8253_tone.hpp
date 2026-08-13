@@ -20,6 +20,74 @@
 // Bus-side methods (ctrlWrite/countWrite/setGate) are small and inline
 // so they fold into the callers' RAM_FUNC handlers. render() runs on
 // core0 only.
+// Schedules timestamped bus writes onto exact sample positions. The
+// playhead advances exactly one buffer per audio buffer regardless of
+// WHEN the fill happens - core0's poll loop jitters by milliseconds
+// (WiFi/USB share it), so anchoring to wall-clock at fill time smears
+// event offsets and turns 1-bit music into popping. Events beyond the
+// current buffer window are left unconsumed for the next buffer.
+struct ToneTimeline {
+    static constexpr uint32_t QUEUE_SIZE = 192;
+    static constexpr uint32_t BUFFER_FRAMES = AUDIO_BUFFER_SIZE / 2;
+    static constexpr uint32_t BUFFER_US = (BUFFER_FRAMES * 1000000ull) / AUDIO_SAMPLE_RATE;
+
+    struct Ev {
+        uint8_t offset;
+        uint8_t a;
+        uint8_t b;
+    };
+    Ev q[QUEUE_SIZE];
+    uint32_t len = 0, pos = 0, sample = 0;
+    uint32_t playheadTs = 0;
+    bool inited = false;
+
+    // Call at buffer start, with the newest pending event's timestamp (if any)
+    void beginBuffer(uint32_t newestTs, bool haveNewest) {
+        len = 0;
+        pos = 0;
+        sample = 0;
+        if (!inited) {
+            if (!haveNewest) return;
+            playheadTs = newestTs - 2 * BUFFER_US;
+            inited = true;
+        } else {
+            playheadTs += BUFFER_US;
+            // The sample clock and the us timer drift ~100ppm apart; if the
+            // backlog grows past a few buffers, resnap instead of lagging
+            if (haveNewest && (int32_t)(newestTs - playheadTs) > (int32_t)(4 * BUFFER_US)) {
+                playheadTs = newestTs - 2 * BUFFER_US;
+            }
+        }
+    }
+
+    // Does this timestamp fall inside the current buffer window?
+    bool accepts(uint32_t ts) const {
+        return inited && (int32_t)(ts - (playheadTs + BUFFER_US)) < 0;
+    }
+
+    void push(uint32_t ts, uint8_t a, uint8_t b) {
+        if (len >= QUEUE_SIZE) return;   // overload: drop (graceful)
+        int32_t rel = (int32_t)(ts - playheadTs);
+        if (rel < 0) rel = 0;
+        uint32_t off = ((uint32_t)rel * 441u) / 10000u;   // us -> samples
+        if (off >= BUFFER_FRAMES) off = BUFFER_FRAMES - 1;
+        q[len].offset = (uint8_t)off;
+        q[len].a = a;
+        q[len].b = b;
+        len++;
+    }
+
+    // Per output sample: invoke f(a, b) for every event due at this position
+    template <typename F>
+    void applyDue(F&& f) {
+        while (pos < len && q[pos].offset <= sample) {
+            f(q[pos].a, q[pos].b);
+            pos++;
+        }
+        sample++;
+    }
+};
+
 struct Pit8253Tone {
     // GDG master clock 17.734475 MHz / 16 (per the MZ-800 GDG; matches
     // mz800emu's GDGCLK_REAL_BASE / GDGCLK_CTC0_DIVIDER)

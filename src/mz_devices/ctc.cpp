@@ -1,5 +1,6 @@
 #include "ctc.hpp"
 #include "common.hpp"
+#include "pico/time.h"
 
 REGISTER_MZ_DEVICE(CTCDevice)
 
@@ -8,15 +9,18 @@ CTCDevice::CTCDevice() {
         writeMappings[i].fn = nullptr;
     }
 
-    writeMappings[2].fn = CTCDevice::writePortC;      // D2: 8255 port C data
-    writeMappings[3].fn = CTCDevice::writePortCtrl;   // D3: 8255 control (BSR/mode)
-    writeMappings[4].fn = CTCDevice::writeCounter0;   // D4: 8253 counter 0
-    writeMappings[7].fn = CTCDevice::writeCounterCtrl; // D7: 8253 control
+    writeMappings[2].fn = CTCDevice::writePort;   // D2: 8255 port C data
+    writeMappings[3].fn = CTCDevice::writePort;   // D3: 8255 control (BSR/mode)
+    writeMappings[4].fn = CTCDevice::writePort;   // D4: 8253 counter 0
+    writeMappings[7].fn = CTCDevice::writePort;   // D7: 8253 control
 
     // Initialize port mappings with defaults
     auto readPorts = getReadPorts();
     auto writePorts = getWritePorts();
     initializePortMappings(readPorts, writePorts);
+
+    ioqHead = 0;
+    ioqTail = 0;
 
     volume = 100;
     pan = 50;
@@ -60,40 +64,67 @@ int CTCDevice::readConfig(dictionary *ini) {
     return 0;
 }
 
-// 0xD2: direct 8255 port C write - PC0 is the sound gate
-RAM_FUNC int CTCDevice::writePortC(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
-    static_cast<CTCDevice*>(self)->tone.setGate((dt & 0x01) != 0);
-    return 0;
-}
-
-// 0xD3: 8255 control register. Bit 7 = 1 is a mode-set word (resets all
-// port C outputs on a real 8255 - gate closes). Bit 7 = 0 is a Bit
-// Set/Reset command: bits 3-1 select the PC bit, bit 0 is the value; only
-// PC0 is the sound gate - BSR commands for PC1-PC7 (tape motor, interrupt
-// mask, ...) must not touch it.
-RAM_FUNC int CTCDevice::writePortCtrl(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
+// core1: enqueue the write with a 1MHz-timer timestamp; decoding and the
+// tone model run on core0 at the write's scheduled sample position
+RAM_FUNC int CTCDevice::writePort(MZDevice* self, uint8_t port, uint8_t dt, uint8_t) {
     auto* dev = static_cast<CTCDevice*>(self);
-    if (dt & 0x80) {
-        dev->tone.setGate(false);
-    } else if (((dt >> 1) & 0x07) == 0) {
-        dev->tone.setGate((dt & 0x01) != 0);
+    uint32_t h = dev->ioqHead;
+    if ((h - dev->ioqTail) < IOQ_SIZE) {
+        uint32_t i = h & (IOQ_SIZE - 1);
+        dev->ioq[i].ts = time_us_32();
+        dev->ioq[i].port = port;
+        dev->ioq[i].data = dt;
+        dev->ioqHead = h + 1;
     }
     return 0;
 }
 
-// 0xD7: 8253 control word
-RAM_FUNC int CTCDevice::writeCounterCtrl(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
-    static_cast<CTCDevice*>(self)->tone.ctrlWrite(dt);
-    return 0;
+void CTCDevice::applyWrite(uint8_t port, uint8_t dt) {
+    switch (port & 0x07) {
+        case 2:   // 0xD2: direct 8255 port C write - PC0 is the sound gate
+            tone.setGate((dt & 0x01) != 0);
+            break;
+        case 3:   // 0xD3: 8255 control. Mode-set (bit 7) resets port C ->
+                  // gate closes; BSR touches the gate only when it selects
+                  // PC0 (tape motor / interrupt mask BSRs must not)
+            if (dt & 0x80) {
+                tone.setGate(false);
+            } else if (((dt >> 1) & 0x07) == 0) {
+                tone.setGate((dt & 0x01) != 0);
+            }
+            break;
+        case 4:   // 0xD4: 8253 counter 0 data
+            tone.countWrite(dt);
+            break;
+        case 7:   // 0xD7: 8253 control word
+            tone.ctrlWrite(dt);
+            break;
+        default:
+            break;
+    }
 }
 
-// 0xD4: 8253 counter 0 data
-RAM_FUNC int CTCDevice::writeCounter0(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
-    static_cast<CTCDevice*>(self)->tone.countWrite(dt);
-    return 0;
+void CTCDevice::processWrites() {
+    uint32_t head = ioqHead;   // snapshot; core1 keeps appending
+    bool have = head != ioqTail;
+    uint32_t newestTs = have ? ioq[(head - 1) & (IOQ_SIZE - 1)].ts : 0;
+    timeline.beginBuffer(newestTs, have);
+
+    while (ioqTail != head) {
+        uint32_t i = ioqTail & (IOQ_SIZE - 1);
+        uint32_t ts = ioq[i].ts;
+        // Leave events beyond this buffer's window queued for the next one
+        if (!timeline.accepts(ts)) break;
+        timeline.push(ts, ioq[i].port, ioq[i].data);
+        ioqTail++;
+    }
 }
 
 void CTCDevice::renderSample(int16_t& left, int16_t& right) {
+    timeline.applyDue([this](uint8_t port, uint8_t data) {
+        applyWrite(port, data);
+    });
+
     int32_t amplitude = (CTC_BASE_AMPLITUDE * volume) / 100;
     int32_t sample = tone.render(amplitude);
 
