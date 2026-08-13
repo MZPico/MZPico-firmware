@@ -29,7 +29,12 @@ Related hardware:
   Emulates multiple virtual devices:
   - Floppy disk controller
   - Quick disk
-  - RAM disks
+  - RAM disks (SRAM boot disk, paged RAM disk, PicoRD)
+
+- **Sound emulation over I2S** *(Deluxe board)*  
+  Both MZ-800 sound sources are rendered to the on-board I2S sound card:
+  - **SN76489 PSG** — 3 tone channels + noise, stereo panning
+  - **8253 beeper** — monitor beeps, MZ-700 melody and S-BASIC `MUSIC`, and 1-bit "beeper engine" music in games; both the I/O-mapped and the memory-mapped 8253 access paths are captured
 
 - **User-friendly navigation interface**
   - **Customizable boot screen** with quick access to favorite programs  
@@ -114,6 +119,8 @@ This file defines which virtual devices are enabled, their I/O base ports, and w
 | `pico_rd` (MZPico-type PicoRD RAM-disk) | `0x45` |
 | `pico_mgr` (MZPico management/control device) | `0x40` |
 | `psg` (SN76489 PSG) | `0xf2` |
+| `ramdisk` (paged RAM disk) | `0xe9` (reset port fixed at `0xf8`) |
+| `ctc` (8253 beeper) | fixed system ports (`base_port` not applicable) |
 
 Default `enabled=true` for all devices.
 
@@ -157,10 +164,24 @@ Quick disk emulation can use either a MZQ image file or a direcotory.
 Files inside the directory are then served as content of emulated Quick Disk.
 The order of files in the Quick Disk is the same their order in the MZPico device filesystem.
 
+Options:
+- `image` — MZQ file or directory
+- `write_protected` — `true`/`false` (default `false`)
+
 Example:
 ```ini
 [qd]
 image=sd:/qddir
+```
+
+### Floppy disk controller
+
+The `[fdc]` section emulates the MZ-800 floppy disk controller with up to 4 drives. Each drive is assigned a `.DSK` image:
+
+```ini
+[fdc]
+image_disk1=flash:/cpm.dsk
+image_disk2=sd:/games.dsk
 ```
 
 ### Example full configuration
@@ -232,6 +253,79 @@ tone1_pan=100
 tone2_pan=0
 noise_pan=100
 volume=60
+```
+
+---
+
+### CTC (8253 beeper)
+
+Emulates the MZ-800 built-in beeper — the 8253 counter 0 with its gate latch and the 8255 audio mask — rendered to the I2S output on the Deluxe board. Both hardware access paths are captured:
+
+- the **I/O-mapped** ports used in MZ-800 mode (`0xd0`–`0xd7`)
+- the **memory-mapped** window at `0xE004`–`0xE008`, used by MZ-700-mode software and many games (captured by snooping memory writes on the bus, with bank-switch tracking so RAM banked over the window never produces sound)
+
+This covers monitor beeps, S-BASIC `MUSIC`, MZ-700 melody, chip-music engines, and 1-bit "beeper engine" sound in games (e.g. ZX Spectrum ports), reproduced with microsecond event timing.
+
+Config section name: `[ctc]`
+
+Defaults:
+- `enabled=true`
+- `volume=20` (matches the PSG default, so both sources are balanced)
+- `pan=50`
+
+Ports are fixed system addresses; `base_port` does not apply.
+
+Example:
+
+```ini
+[ctc]
+volume=20
+pan=50
+```
+
+> 💡 **Note:** the power-on beep right after reset plays before MZPico's audio pipeline has started; it is heard only from the machine's internal speaker.
+
+---
+
+### RAM disk (paged)
+
+The `[ramdisk]` section emulates a paged RAM disk: 64 KB pages selected via the page register, byte access with auto-increment, and full 16-bit intra-page addressing on writes (Deluxe board). Backed by Pico RAM, or by a file for persistent content.
+
+Config section name: `[ramdisk]`
+
+Options:
+- `base_port` — default `0xe9` (the reset port stays fixed at `0xf8`)
+- `size` — capacity in bytes, rounded up to 64 KB multiples; default `65536` (one page). **Use `131072` or more to enable page switching** — with a single page, page selects wrap back to page 0.
+- `image` — optional backing file; omitted = volatile RAM
+- `read_only` — `true`/`false` (default `false`)
+
+Example:
+
+```ini
+[ramdisk]
+size=131072
+```
+
+---
+
+### SRAM disk
+
+The `[sramdisk]` section emulates the SRAM boot card used for instant startup (see *Fast system boot*). It serves an `.MZF` program in the SRAM card boot format.
+
+Config section name: `[sramdisk]`
+
+Options:
+- `image` — `.MZF` file or built-in image; default `@menu`
+- `allow_boot` — answer the boot probe (default `true`)
+- `read_only` — default `true`
+- `in_ram` — copy the image to RAM for writability (default `false`)
+- `size` — override size in bytes
+
+Example:
+
+```ini
+[sramdisk]
+image=@menu
 ```
 
 ---
@@ -331,8 +425,9 @@ After build completion, the generated `.uf2` firmware file will appear in the `b
 
 ## Limitations
 
-- All emulated MZ-800 devices are read-only. This limitation will be removed in future releases.
-- No support yet for I2S card on the DELUXE board.
+- Floppy disk write support is still limited; Quick Disk and the RAM disks are writable (see the `write_protected` / `read_only` options).
+- Sound emulation (PSG + 8253 beeper) requires the Deluxe board's I2S sound card.
+- The power-on beep right after reset is heard only from the machine's internal speaker (it plays before MZPico's audio pipeline has started).
 
 ---
 
