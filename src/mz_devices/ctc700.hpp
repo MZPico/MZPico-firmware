@@ -41,20 +41,34 @@ public:
     int flush() override { return 0; }
     static std::string getDevType() { return CTC700_ID; }
 
-    RAM_FUNC static int writeBankUnmap(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
-    RAM_FUNC static int writeBankMap(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
-    RAM_FUNC static int writeBankLock(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
-    RAM_FUNC static int writeBankUnlock(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
+    RAM_FUNC static int writeBankPort(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
 
     void processWrites() override;   // core0: scan the snoop ring
     void renderSample(int16_t& left, int16_t& right) override;
 
 private:
     void handlePeripheralWrite(uint8_t low, uint8_t data);
+    void applyBankEvent(uint8_t port);
 
-    // Bank state, written by core1 listeners
-    volatile bool periMapped;
-    volatile bool periLocked;
+    // Bank switches must be applied to the snooped stream AT THE POSITION
+    // they occurred, not with their value at consume time: S-BASIC banks
+    // RAM over the peripheral window around every access, so consuming
+    // up-to-2.9ms-old events against the current flags misclassifies both
+    // directions (dropped notes, RAM writes rendered as tones). core1
+    // listeners log (ring position, port) and the core0 consumer replays
+    // the log interleaved with the event stream.
+    struct BankEvent {
+        uint32_t idx;
+        uint8_t port;
+    };
+    static constexpr uint32_t BANK_LOG_SIZE = 32;   // power of two
+    volatile BankEvent bankLog[BANK_LOG_SIZE];
+    volatile uint32_t bankLogHead;   // written by core1
+    uint32_t bankLogTail;            // core0
+
+    // Consumer-side bank state (core0 only)
+    bool periMapped;
+    bool periLocked;
     bool forceActive;   // ini "force": bypass bank gating (diagnostic)
     bool snoopActive() const { return forceActive || (periMapped && !periLocked); }
 

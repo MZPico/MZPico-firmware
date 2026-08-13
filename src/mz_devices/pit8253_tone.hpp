@@ -21,7 +21,13 @@
 // so they fold into the callers' RAM_FUNC handlers. render() runs on
 // core0 only.
 struct Pit8253Tone {
-    static constexpr uint32_t INPUT_CLOCK = 1108590;  // 1.10859 MHz
+    // GDG master clock 17.734475 MHz / 16 (per the MZ-800 GDG; matches
+    // mz800emu's GDGCLK_REAL_BASE / GDGCLK_CTC0_DIVIDER)
+    static constexpr uint32_t INPUT_CLOCK = 1108405;
+    // Mode-3 reloads slower than ~25 Hz (e.g. the divisor-0 idle value
+    // 0x10000 -> 16.9 Hz) are inaudible on the real speaker; rendering
+    // them would turn rests into audible clicking through the DC blocker
+    static constexpr uint32_t MAX_AUDIBLE_RELOAD = INPUT_CLOCK / 25;
 
     enum class LoadMode : uint8_t { None = 0, LSB, MSB, LSB_MSB };
 
@@ -111,27 +117,37 @@ struct Pit8253Tone {
         }
     }
 
-    // Render one output sample (mono, DC-blocked, +-amplitude swing)
+    // Render one output sample (mono, DC-blocked, +-amplitude swing).
+    // The output is the AREA AVERAGE of the speaker line across the
+    // sample window (a box filter), not the level at the sample instant:
+    // hard-edge sampling of a square wave aliases audibly - heard as
+    // detune/roughness against the real speaker playing in unison.
     int32_t render(int32_t amplitude) {
         cycleResid += INPUT_CLOCK;
         uint32_t cycles = cycleResid / AUDIO_SAMPLE_RATE;
         cycleResid %= AUDIO_SAMPLE_RATE;
+        bool g = gate;
+        int32_t area;
 
-        if (running) {
-            if (mode == 3) {
-                uint32_t reload = reloadValue;
-                if (reload >= 2) {
-                    if (counter == 0 || counter > reload) {
-                        counter = (reload + 1) >> 1;  // reload raced in mid-render
-                    }
-                    for (uint32_t i = 0; i < cycles; i++) {
-                        if (--counter == 0) {
-                            outLevel = !outLevel;
-                            counter = outLevel ? (reload + 1) >> 1 : reload >> 1;
-                        }
-                    }
+        if (running && mode == 3 && reloadValue >= 2 && reloadValue <= MAX_AUDIBLE_RELOAD) {
+            uint32_t reload = reloadValue;
+            if (counter == 0 || counter > reload) {
+                counter = (reload + 1) >> 1;  // reload raced in mid-render
+            }
+            area = 0;
+            uint32_t left = cycles;
+            while (left) {
+                uint32_t run = (counter < left) ? counter : left;
+                area += (g && outLevel) ? (int32_t)run : -(int32_t)run;
+                counter -= run;
+                left -= run;
+                if (counter == 0) {
+                    outLevel = !outLevel;
+                    counter = outLevel ? (reload + 1) >> 1 : reload >> 1;
                 }
-            } else if (mode == 0) {
+            }
+        } else {
+            if (running && mode == 0) {
                 if (counter > cycles) {
                     counter -= cycles;
                 } else {
@@ -140,9 +156,11 @@ struct Pit8253Tone {
                     running = false;
                 }
             }
+            // static (or sub-audible) level for the whole sample
+            area = (g && outLevel) ? (int32_t)cycles : -(int32_t)cycles;
         }
 
-        int32_t x = (gate && outLevel) ? amplitude : -amplitude;
+        int32_t x = (int32_t)(((int64_t)amplitude * area) / (int32_t)cycles);
         // One-pole DC blocker (~27 Hz at 44.1 kHz): static levels decay to
         // silence; transitions - the actual 1-bit audio - pass through
         int32_t y = x - dcPrevIn + dcPrevOut - (dcPrevOut >> 8);
