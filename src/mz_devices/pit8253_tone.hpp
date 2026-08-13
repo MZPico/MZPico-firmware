@@ -27,12 +27,14 @@
 // event offsets and turns 1-bit music into popping. Events beyond the
 // current buffer window are left unconsumed for the next buffer.
 struct ToneTimeline {
-    static constexpr uint32_t QUEUE_SIZE = 192;
+    // Pulse-train beeper engines emit one event per edge at up to ~100k
+    // edges/s; melody is a few per second. Size for the engines.
+    static constexpr uint32_t QUEUE_SIZE = 512;
     static constexpr uint32_t BUFFER_FRAMES = AUDIO_BUFFER_SIZE / 2;
     static constexpr uint32_t BUFFER_US = (BUFFER_FRAMES * 1000000ull) / AUDIO_SAMPLE_RATE;
 
     struct Ev {
-        uint8_t offset;
+        uint16_t offUs;   // microseconds into the buffer window
         uint8_t a;
         uint8_t b;
     };
@@ -65,23 +67,36 @@ struct ToneTimeline {
         return inited && (int32_t)(ts - (playheadTs + BUFFER_US)) < 0;
     }
 
-    void push(uint32_t ts, uint8_t a, uint8_t b) {
-        if (len >= QUEUE_SIZE) return;   // overload: drop (graceful)
+    // Returns false when full - the caller should apply the write
+    // immediately instead (coarse beats dropped)
+    bool push(uint32_t ts, uint8_t a, uint8_t b) {
+        if (len >= QUEUE_SIZE) return false;
         int32_t rel = (int32_t)(ts - playheadTs);
         if (rel < 0) rel = 0;
-        uint32_t off = ((uint32_t)rel * 441u) / 10000u;   // us -> samples
-        if (off >= BUFFER_FRAMES) off = BUFFER_FRAMES - 1;
-        q[len].offset = (uint8_t)off;
+        if ((uint32_t)rel > BUFFER_US) rel = BUFFER_US;
+        q[len].offUs = (uint16_t)rel;
         q[len].a = a;
         q[len].b = b;
         len++;
+        return true;
     }
 
-    // Per output sample: invoke f(a, b) for every event due at this position
+    // Per output sample: invoke f(a, b, cycleOffset) for every event due at
+    // this sample. cycleOffset locates the event WITHIN the sample (given
+    // the sample spans `cycles` input-clock cycles) so the integrator can
+    // honor pulses narrower than one sample - the substance of pulse-train
+    // beeper engines (10-30us pulses vs 22.7us samples).
     template <typename F>
-    void applyDue(F&& f) {
-        while (pos < len && q[pos].offset <= sample) {
-            f(q[pos].a, q[pos].b);
+    void applyDue(uint32_t cycles, F&& f) {
+        while (pos < len) {
+            uint32_t evScaled = (uint32_t)q[pos].offUs * 441u;   // us -> samples x10000
+            uint32_t evSample = evScaled / 10000u;
+            if (evSample > sample) break;
+            uint32_t cyc = 0;
+            if (evSample == sample) {
+                cyc = ((evScaled - sample * 10000u) * cycles) / 10000u;
+            }
+            f(q[pos].a, q[pos].b, cyc);
             pos++;
         }
         sample++;
@@ -185,50 +200,41 @@ struct Pit8253Tone {
         }
     }
 
-    // Render one output sample (mono, DC-blocked, +-amplitude swing).
-    // The output is the AREA AVERAGE of the speaker line across the
-    // sample window (a box filter), not the level at the sample instant:
-    // hard-edge sampling of a square wave aliases audibly - heard as
-    // detune/roughness against the real speaker playing in unison.
-    int32_t render(int32_t amplitude) {
+    // ---- sliced sample rendering ----
+    // The output is the AREA AVERAGE of the speaker line across the sample
+    // window (a box filter): hard-edge sampling of a square wave aliases
+    // audibly, and write-driven pulses narrower than one sample would
+    // vanish entirely. A sample renders as:
+    //   cycles = beginSample();
+    //   for each due write: advanceTo(itsCycleOffset); apply the write;
+    //   out = finishSample(amplitude);
+    uint32_t curCycles = 0;
+    uint32_t curDone = 0;
+    int32_t curArea = 0;
+
+    uint32_t beginSample() {
         cycleResid += INPUT_CLOCK;
-        uint32_t cycles = cycleResid / AUDIO_SAMPLE_RATE;
+        curCycles = cycleResid / AUDIO_SAMPLE_RATE;
         cycleResid %= AUDIO_SAMPLE_RATE;
-        bool g = gate;
-        int32_t area;
+        curDone = 0;
+        curArea = 0;
+        return curCycles;
+    }
 
-        if (running && mode == 3 && reloadValue >= 2 && reloadValue <= MAX_AUDIBLE_RELOAD) {
-            uint32_t reload = reloadValue;
-            if (counter == 0 || counter > reload) {
-                counter = (reload + 1) >> 1;  // reload raced in mid-render
-            }
-            area = 0;
-            uint32_t left = cycles;
-            while (left) {
-                uint32_t run = (counter < left) ? counter : left;
-                area += (g && outLevel) ? (int32_t)run : -(int32_t)run;
-                counter -= run;
-                left -= run;
-                if (counter == 0) {
-                    outLevel = !outLevel;
-                    counter = outLevel ? (reload + 1) >> 1 : reload >> 1;
-                }
-            }
-        } else {
-            if (running && mode == 0) {
-                if (counter > cycles) {
-                    counter -= cycles;
-                } else {
-                    counter = 0;
-                    outLevel = true;   // terminal count reached
-                    running = false;
-                }
-            }
-            // static (or sub-audible) level for the whole sample
-            area = (g && outLevel) ? (int32_t)cycles : -(int32_t)cycles;
+    void advanceTo(uint32_t cycleOff) {
+        if (cycleOff > curCycles) cycleOff = curCycles;
+        if (cycleOff > curDone) {
+            integrate(cycleOff - curDone);
+            curDone = cycleOff;
         }
+    }
 
-        int32_t x = (int32_t)(((int64_t)amplitude * area) / (int32_t)cycles);
+    int32_t finishSample(int32_t amplitude) {
+        if (curCycles > curDone) {
+            integrate(curCycles - curDone);
+            curDone = curCycles;
+        }
+        int32_t x = (int32_t)(((int64_t)amplitude * curArea) / (int32_t)curCycles);
         // One-pole DC blocker (~27 Hz at 44.1 kHz): static levels decay to
         // silence; transitions - the actual 1-bit audio - pass through
         int32_t y = x - dcPrevIn + dcPrevOut - (dcPrevOut >> 8);
@@ -238,4 +244,42 @@ struct Pit8253Tone {
         if (y < -32767) y = -32767;
         return y;
     }
+
+private:
+    void integrate(uint32_t run) {
+        bool g = gate;
+        if (running && mode == 3 && reloadValue >= 2 && reloadValue <= MAX_AUDIBLE_RELOAD) {
+            uint32_t reload = reloadValue;
+            if (counter == 0 || counter > reload) {
+                counter = (reload + 1) >> 1;  // reload raced in mid-render
+            }
+            while (run) {
+                uint32_t chunk = (counter < run) ? counter : run;
+                curArea += (g && outLevel) ? (int32_t)chunk : -(int32_t)chunk;
+                counter -= chunk;
+                run -= chunk;
+                if (counter == 0) {
+                    outLevel = !outLevel;
+                    counter = outLevel ? (reload + 1) >> 1 : reload >> 1;
+                }
+            }
+        } else if (running && mode == 0) {
+            // one-shot: low while counting, high from terminal count on
+            uint32_t low = (counter < run) ? counter : run;
+            uint32_t high = run - low;
+            if (counter > run) {
+                counter -= run;
+            } else {
+                counter = 0;
+                outLevel = true;
+                running = false;
+            }
+            curArea += g ? ((int32_t)high - (int32_t)low) : -(int32_t)run;
+        } else {
+            // static (or sub-audible mode 3) level
+            curArea += (g && outLevel) ? (int32_t)run : -(int32_t)run;
+        }
+    }
+
+public:
 };

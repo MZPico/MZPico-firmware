@@ -162,7 +162,9 @@ void CTC700Device::processWrites() {
         if (low < 0x04 || low > 0x08) continue;
         if (!snoopActive()) continue;
 
-        timeline.push(ts, low, (w >> 24) & 0xFF);
+        if (!timeline.push(ts, low, (w >> 24) & 0xFF)) {
+            handlePeripheralWrite(low, (w >> 24) & 0xFF);   // overflow: coarse > dropped
+        }
     }
 }
 
@@ -176,17 +178,19 @@ void CTC700Device::handlePeripheralWrite(uint8_t low, uint8_t data) {
 }
 
 void CTC700Device::renderSample(int16_t& left, int16_t& right) {
-    // Apply queued writes that fall on this sample position - edge timing
-    // inside the buffer is the substance of 1-bit beeper music
-    timeline.applyDue([this](uint8_t low, uint8_t data) {
+    // Apply due writes at their cycle offset WITHIN the sample - pulses
+    // narrower than one sample must contribute their area, not collapse
+    // to the final state. Not gated on the bank state: unmapping the
+    // window only blocks WRITES (handled in processWrites); a tone
+    // already playing keeps sounding on real hardware.
+    uint32_t cycles = tone.beginSample();
+    timeline.applyDue(cycles, [this](uint8_t low, uint8_t data, uint32_t cyc) {
+        tone.advanceTo(cyc);
         handlePeripheralWrite(low, data);
     });
 
-    // Not gated on the bank state: unmapping the window only blocks WRITES
-    // (handled in processWrites); a tone already playing keeps sounding on
-    // real hardware
     int32_t amplitude = (CTC700_BASE_AMPLITUDE * volume) / 100;
-    int32_t sample = tone.render(amplitude);
+    int32_t sample = tone.finishSample(amplitude);
 
     left = static_cast<int16_t>((sample * (int32_t)(256 - pan256)) >> 8);
     right = static_cast<int16_t>((sample * (int32_t)pan256) >> 8);
