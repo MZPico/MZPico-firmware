@@ -15,11 +15,9 @@ static constexpr uint8_t PORT_BANK_E5 = 0xE5;  // prohibit upper area
 static constexpr uint8_t PORT_BANK_E6 = 0xE6;  // return (unlock) upper area
 
 CTC700Device::CTC700Device() {
-    writeMappings[0].fn = CTC700Device::writeBankUnmap;   // E1
-    writeMappings[1].fn = CTC700Device::writeBankMap;     // E3
-    writeMappings[2].fn = CTC700Device::writeBankMap;     // E4 (also unlocks, same effect for us)
-    writeMappings[3].fn = CTC700Device::writeBankLock;    // E5
-    writeMappings[4].fn = CTC700Device::writeBankUnlock;  // E6
+    for (uint8_t i = 0; i < 5; ++i) {
+        writeMappings[i].fn = CTC700Device::writeBankPort;   // E1/E3/E4/E5/E6
+    }
 
     auto readPorts = getReadPorts();
     auto writePorts = getWritePorts();
@@ -29,6 +27,8 @@ CTC700Device::CTC700Device() {
     periMapped = true;
     periLocked = false;
     forceActive = false;
+    bankLogHead = 0;
+    bankLogTail = 0;
 
     cursorValid = false;
     cursor = 0;
@@ -81,46 +81,62 @@ int CTC700Device::readConfig(dictionary *ini) {
 }
 
 // ---- core1: bank tracking (I/O writes) ----
+// The handler only logs (ring position, port); the consumer applies the
+// semantics in stream order. The log is SPSC: fields first, head last.
 
-RAM_FUNC int CTC700Device::writeBankUnmap(MZDevice* self, uint8_t, uint8_t, uint8_t) {
-    static_cast<CTC700Device*>(self)->periMapped = false;
-    return 0;
-}
-
-RAM_FUNC int CTC700Device::writeBankMap(MZDevice* self, uint8_t, uint8_t, uint8_t) {
+RAM_FUNC int CTC700Device::writeBankPort(MZDevice* self, uint8_t port, uint8_t, uint8_t) {
     auto* dev = static_cast<CTC700Device*>(self);
-    dev->periMapped = true;
-    dev->periLocked = false;
-    return 0;
-}
-
-RAM_FUNC int CTC700Device::writeBankLock(MZDevice* self, uint8_t, uint8_t, uint8_t) {
-    static_cast<CTC700Device*>(self)->periLocked = true;
-    return 0;
-}
-
-RAM_FUNC int CTC700Device::writeBankUnlock(MZDevice* self, uint8_t, uint8_t, uint8_t) {
-    static_cast<CTC700Device*>(self)->periLocked = false;
+    uint32_t h = dev->bankLogHead;
+    dev->bankLog[h & (BANK_LOG_SIZE - 1)].idx = mem_snoop_cursor_inline();
+    dev->bankLog[h & (BANK_LOG_SIZE - 1)].port = port;
+    dev->bankLogHead = h + 1;
     return 0;
 }
 
 // ---- core0: snoop ring consumer ----
 
+void CTC700Device::applyBankEvent(uint8_t port) {
+    switch (port) {
+        case 0xE1: periMapped = false; break;
+        case 0xE3:
+        case 0xE4: periMapped = true; periLocked = false; break;
+        case 0xE5: periLocked = true; break;
+        case 0xE6: periLocked = false; break;
+        default: break;
+    }
+}
+
 void CTC700Device::processWrites() {
     mem_snoop_service();
 
     uint32_t now = mem_snoop_cursor();
+    uint32_t head = bankLogHead;
     if (!cursorValid) {
-        // First scan: skip whatever accumulated before we were ready
+        // First scan: skip whatever accumulated before we were ready, but
+        // apply the bank switches so the state is current
         cursor = now;
         cursorValid = true;
+        while (bankLogTail != head) {
+            applyBankEvent(bankLog[bankLogTail & (BANK_LOG_SIZE - 1)].port);
+            bankLogTail++;
+        }
         return;
     }
 
-    uint32_t pending = (now - cursor) & (MEM_SNOOP_RING_WORDS - 1);
-    while (pending--) {
+    const uint32_t mask = MEM_SNOOP_RING_WORDS - 1;
+    uint32_t start = cursor;
+    uint32_t pending = (now - start) & mask;
+
+    for (uint32_t d = 0; d < pending; d++) {
+        // Replay bank switches recorded at or before this stream position
+        while (bankLogTail != head &&
+               ((bankLog[bankLogTail & (BANK_LOG_SIZE - 1)].idx - start) & mask) <= d) {
+            applyBankEvent(bankLog[bankLogTail & (BANK_LOG_SIZE - 1)].port);
+            bankLogTail++;
+        }
+
         uint32_t w = mem_snoop_read(cursor);
-        cursor = (cursor + 1) & (MEM_SNOOP_RING_WORDS - 1);
+        cursor = (cursor + 1) & mask;
 
         uint8_t high = (w >> 16) & 0xFF;
         if (high != 0xE0) continue;
@@ -129,6 +145,14 @@ void CTC700Device::processWrites() {
         if (!snoopActive()) continue;
 
         handlePeripheralWrite(low, (w >> 24) & 0xFF);
+    }
+
+    // Drain any remaining logged switches (recorded just past this scan's
+    // snapshot); applying them one scan early is a few-events slop, and it
+    // guarantees no entry can jam the queue
+    while (bankLogTail != head) {
+        applyBankEvent(bankLog[bankLogTail & (BANK_LOG_SIZE - 1)].port);
+        bankLogTail++;
     }
 }
 

@@ -8,10 +8,21 @@
 
 #include <stdint.h>
 #include "hardware/pio.h"
+#include "hardware/dma.h"
 
 #ifdef BOARD_DELUXE
 
 constexpr uint32_t MEM_SNOOP_RING_WORDS = 2048;   // 8 KB, ~7-20 ms at worst-case write density
+
+// Claimed DMA channel; exposed so RAM_FUNC bus handlers can read the
+// producer cursor inline without calling into flash
+extern int g_mem_snoop_dma_ch;
+extern uint32_t g_mem_snoop_ring_base;
+
+// Producer ring index, safe from RAM_FUNC handlers (pure MMIO read)
+static inline uint32_t mem_snoop_cursor_inline(void) {
+    return (dma_hw->ch[g_mem_snoop_dma_ch].write_addr - g_mem_snoop_ring_base) / 4;
+}
 
 // Claim a DMA channel and start streaming the snoop SM's RX FIFO into the
 // ring. Call once from core0 after bus_mem_snoop_init().
