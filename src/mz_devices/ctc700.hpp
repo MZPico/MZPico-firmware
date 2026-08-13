@@ -5,7 +5,10 @@
 #include "i2s_audio.hpp"
 #include "common.hpp"
 
-constexpr const char CTC700_ID[] = "ctc700";
+// NOTE: ini section names map to device types with trailing digits
+// stripped ([fdc1] -> fdc), so this type name must not end in a digit -
+// "ctc700" would be unreachable (strips to "ctc").
+constexpr const char CTC700_ID[] = "melody";
 
 constexpr uint32_t CTC700_INPUT_CLOCK = 1108590; // counter 0 clock, 1.10859 MHz
 constexpr int16_t CTC700_BASE_AMPLITUDE = 20000;
