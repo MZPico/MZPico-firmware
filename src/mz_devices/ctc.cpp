@@ -149,6 +149,11 @@ void CTCDevice::processWrites() {
         }
         ioqTail++;
     }
+
+    g_ctc_diag.ioPushed = timeline.pushedTotal;
+    g_ctc_diag.ioNegClamped = timeline.negClamped;
+    g_ctc_diag.ioBacklogUs = timeline.lastBacklogUs;
+    for (int i = 0; i < 8; i++) g_ctc_diag.ioLastRel[i] = timeline.lastRel[i];
 }
 
 void CTCDevice::renderSample(int16_t& left, int16_t& right) {
