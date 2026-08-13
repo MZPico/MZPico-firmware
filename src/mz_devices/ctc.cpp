@@ -108,6 +108,10 @@ void CTCDevice::applyWrite(uint8_t port, uint8_t dt) {
 }
 
 void CTCDevice::processWrites() {
+    g_ctc_diag.ioToneState = (tone.gate ? 1 : 0) | (tone.outLevel ? 2 : 0) |
+                             (tone.running ? 4 : 0) | ((tone.mode & 7) << 4);
+    g_ctc_diag.ioToneReload = tone.reloadValue;
+
     uint32_t head = ioqHead;   // snapshot; core1 keeps appending
     bool have = head != ioqTail;
     uint32_t newestTs = have ? ioq[(head - 1) & (IOQ_SIZE - 1)].ts : 0;
@@ -124,6 +128,21 @@ void CTCDevice::processWrites() {
         uint32_t lp = (g_ctc_diag.lastIoPos++ & 31) * 2;
         g_ctc_diag.lastIo[lp] = ioq[i].port;
         g_ctc_diag.lastIo[lp + 1] = ioq[i].data;
+
+        if ((ioq[i].port & 0x07) == 2) {
+            bool high = (ioq[i].data & 0x01) != 0;
+            if (high && !g_ctc_diag.d2High) {
+                uint32_t period = ts - g_ctc_diag.d2RiseTs;
+                g_ctc_diag.d2Period[g_ctc_diag.d2PeriodPos++ & 7] =
+                    (period > 0xFFFF) ? 0xFFFF : (uint16_t)period;
+                g_ctc_diag.d2RiseTs = ts;
+            } else if (!high && g_ctc_diag.d2High) {
+                uint32_t width = ts - g_ctc_diag.d2RiseTs;
+                g_ctc_diag.d2Width[g_ctc_diag.d2WidthPos++ & 7] =
+                    (width > 0xFFFF) ? 0xFFFF : (uint16_t)width;
+            }
+            g_ctc_diag.d2High = high;
+        }
 
         if (!timeline.push(ts, ioq[i].port, ioq[i].data)) {
             applyWrite(ioq[i].port, ioq[i].data);   // overflow: coarse > dropped
