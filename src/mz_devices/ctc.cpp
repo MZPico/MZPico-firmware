@@ -64,12 +64,6 @@ int CTCDevice::readConfig(dictionary *ini) {
     pan = static_cast<uint8_t>(pan_value);
     pan256 = (uint16_t)((pan * 256) / 100);
 
-    // Speaker resonance simulation amount, 0-100 (0 = flat/off)
-    int spk = iniparser_getint(ini, (getDevID() + ":speaker").c_str(), 0);
-    if (spk < 0) spk = 0;
-    if (spk > 100) spk = 100;
-    tone.speakerMix = (uint8_t)((spk * 255) / 100);
-
     return 0;
 }
 
