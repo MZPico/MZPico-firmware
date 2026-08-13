@@ -30,17 +30,6 @@ CTC700Device::CTC700Device() {
     periLocked = false;
     forceActive = false;
 
-    gateOpen = false;
-    counterRunning = false;
-    squareWave = false;
-    reloadValue = 0;
-    counter = 0;
-    outputHigh = true;
-    cycleResid = 0;
-    loadMode = LoadMode::None;
-    waitingMsb = false;
-    latchedLsb = 0;
-
     cursorValid = false;
     cursor = 0;
 
@@ -84,14 +73,14 @@ int CTC700Device::readConfig(dictionary *ini) {
     pan = static_cast<uint8_t>(pan_value);
     pan256 = (uint16_t)((pan * 256) / 100);
 
-    // Diagnostic: render regardless of mode/bank state, so the capture
-    // chain can be exercised from MZ-800 mode with plain POKEs to E004+
+    // Diagnostic: render regardless of the bank state, so the capture
+    // chain can be exercised with plain POKEs to E004+
     forceActive = iniparser_getboolean(ini, (getDevID() + ":force").c_str(), false);
 
     return 0;
 }
 
-// ---- core1: bank/mode tracking (I/O writes) ----
+// ---- core1: bank tracking (I/O writes) ----
 
 RAM_FUNC int CTC700Device::writeBankUnmap(MZDevice* self, uint8_t, uint8_t, uint8_t) {
     static_cast<CTC700Device*>(self)->periMapped = false;
@@ -145,91 +134,19 @@ void CTC700Device::processWrites() {
 
 void CTC700Device::handlePeripheralWrite(uint8_t low, uint8_t data) {
     switch (low) {
-        case 0x04: writeCounter0(data); break;      // 8253 counter 0
-        case 0x07: writeCounterCtrl(data); break;   // 8253 control word
-        case 0x08: gateOpen = (data & 0x01) != 0; break;  // melody gate latch
-        default: break;                              // counters 1/2: not sound
+        case 0x04: tone.countWrite(data); break;             // 8253 counter 0
+        case 0x07: tone.ctrlWrite(data); break;              // 8253 control word
+        case 0x08: tone.setGate((data & 0x01) != 0); break;  // melody gate latch
+        default: break;                                       // counters 1/2: not sound
     }
-}
-
-// ---- 8253 counter 0 model (same semantics as the I/O-mode CTC device) ----
-
-void CTC700Device::writeCounterCtrl(uint8_t dt) {
-    if (((dt >> 6) & 0x03) != 0) {
-        return; // counters 1/2
-    }
-    uint8_t rl = (dt >> 4) & 0x03;
-    if (rl == 0) {
-        return; // latch for reading; write mode persists
-    }
-    switch (rl) {
-        case 1: loadMode = LoadMode::LSB; break;
-        case 2: loadMode = LoadMode::MSB; break;
-        case 3: loadMode = LoadMode::LSB_MSB; break;
-    }
-    waitingMsb = false;
-    squareWave = ((dt >> 1) & 0x03) == 0x03;  // mode 3
-    counterRunning = false;                    // halted until a count is loaded
-    outputHigh = true;
-}
-
-void CTC700Device::writeCounter0(uint8_t dt) {
-    switch (loadMode) {
-        case LoadMode::LSB:
-            applyReload((uint16_t)((reloadValue & 0xFF00) | dt));
-            break;
-        case LoadMode::MSB:
-            applyReload((uint16_t)(((uint16_t)dt << 8) | (reloadValue & 0x00FF)));
-            break;
-        case LoadMode::LSB_MSB:
-            if (!waitingMsb) {
-                latchedLsb = dt;
-                waitingMsb = true;
-            } else {
-                waitingMsb = false;
-                applyReload((uint16_t)(((uint16_t)dt << 8) | latchedLsb));
-            }
-            break;
-        default:
-            break;
-    }
-}
-
-void CTC700Device::applyReload(uint16_t value) {
-    uint32_t effective = value;
-    if (effective == 0) {
-        effective = 0x10000;
-    }
-    reloadValue = effective;
-    counter = (effective + 1) >> 1;
-    outputHigh = true;
-    counterRunning = true;
 }
 
 void CTC700Device::renderSample(int16_t& left, int16_t& right) {
-    if (!gateOpen || !counterRunning || !squareWave || reloadValue < 2 || !snoopActive()) {
-        left = 0;
-        right = 0;
-        return;
-    }
-
-    cycleResid += CTC700_INPUT_CLOCK;
-    uint32_t cyclesToRun = cycleResid / AUDIO_SAMPLE_RATE;
-    cycleResid %= AUDIO_SAMPLE_RATE;
-
-    uint32_t reload = reloadValue;
-    if (counter == 0 || counter > reload) {
-        counter = (reload + 1) >> 1;
-    }
-    for (uint32_t i = 0; i < cyclesToRun; i++) {
-        if (--counter == 0) {
-            outputHigh = !outputHigh;
-            counter = outputHigh ? (reload + 1) >> 1 : reload >> 1;
-        }
-    }
-
+    // Not gated on the bank state: unmapping the window only blocks WRITES
+    // (handled in processWrites); a tone already playing keeps sounding on
+    // real hardware
     int32_t amplitude = (CTC700_BASE_AMPLITUDE * volume) / 100;
-    int32_t sample = outputHigh ? amplitude : -amplitude;
+    int32_t sample = tone.render(amplitude);
 
     left = static_cast<int16_t>((sample * (int32_t)(256 - pan256)) >> 8);
     right = static_cast<int16_t>((sample * (int32_t)pan256) >> 8);

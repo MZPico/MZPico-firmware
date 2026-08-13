@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include "mz_devices.hpp"
 #include "i2s_audio.hpp"
+#include "pit8253_tone.hpp"
 #include "common.hpp"
 
 // NOTE: ini section names map to device types with trailing digits
@@ -10,7 +11,6 @@
 // "ctc700" would be unreachable (strips to "ctc").
 constexpr const char CTC700_ID[] = "melody";
 
-constexpr uint32_t CTC700_INPUT_CLOCK = 1108590; // counter 0 clock, 1.10859 MHz
 constexpr int16_t CTC700_BASE_AMPLITUDE = 20000;
 
 // Memory-mapped melody: the 8253 at 0xE004-0xE007 and the melody gate
@@ -22,7 +22,9 @@ constexpr int16_t CTC700_BASE_AMPLITUDE = 20000;
 // the tone, watching only; nothing is ever driven onto the bus. Its I/O
 // write listeners track the bank map (0xE1 unmaps DRAM over the window,
 // 0xE3/0xE4 map it back, 0xE5/0xE6 lock/unlock) so RAM writes to the same
-// addresses don't beep. Deluxe only.
+// addresses don't beep. The shared Pit8253Tone model also renders 1-bit
+// beeper engines (control-word/gate toggling, mode-0 PWM), which ZX
+// Spectrum ports use. Deluxe only.
 class CTC700Device final : public MZDevice, public I2SAudioSource {
 public:
     CTC700Device();
@@ -49,9 +51,6 @@ public:
 
 private:
     void handlePeripheralWrite(uint8_t low, uint8_t data);
-    void writeCounterCtrl(uint8_t dt);
-    void writeCounter0(uint8_t dt);
-    void applyReload(uint16_t value);
 
     // Bank state, written by core1 listeners
     volatile bool periMapped;
@@ -59,19 +58,8 @@ private:
     bool forceActive;   // ini "force": bypass bank gating (diagnostic)
     bool snoopActive() const { return forceActive || (periMapped && !periLocked); }
 
-    // 8253 counter 0 model (same semantics as the I/O-mode CTC device);
-    // written and read on core0 only, so no cross-core concerns
-    enum class LoadMode : uint8_t { None = 0, LSB, MSB, LSB_MSB };
-    bool gateOpen;          // E008 latch bit 0
-    bool counterRunning;
-    bool squareWave;
-    uint32_t reloadValue;
-    uint32_t counter;
-    bool outputHigh;
-    uint32_t cycleResid;
-    LoadMode loadMode;
-    bool waitingMsb;
-    uint8_t latchedLsb;
+    // 8253 counter 0 model; written and read on core0 only
+    Pit8253Tone tone;
 
     // Snoop ring read cursor
     bool cursorValid;
