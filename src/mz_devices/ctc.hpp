@@ -32,14 +32,30 @@ public:
     int flush() override { return 0; }
     static std::string getDevType() { return CTC_ID; }
 
-    RAM_FUNC static int writePortC(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
-    RAM_FUNC static int writePortCtrl(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
-    RAM_FUNC static int writeCounter0(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
-    RAM_FUNC static int writeCounterCtrl(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
+    RAM_FUNC static int writePort(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
 
+    void processWrites() override;
     void renderSample(int16_t& left, int16_t& right) override;
 
 private:
+    void applyWrite(uint8_t port, uint8_t dt);
+
+    // Timestamped SPSC write queue (core1 producer, core0 consumer): I/O
+    // writes are scheduled onto exact sample positions via ToneTimeline,
+    // same as the memory-snoop path - applying them at receive-vs-render
+    // time collapses intra-buffer edges and 1-bit engines degrade to
+    // popping.
+    struct IoWrite {
+        uint32_t ts;
+        uint8_t port;
+        uint8_t data;
+    };
+    static constexpr uint32_t IOQ_SIZE = 256;   // power of two
+    volatile IoWrite ioq[IOQ_SIZE];
+    volatile uint32_t ioqHead;   // core1
+    uint32_t ioqTail;            // core0
+
+    ToneTimeline timeline;
     Pit8253Tone tone;
 
     uint8_t volume;
