@@ -116,8 +116,9 @@ void CTC700Device::applyBankEvent(uint8_t port) {
 void CTC700Device::processWrites() {
     mem_snoop_service();
 
-    g_ctc_diag.memToneState = (tone.gate ? 1 : 0) | (tone.outLevel ? 2 : 0) |
-                              (tone.running ? 4 : 0) | ((tone.mode & 7) << 4);
+    g_ctc_diag.memToneState = (tone.audioMask ? 1 : 0) | (tone.outLevel ? 2 : 0) |
+                              (tone.running ? 4 : 0) | (tone.gate0 ? 8 : 0) |
+                              ((tone.mode & 7) << 4);
     g_ctc_diag.memToneReload = tone.reloadValue;
 
     uint32_t now = mem_snoop_cursor();
@@ -173,7 +174,9 @@ void CTC700Device::processWrites() {
         g_ctc_diag.memE0Page++;
         uint8_t low = (w >> 8) & 0xFF;
         if (low < 16) g_ctc_diag.memLow[low]++;
-        if (low < 0x04 || low > 0x08) continue;
+        // E002/E003: memory-mapped 8255 port C / control (audio mask);
+        // E004-E008: 8253 counter 0, control word, GATE0 latch
+        if (low < 0x02 || low > 0x08) continue;
         if (!snoopActive()) {
             g_ctc_diag.memRejected++;
             continue;
@@ -192,10 +195,21 @@ void CTC700Device::processWrites() {
 
 void CTC700Device::handlePeripheralWrite(uint8_t low, uint8_t data) {
     switch (low) {
-        case 0x04: tone.countWrite(data); break;             // 8253 counter 0
-        case 0x07: tone.ctrlWrite(data); break;              // 8253 control word
-        case 0x08: tone.setGate((data & 0x01) != 0); break;  // melody gate latch
-        default: break;                                       // counters 1/2: not sound
+        case 0x02:   // E002: direct 8255 port C write - PC0 is the audio mask
+            tone.setAudioMask((data & 0x01) != 0);
+            break;
+        case 0x03:   // E003: 8255 control - mode-set resets port C, BSR
+                     // touches the mask only when it selects PC0
+            if (data & 0x80) {
+                tone.setAudioMask(false);
+            } else if (((data >> 1) & 0x07) == 0) {
+                tone.setAudioMask((data & 0x01) != 0);
+            }
+            break;
+        case 0x04: tone.countWrite(data); break;              // 8253 counter 0
+        case 0x07: tone.ctrlWrite(data); break;               // 8253 control word
+        case 0x08: tone.setGate0((data & 0x01) != 0); break;  // E008 latch -> GATE0 pin
+        default: break;                                        // counters 1/2: not sound
     }
 }
 

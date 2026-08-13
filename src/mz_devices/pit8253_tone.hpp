@@ -126,7 +126,14 @@ struct Pit8253Tone {
     enum class LoadMode : uint8_t { None = 0, LSB, MSB, LSB_MSB };
 
     // ---- bus-side state ----
-    volatile bool gate = false;
+    // Two independent controls (per mz800emu's audio path: "CTC0 OUT
+    // through GATE0 + PC0 audio mask"):
+    // - gate0: the 8253 GATE0 pin, driven by the E008 latch. True gate
+    //   semantics: low forces OUT high and pauses counting; a rising edge
+    //   reloads the counter and restarts the tone phase-aligned.
+    // - audioMask: 8255 PC0, a plain AND on the speaker line after OUT.
+    bool gate0 = true;        // post-boot state; the IPL opens the latch
+    bool audioMask = true;
     volatile bool outLevel = true;
     volatile bool running = false;
     volatile uint8_t mode = 3;            // normalized M bits of control word
@@ -149,7 +156,26 @@ struct Pit8253Tone {
     uint8_t speakerMix = 0;     // 0..255 wet amount
     int32_t bqX1 = 0, bqX2 = 0, bqY1 = 0, bqY2 = 0;
 
-    void setGate(bool open) { gate = open; }
+    void setAudioMask(bool open) { audioMask = open; }
+
+    void setGate0(bool level) {
+        if (level == gate0) return;
+        gate0 = level;
+        if (!level) {
+            // gate low: counting pauses; OUT is forced high (modes 2/3)
+            if (mode != 0) outLevel = true;
+        } else if (running) {
+            // rising edge: reload and restart, phase-aligned - only when a
+            // count has been loaded since the last control word
+            if (mode == 3) {
+                outLevel = true;
+                counter = (reloadValue + 1) >> 1;
+            } else if (mode == 0) {
+                counter = reloadValue;
+                outLevel = false;
+            }
+        }
+    }
 
     // 8253 control word (0xD7 / 0xE007). Counter 1/2 selects and latch
     // commands are ignored; a real control word halts the counter and
@@ -288,8 +314,10 @@ struct Pit8253Tone {
 
 private:
     void integrate(uint32_t run) {
-        bool g = gate;
-        if (running && mode == 3 && reloadValue >= 2 && reloadValue <= MAX_AUDIBLE_RELOAD) {
+        // The speaker line is OUT AND audioMask; gate0 low pauses counting
+        // (OUT already forced high by setGate0)
+        bool m = audioMask;
+        if (running && gate0 && mode == 3 && reloadValue >= 2 && reloadValue <= MAX_AUDIBLE_RELOAD) {
             uint32_t reload = reloadValue;
             // counter may legitimately exceed the (new, smaller) reload -
             // the current half-cycle finishes at the old count, then the
@@ -299,7 +327,7 @@ private:
             }
             while (run) {
                 uint32_t chunk = (counter < run) ? counter : run;
-                curArea += (g && outLevel) ? (int32_t)chunk : -(int32_t)chunk;
+                curArea += (m && outLevel) ? (int32_t)chunk : -(int32_t)chunk;
                 counter -= chunk;
                 run -= chunk;
                 if (counter == 0) {
@@ -307,7 +335,7 @@ private:
                     counter = outLevel ? (reload + 1) >> 1 : reload >> 1;
                 }
             }
-        } else if (running && mode == 0) {
+        } else if (running && gate0 && mode == 0) {
             // one-shot: low while counting, high from terminal count on
             uint32_t low = (counter < run) ? counter : run;
             uint32_t high = run - low;
@@ -318,10 +346,11 @@ private:
                 outLevel = true;
                 running = false;
             }
-            curArea += g ? ((int32_t)high - (int32_t)low) : -(int32_t)run;
+            curArea += m ? ((int32_t)high - (int32_t)low) : -(int32_t)run;
         } else {
-            // static (or sub-audible mode 3) level
-            curArea += (g && outLevel) ? (int32_t)run : -(int32_t)run;
+            // static level: gate0 closed (OUT parked high), halted, or
+            // sub-audible mode 3
+            curArea += (m && outLevel) ? (int32_t)run : -(int32_t)run;
         }
     }
 
