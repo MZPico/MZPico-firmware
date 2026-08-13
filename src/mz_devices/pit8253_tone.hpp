@@ -184,13 +184,23 @@ struct Pit8253Tone {
     void applyReload(uint16_t value) {
         uint32_t effective = value ? value : 0x10000;
         reloadValue = effective;
-        running = true;
         if (mode == 3) {
-            // square wave: high for ceil(N/2), low for floor(N/2)
-            outLevel = true;
-            counter = (effective + 1) >> 1;
+            if (!running) {
+                // starting from halt: output high, count from the new value
+                running = true;
+                outLevel = true;
+                counter = (effective + 1) >> 1;
+            }
+            // else: real 8253 semantics - a count written while mode 3 is
+            // running takes effect at the END of the current half-cycle
+            // (integrate() reads reloadValue at each toggle); the phase is
+            // NOT disturbed. Chip-music engines stream reloads at kHz
+            // rates for slides/arpeggios - resetting the phase per reload
+            // yanks the output high each time, degrading the tone to
+            // popping (mid rates) or DC-blocked silence (high rates).
         } else if (mode == 0) {
-            // one-shot: low while counting, high from terminal count on
+            // one-shot: a new count restarts it; low while counting
+            running = true;
             outLevel = false;
             counter = effective;
         } else {
@@ -250,8 +260,11 @@ private:
         bool g = gate;
         if (running && mode == 3 && reloadValue >= 2 && reloadValue <= MAX_AUDIBLE_RELOAD) {
             uint32_t reload = reloadValue;
-            if (counter == 0 || counter > reload) {
-                counter = (reload + 1) >> 1;  // reload raced in mid-render
+            // counter may legitimately exceed the (new, smaller) reload -
+            // the current half-cycle finishes at the old count, then the
+            // new value takes over. Only counter == 0 needs repair.
+            if (counter == 0) {
+                counter = (reload + 1) >> 1;
             }
             while (run) {
                 uint32_t chunk = (counter < run) ? counter : run;
