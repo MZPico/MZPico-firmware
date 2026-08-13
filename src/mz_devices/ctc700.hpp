@@ -39,6 +39,11 @@ public:
     RAM_FUNC static int writeBankUnlock(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
     RAM_FUNC static int writeDmd(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
 
+    // Diagnostic reads (0xDE/0xDF): snoop DMA cursor and E0-page event
+    // count, so a Z80-side test can localize a dead capture stage
+    RAM_FUNC static int readDiagCursor(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr);
+    RAM_FUNC static int readDiagEvents(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr);
+
     void processWrites() override;   // core0: scan the snoop ring
     void renderSample(int16_t& left, int16_t& right) override;
 
@@ -72,6 +77,10 @@ private:
     // Snoop ring read cursor
     bool cursorValid;
     uint32_t cursor;
+
+    // Diagnostics
+    int snoopDmaCh;
+    volatile uint32_t e0Events;
 
     uint8_t volume;
     uint8_t pan;
