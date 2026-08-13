@@ -4,8 +4,12 @@
 
 #include "ctc700.hpp"
 #include "mem_snoop.hpp"
+#include "hardware/dma.h"
 
 REGISTER_MZ_DEVICE(CTC700Device)
+
+static constexpr uint8_t PORT_DIAG_CURSOR = 0xDE;
+static constexpr uint8_t PORT_DIAG_EVENTS = 0xDF;
 
 // Write-listener port order (positional match with writeMappings)
 static constexpr uint8_t PORT_BANK_E1 = 0xE1;  // DRAM over D000-FFFF: peripherals unmapped
@@ -16,6 +20,8 @@ static constexpr uint8_t PORT_BANK_E6 = 0xE6;  // return (unlock) upper area
 static constexpr uint8_t PORT_GDG_DMD = 0xCE;  // display mode; bit 3 = MZ-700 mode
 
 CTC700Device::CTC700Device() {
+    readMappings[0].fn = CTC700Device::readDiagCursor;    // DE
+    readMappings[1].fn = CTC700Device::readDiagEvents;    // DF
     writeMappings[0].fn = CTC700Device::writeBankUnmap;   // E1
     writeMappings[1].fn = CTC700Device::writeBankMap;     // E3
     writeMappings[2].fn = CTC700Device::writeBankMap;     // E4 (also unlocks, same effect for us)
@@ -48,6 +54,9 @@ CTC700Device::CTC700Device() {
     cursorValid = false;
     cursor = 0;
 
+    snoopDmaCh = -1;
+    e0Events = 0;
+
     volume = 100;
     pan = 50;
     pan256 = (uint16_t)((pan * 256) / 100);
@@ -58,11 +67,12 @@ CTC700Device::~CTC700Device() {
 }
 
 int CTC700Device::init() {
+    snoopDmaCh = mem_snoop_channel();
     return i2s_audio_register_source(this);
 }
 
 std::vector<uint8_t> CTC700Device::getReadPorts() const {
-    return {};
+    return {PORT_DIAG_CURSOR, PORT_DIAG_EVENTS};
 }
 
 std::vector<uint8_t> CTC700Device::getWritePorts() const {
@@ -124,6 +134,26 @@ RAM_FUNC int CTC700Device::writeDmd(MZDevice* self, uint8_t, uint8_t dt, uint8_t
     return 0;
 }
 
+// ---- core1: diagnostic reads ----
+
+RAM_FUNC int CTC700Device::readDiagCursor(MZDevice* self, uint8_t, uint8_t* dt, uint8_t) {
+    auto* dev = static_cast<CTC700Device*>(self);
+    if (dev->snoopDmaCh >= 0) {
+        // Word index of the DMA producer, low 8 bits: advances on every
+        // captured memory write, so two reads with any activity between
+        // them must differ if the PIO->DMA chain is alive
+        *dt = (uint8_t)(dma_hw->ch[dev->snoopDmaCh].write_addr >> 2);
+    } else {
+        *dt = 0xEE;
+    }
+    return 0;
+}
+
+RAM_FUNC int CTC700Device::readDiagEvents(MZDevice* self, uint8_t, uint8_t* dt, uint8_t) {
+    *dt = (uint8_t)static_cast<CTC700Device*>(self)->e0Events;
+    return 0;
+}
+
 // ---- core0: snoop ring consumer ----
 
 void CTC700Device::processWrites() {
@@ -146,6 +176,7 @@ void CTC700Device::processWrites() {
         if (high != 0xE0) continue;
         uint8_t low = (w >> 8) & 0xFF;
         if (low < 0x04 || low > 0x08) continue;
+        e0Events = e0Events + 1;
         if (!snoopActive()) continue;
 
         handlePeripheralWrite(low, (w >> 24) & 0xFF);
