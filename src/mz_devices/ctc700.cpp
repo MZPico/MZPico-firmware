@@ -4,8 +4,13 @@
 
 #include "ctc700.hpp"
 #include "mem_snoop.hpp"
+#include "pico/time.h"
 
 REGISTER_MZ_DEVICE(CTC700Device)
+
+// One audio buffer covers 128 frames at 44.1 kHz
+static constexpr uint32_t BUFFER_FRAMES = AUDIO_BUFFER_SIZE / 2;
+static constexpr uint32_t BUFFER_US = (BUFFER_FRAMES * 1000000ull) / AUDIO_SAMPLE_RATE;
 
 // Write-listener port order (positional match with writeMappings)
 static constexpr uint8_t PORT_BANK_E1 = 0xE1;  // DRAM over D000-FFFF: peripherals unmapped
@@ -32,6 +37,10 @@ CTC700Device::CTC700Device() {
 
     cursorValid = false;
     cursor = 0;
+
+    toneQueueLen = 0;
+    toneQueuePos = 0;
+    sampleIndex = 0;
 
     volume = 100;
     pan = 50;
@@ -109,6 +118,11 @@ void CTC700Device::applyBankEvent(uint8_t port) {
 void CTC700Device::processWrites() {
     mem_snoop_service();
 
+    // Start a fresh buffer window for renderSample
+    toneQueueLen = 0;
+    toneQueuePos = 0;
+    sampleIndex = 0;
+
     uint32_t now = mem_snoop_cursor();
     uint32_t head = bankLogHead;
     if (!cursorValid) {
@@ -123,6 +137,12 @@ void CTC700Device::processWrites() {
         return;
     }
 
+    // The accepted events (from the past ~one buffer of real time) are
+    // mapped into the UPCOMING buffer: one buffer of latency, relative
+    // timing preserved via the hardware timestamps. Anchor each buffer
+    // afresh so no drift accumulates.
+    uint32_t base = time_us_32() - BUFFER_US;
+
     const uint32_t mask = MEM_SNOOP_RING_WORDS - 1;
     uint32_t start = cursor;
     uint32_t pending = (now - start) & mask;
@@ -135,7 +155,8 @@ void CTC700Device::processWrites() {
             bankLogTail++;
         }
 
-        uint32_t w = mem_snoop_read(cursor);
+        uint32_t idx = cursor;
+        uint32_t w = mem_snoop_read(idx);
         cursor = (cursor + 1) & mask;
 
         uint8_t high = (w >> 16) & 0xFF;
@@ -144,7 +165,16 @@ void CTC700Device::processWrites() {
         if (low < 0x04 || low > 0x08) continue;
         if (!snoopActive()) continue;
 
-        handlePeripheralWrite(low, (w >> 24) & 0xFF);
+        uint8_t data = (w >> 24) & 0xFF;
+        if (toneQueueLen < TONE_QUEUE_SIZE) {
+            int32_t rel = (int32_t)(mem_snoop_ts(idx) - base);
+            if (rel < 0) rel = 0;
+            uint32_t off = ((uint32_t)rel * 441u) / 10000u;   // us -> samples
+            if (off >= BUFFER_FRAMES) off = BUFFER_FRAMES - 1;
+            toneQueue[toneQueueLen++] = {(uint8_t)off, low, data};
+        } else {
+            handlePeripheralWrite(low, data);   // overflow: apply immediately
+        }
     }
 
     // Drain any remaining logged switches (recorded just past this scan's
@@ -166,6 +196,14 @@ void CTC700Device::handlePeripheralWrite(uint8_t low, uint8_t data) {
 }
 
 void CTC700Device::renderSample(int16_t& left, int16_t& right) {
+    // Apply queued writes that fall on this sample position - edge timing
+    // inside the buffer is the substance of 1-bit beeper music
+    while (toneQueuePos < toneQueueLen && toneQueue[toneQueuePos].offset <= sampleIndex) {
+        handlePeripheralWrite(toneQueue[toneQueuePos].low, toneQueue[toneQueuePos].data);
+        toneQueuePos++;
+    }
+    sampleIndex++;
+
     // Not gated on the bank state: unmapping the window only blocks WRITES
     // (handled in processWrites); a tone already playing keeps sounding on
     // real hardware

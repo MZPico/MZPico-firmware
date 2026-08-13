@@ -79,6 +79,23 @@ private:
     bool cursorValid;
     uint32_t cursor;
 
+    // Per-buffer event queue: processWrites converts each accepted write's
+    // hardware timestamp into a sample offset inside the upcoming buffer
+    // (one buffer of latency, relative timing preserved to ~1us);
+    // renderSample applies queued events at their offset. Without this,
+    // all edges inside a 2.9ms buffer collapse to the final state and
+    // 1-bit beeper engines degrade to boundary popping.
+    struct ToneEvent {
+        uint8_t offset;   // sample index within the buffer
+        uint8_t low;      // 0x04-0x08
+        uint8_t data;
+    };
+    static constexpr uint32_t TONE_QUEUE_SIZE = 192;
+    ToneEvent toneQueue[TONE_QUEUE_SIZE];
+    uint32_t toneQueueLen;
+    uint32_t toneQueuePos;
+    uint32_t sampleIndex;
+
     uint8_t volume;
     uint8_t pan;
     uint16_t pan256;
