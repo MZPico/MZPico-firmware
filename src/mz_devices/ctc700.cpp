@@ -78,6 +78,12 @@ int CTC700Device::readConfig(dictionary *ini) {
     // chain can be exercised with plain POKEs to E004+
     forceActive = iniparser_getboolean(ini, (getDevID() + ":force").c_str(), false);
 
+    // Speaker resonance simulation amount, 0-100 (0 = flat/off)
+    int spk = iniparser_getint(ini, (getDevID() + ":speaker").c_str(), 0);
+    if (spk < 0) spk = 0;
+    if (spk > 100) spk = 100;
+    tone.speakerMix = (uint8_t)((spk * 255) / 100);
+
     return 0;
 }
 
