@@ -50,7 +50,9 @@ private:
         uint8_t port;
         uint8_t data;
     };
-    static constexpr uint32_t IOQ_SIZE = 256;   // power of two
+    // Sized for pulse-train engines: a tight Z80 OUT loop can emit up to
+    // ~100k writes/s, ~300 per audio buffer
+    static constexpr uint32_t IOQ_SIZE = 1024;   // power of two
     volatile IoWrite ioq[IOQ_SIZE];
     volatile uint32_t ioqHead;   // core1
     uint32_t ioqTail;            // core0

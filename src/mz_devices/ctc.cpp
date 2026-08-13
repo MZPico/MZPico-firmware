@@ -115,18 +115,25 @@ void CTCDevice::processWrites() {
         uint32_t ts = ioq[i].ts;
         // Leave events beyond this buffer's window queued for the next one
         if (!timeline.accepts(ts)) break;
-        timeline.push(ts, ioq[i].port, ioq[i].data);
+        if (!timeline.push(ts, ioq[i].port, ioq[i].data)) {
+            applyWrite(ioq[i].port, ioq[i].data);   // overflow: coarse > dropped
+        }
         ioqTail++;
     }
 }
 
 void CTCDevice::renderSample(int16_t& left, int16_t& right) {
-    timeline.applyDue([this](uint8_t port, uint8_t data) {
+    // Apply due writes at their cycle offset WITHIN the sample: pulse-train
+    // engines make pulses narrower than one sample, which must contribute
+    // their area rather than collapse to the final state
+    uint32_t cycles = tone.beginSample();
+    timeline.applyDue(cycles, [this](uint8_t port, uint8_t data, uint32_t cyc) {
+        tone.advanceTo(cyc);
         applyWrite(port, data);
     });
 
     int32_t amplitude = (CTC_BASE_AMPLITUDE * volume) / 100;
-    int32_t sample = tone.render(amplitude);
+    int32_t sample = tone.finishSample(amplitude);
 
     left = static_cast<int16_t>((sample * (int32_t)(256 - pan256)) >> 8);
     right = static_cast<int16_t>((sample * (int32_t)pan256) >> 8);
