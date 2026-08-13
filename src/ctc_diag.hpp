@@ -22,6 +22,23 @@ struct CtcDiag {
     uint32_t ioPort[8];     // per-port counts
     uint8_t lastIo[64];     // last 32 (port, data) pairs, ring
     uint32_t lastIoPos;
+
+    // D2 (PC0 gate) pulse statistics, from event timestamps: width of the
+    // last 8 "1" phases and the last 8 rise-to-rise periods, microseconds
+    // clamped to 16 bits
+    uint32_t d2RiseTs;
+    bool d2High;
+    uint16_t d2Width[8];
+    uint32_t d2WidthPos;
+    uint16_t d2Period[8];
+    uint32_t d2PeriodPos;
+
+    // Tone model state snapshots (packed: bit0 gate, bit1 out, bit2
+    // running, bits 4-6 mode) + reload value, refreshed each buffer
+    uint8_t ioToneState;
+    uint32_t ioToneReload;
+    uint8_t memToneState;
+    uint32_t memToneReload;
 };
 
 extern CtcDiag g_ctc_diag;

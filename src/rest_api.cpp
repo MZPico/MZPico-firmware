@@ -184,7 +184,7 @@ static void rest_parse_and_handle(RestConn *conn) {
     if (strcasecmp(method, "GET") == 0 && strncmp(uri, "/api/ctcdiag", 12) == 0) {
         // Live CTC/melody capture counters; poll with curl while a game
         // runs to observe its actual sound-write technique
-        static char diag[1100];
+        static char diag[1400];
         CtcDiag& d = g_ctc_diag;
         int n = snprintf(diag, sizeof(diag),
             "mem: total=%lu e0page=%lu rejected=%lu\n"
@@ -212,7 +212,16 @@ static void rest_parse_and_handle(RestConn *conn) {
             uint32_t p = ((d.lastIoPos + i) & 31) * 2;
             n += snprintf(diag + n, sizeof(diag) - n, " %02x:%02x", d.lastIo[p], d.lastIo[p + 1]);
         }
-        snprintf(diag + n, sizeof(diag) - n, "\n");
+        n += snprintf(diag + n, sizeof(diag) - n,
+            "\nd2widthUs: %u %u %u %u %u %u %u %u  d2periodUs: %u %u %u %u %u %u %u %u\n"
+            "ioTone: st=%02x reload=%lu  memTone: st=%02x reload=%lu\n",
+            d.d2Width[0], d.d2Width[1], d.d2Width[2], d.d2Width[3],
+            d.d2Width[4], d.d2Width[5], d.d2Width[6], d.d2Width[7],
+            d.d2Period[0], d.d2Period[1], d.d2Period[2], d.d2Period[3],
+            d.d2Period[4], d.d2Period[5], d.d2Period[6], d.d2Period[7],
+            d.ioToneState, (unsigned long)d.ioToneReload,
+            d.memToneState, (unsigned long)d.memToneReload);
+        (void)n;
         rest_send_response(conn, "200 OK", "text/plain", diag);
         return;
     }

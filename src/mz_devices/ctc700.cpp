@@ -110,6 +110,10 @@ void CTC700Device::applyBankEvent(uint8_t port) {
 void CTC700Device::processWrites() {
     mem_snoop_service();
 
+    g_ctc_diag.memToneState = (tone.gate ? 1 : 0) | (tone.outLevel ? 2 : 0) |
+                              (tone.running ? 4 : 0) | ((tone.mode & 7) << 4);
+    g_ctc_diag.memToneReload = tone.reloadValue;
+
     uint32_t now = mem_snoop_cursor();
     uint32_t head = bankLogHead;
     if (!cursorValid) {
