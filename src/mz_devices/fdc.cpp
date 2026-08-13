@@ -112,27 +112,19 @@ int FDCDevice::setDriveContent(uint8_t drive_id, const char* file_path) {
     if (drive_id >= FDC_NUM_DRIVES || !file_path) return -1;
 
     auto& d = drive[drive_id];
-    //if (d.fh.obj.fs) {
-    //    if (FR_OK != f_sync(&d.fh)) return -1;
-    //    f_close(&d.fh);
-    //}
-    std::memset(&d, 0x00, sizeof(d));
-    //std::strncpy(d.path, file_path, sizeof(d.path) - 1);
-    ByteSourceFactory::from_file(file_path, 0, 128, /* wrap = */false, d.bs);
-    
-    //if (FR_OK != f_open(&d.fh, d.path, FA_READ | FA_WRITE)) {
-    //    d.path[0] = 0;
-    //    d.filename[0] = 0;
-    //    return -1;
-    //}
+    d.bs.reset(); // flushes and closes the previous image, if any
+    d.TRACK = 0;
+    d.SECTOR = 0;
+    d.SIDE = 0;
+    d.track_offset = 0;
+    d.sector_size = 0;
+
+    if (ByteSourceFactory::from_file(file_path, 0, 128, /* wrap = */false, d.bs) != 0) {
+        d.bs.reset();
+        return -1;
+    }
 
     d.track_offset = getTrackOffset(drive_id, d.TRACK, d.SIDE);
-    //if (!d.track_offset) {
-    //    f_close(&d.fh);
-    //    d.path[0] = 0;
-    //    d.filename[0] = 0;
-    //    return -1;
-    //}
     return 1;
 }
 
@@ -174,7 +166,7 @@ int32_t FDCDevice::getTrackOffset(uint8_t drive_id, uint8_t track, uint8_t side)
 }
 
 uint8_t FDCDevice::seekToSector(uint8_t drive_id, uint8_t sector) {
-    if (drive_id >= FDC_NUM_DRIVES) return 1;
+    if (drive_id >= FDC_NUM_DRIVES || !drive[drive_id].bs) return 1;
     auto& d = drive[drive_id];
     d.sector_size = 0;
 
@@ -294,6 +286,7 @@ int FDCDevice::fdcWrite(uint8_t port, uint8_t dt, uint8_t /*high_addr*/) {
 
         // ---- Type III: READ ADDRESS (0x3F) ----
         if ((COMMAND >> 4) == 0x03) {
+            if (!curDrv().bs) { regSTATUS = 0x80; return 1; } // not ready
             if (setTrack()) return 1;
             if (!curDrv().SECTOR || !curDrv().sector_size) {
                 if (seekToSector(drvIdx(), 1)) return 1;
@@ -415,7 +408,8 @@ int FDCDevice::fdcRead(uint8_t port, uint8_t* dt, uint8_t /*high_addr*/) {
         // Timeout/“lazy next sector” hacks from original implementation:
         // If controller is in READ SECTOR and host keeps polling STATUS without reading DATA,
         if (regSTATUS != 0x18) {
-            if ((DATA_COUNTER == curDrv().sector_size) && ((COMMAND >> 5) == 0x03)) {
+            if (curDrv().bs && DATA_COUNTER &&
+                (DATA_COUNTER == curDrv().sector_size) && ((COMMAND >> 5) == 0x03)) {
                 if (++reading_status_counter > 10) {
                     reading_status_counter = 0;
                     if (MULTIBLOCK_RW) {

@@ -211,12 +211,12 @@ int mount_file(const char *path, PicoMgr *mgr) {
     f_close(&fil);
 
   } else if (!strcmp(extension, "DSK")) {
-    if (!fdc->setDriveContent(0, path)) {
+    if (!fdc || fdc->setDriveContent(0, path) < 0) {
       mgr->setString("File read error");
       return 2;
     }
   } else if (!strcmp(extension, "MZQ")) {
-    qd->setDriveContent(path);
+    if (qd) qd->setDriveContent(path);
   } else if (!strcmp(path, "@menu")) {
     mgr->addRaw(mzf_menu, sizeof(mzf_menu));
   } else if (!strcmp(path, "@explorer")) {

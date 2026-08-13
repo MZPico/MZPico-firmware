@@ -19,10 +19,12 @@ FileSource::FileSource(const std::string& path,
     if (fr == FR_NO_FILE) {
         fr = f_open(&file_, path.c_str(), FA_CREATE_ALWAYS | FA_READ | FA_WRITE);
         if (fr != FR_OK) return;
+        valid_ = true;
         if (storage_size_ > 0) resize_file(storage_size_);
     } else if (fr == FR_OK) {
         fr = f_open(&file_, path.c_str(), FA_READ | FA_WRITE);
         if (fr != FR_OK) { blink(3); return; }
+        valid_ = true;
 
         std::uint32_t fileSize = f_size(&file_);
         if (storage_size_ == 0) {
@@ -37,7 +39,15 @@ FileSource::FileSource(const std::string& path,
 
 FileSource::~FileSource() {
     flush();
-    f_close(&file_);
+    if (valid_) f_close(&file_);
+}
+
+int FileSource::flush() {
+    int ret = CachedSource::flush();
+    // Push FatFS's dirty sector buffer and directory entry to the medium;
+    // without this the tail of a write sits in RAM until the file is closed.
+    if (valid_ && f_sync(&file_) != FR_OK) ret = -1;
+    return ret;
 }
 
 void FileSource::resize_file(std::uint32_t new_size) {
