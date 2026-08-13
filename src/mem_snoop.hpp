@@ -28,8 +28,4 @@ uint32_t mem_snoop_read(uint32_t idx);
 // Cheap; call from the consumer's periodic scan.
 void mem_snoop_service(void);
 
-// Claimed DMA channel (for RAM_FUNC diagnostics that must not call into
-// flash: read dma_hw->ch[ch].write_addr directly).
-int mem_snoop_channel(void);
-
 #endif
