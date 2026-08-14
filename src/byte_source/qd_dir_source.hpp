@@ -14,11 +14,39 @@ public:
     QDDirSource(const std::string &path, std::uint32_t cache_size);
     ~QDDirSource();
 
-    // The synthesized stream has no writable backing; reporting read-only
-    // lets the QD device raise write protection instead of losing writes
-    bool readOnly() const override { return true; }
+    // Writable through the save engine below (raw store() stays refused);
+    // the QD device applies its own write protection from the ini flag
+    bool readOnly() const override { return false; }
+
+    // ---- QD save engine: port of mz800emu's virtual-mode write path ----
+    // The QD device feeds it SIO-level events; the engine parses the block
+    // stream the ROM writes and materializes MZF files in the directory.
+    void wrSyncEvent(bool at_home); // sync mark written (WR5 pattern 0x0a)
+    void wrDataEvent(std::uint8_t v); // data byte written (incl. CRC trailer)
+    void wrAbortEvent();            // motor off: abandon an unfinished save
+    void rdCountEvent();            // count byte is being read: fresh listing
 
 private:
+    enum WrStage : std::uint8_t {
+        WR_IDLE = 0,   // reading / free area
+        WR_COUNT,      // count block rewrite (position 0 sync)
+        WR_HEADER,     // header block payload -> wr_hdr_
+        WR_BODY,       // body block payload -> temp file
+        WR_FORMATTING, // format in progress: swallow the stream
+    };
+    WrStage       wr_stage_ = WR_IDLE;
+    std::uint32_t wr_pos_ = 0;              // position within the current block
+    std::uint8_t  wr_hdr_[64] = {};         // QD-layout header block payload
+    std::uint16_t wr_body_remaining_ = 0;
+    FIL           wr_file_{};
+    bool          wr_file_open_ = false;
+    std::string   saved_filename_;          // served last until the next listing
+
+    void rebuild();
+    void openTemp();
+    void abortTemp();
+    void finalizeSave();
+    void doFormat();
     struct FileEntry {
         std::string   filename;
         std::uint16_t body_size;

@@ -163,10 +163,15 @@ key_p=CP/M|flash:/cpm.dsk
 Quick disk emulation can use either a MZQ image file or a directory.
 MZF files inside the directory (other files are ignored) are then served as
 the content of the emulated Quick Disk. The order of files in the Quick Disk
-is the same as their order in the MZPico device filesystem. A
-directory-backed Quick Disk is always write-protected; an MZQ image is
-writable unless `write_protected` is set or the image file has the FAT
-read-only attribute.
+is the same as their order in the MZPico device filesystem.
+
+Directory-backed Quick Disks are fully writable: saving from the MZ-800
+creates a real `.mzf` file in the directory (the filename is taken from the
+saved Sharp file name, converted to ASCII; saving an existing name
+overwrites that file), and formatting the Quick Disk deletes all MZF files
+in the directory. An MZQ image is written in place. Either mount type
+becomes read-only when `write_protected` is set; an MZQ image is also
+protected by its FAT read-only attribute.
 
 Options:
 - `image` — MZQ file or directory

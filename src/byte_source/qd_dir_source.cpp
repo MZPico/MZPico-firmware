@@ -5,6 +5,12 @@
 #include <algorithm>
 #include <new>
 
+#include "sharpmz_ascii.h"
+
+// Temp file for an in-flight save; no .mzf suffix, so the index filter
+// never serves it (name mirrors mz800emu's QDISK_VIRT_TEMP_FNAME)
+#define QD_SAVE_TEMP_FNAME "qd_temp.tmp"
+
 // ─────────────────────────────────────────────────────────────────────────────
 //                          CONSTANTS (single source of truth)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -117,9 +123,280 @@ QDDirSource::QDDirSource(const std::string &path, std::uint32_t cache_size)
 }
 
 QDDirSource::~QDDirSource() {
+    abortTemp();
     close_open();
     delete[] pair_prefix_; pair_prefix_ = nullptr;
     delete[] files_;       files_       = nullptr;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//                 SAVE ENGINE (port of mz800emu virtual-mode writes)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The ROM writes the same framed stream the read side synthesizes. Block
+// positions (wr_pos_, reset to 3 at each sync mark, i.e. just past
+// 00 16 16 A5): count block has the block count at 4; the header block
+// carries the 64-byte QD header payload at 7..70; the body block has the
+// size at 5..6 and payload after. A save is: header block -> body block
+// (renamed into place on completion), then a rewind and a count-block
+// rewrite, then a verify pass that must read the saved file last.
+
+void QDDirSource::rebuild() {
+    close_open();
+    delete[] pair_prefix_; pair_prefix_ = nullptr;
+    delete[] files_;       files_       = nullptr;
+    files_count_ = 0;
+    build_index();
+
+    // Verify-pass ordering: the file saved last is served last, wherever
+    // FatFS placed its directory entry (mz800emu's saved_filename rule)
+    if (!saved_filename_.empty() && files_count_ > 1) {
+        for (std::size_t i = 0; i + 1 < files_count_; ++i) {
+            if (files_[i].filename == saved_filename_) {
+                FileEntry e = files_[i];
+                for (std::size_t j = i; j + 1 < files_count_; ++j)
+                    files_[j] = files_[j + 1];
+                files_[files_count_ - 1] = e;
+                pair_prefix_[0] = 0;
+                for (std::size_t j = 0; j < files_count_; ++j)
+                    pair_prefix_[j + 1] = pair_prefix_[j] +
+                        qd::kHeaderBlockLen + qd::block_len(files_[j].body_size);
+                break;
+            }
+        }
+    }
+    invalidate(); // drop cached synthesized bytes; layout changed
+}
+
+void QDDirSource::openTemp() {
+    abortTemp();
+    if (f_open(&wr_file_, build_full_path(QD_SAVE_TEMP_FNAME),
+               FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
+        return;
+    wr_file_open_ = true;
+
+    // Reconstruct the 128-byte tape-format MZF header from the QD-layout
+    // header block: [0..17] unchanged, size moves from 20..21 back to
+    // 18..19, the rest shifts down by 2, tail padded with zeros
+    std::uint8_t mzf[qd::kBodyDataOffset];
+    std::memset(mzf, 0x00, sizeof(mzf));
+    std::memcpy(mzf, wr_hdr_, qd::kOutZeroLoOffset);
+    mzf[qd::kBodySizeLoOffset] = wr_hdr_[qd::kOutBodySizeLoOffset];
+    mzf[qd::kBodySizeHiOffset] = wr_hdr_[qd::kOutBodySizeHiOffset];
+    std::memcpy(mzf + 20, wr_hdr_ + qd::kOutShiftStart,
+                qd::kHeaderBytes - qd::kOutShiftStart);
+
+    UINT bw = 0;
+    if (f_write(&wr_file_, mzf, sizeof(mzf), &bw) != FR_OK || bw != sizeof(mzf))
+        abortTemp();
+}
+
+void QDDirSource::abortTemp() {
+    if (wr_file_open_) {
+        f_close(&wr_file_);
+        wr_file_open_ = false;
+        f_unlink(build_full_path(QD_SAVE_TEMP_FNAME));
+    }
+}
+
+// ASCII case-insensitive name compare (FAT matching semantics)
+static bool qd_ci_equal(const char* a, const char* b) {
+    while (*a && *b) {
+        char ca = *a++, cb = *b++;
+        if (ca >= 'a' && ca <= 'z') ca = static_cast<char>(ca - 32);
+        if (cb >= 'a' && cb <= 'z') cb = static_cast<char>(cb - 32);
+        if (ca != cb) return false;
+    }
+    return *a == *b;
+}
+
+void QDDirSource::finalizeSave() {
+    const bool ok = wr_file_open_;
+    if (wr_file_open_) {
+        f_sync(&wr_file_);
+        f_close(&wr_file_);
+        wr_file_open_ = false;
+    }
+    wr_stage_ = WR_IDLE;
+    if (!ok) return;
+
+    // Filename from the header block: attribute at [0], Sharp-charset name
+    // at [1..17], 0x0d-terminated; sanitize what FAT cannot store
+    std::string base;
+    for (std::size_t i = 1; i <= 17; ++i) {
+        std::uint8_t c = wr_hdr_[i];
+        if (c < 0x20) break;
+        c = sharpmz_cnv_from(c);
+        if (c == '\\' || c == '/' || c == ':' || c == '*' || c == '?' ||
+            c == '"' || c == '<' || c == '>' || c == '|')
+            c = '_';
+        base.push_back(static_cast<char>(c));
+    }
+    while (!base.empty() && (base.back() == ' ' || base.back() == '.'))
+        base.pop_back();
+    if (base.empty()) base = "noname";
+
+    // The read cursor may hold the file we are about to replace
+    close_open();
+
+    // A QD file's identity is the Sharp name in its header, which is
+    // case-sensitive; FAT names are not. Overwrite the served file whose
+    // HEADER name matches the saved one exactly (reusing its container
+    // name); a case-variant Sharp name must keep both files, so the new
+    // one gets a suffixed FAT container name. Deleting a case-variant here
+    // would shrink the disk under the ROM's freshly written file count and
+    // fail the verify pass ("hardware error").
+    std::string target;
+    for (std::size_t i = 0; i < files_count_; ++i) {
+        FIL f{};
+        if (f_open(&f, build_full_path(files_[i].filename), FA_READ) != FR_OK)
+            continue;
+        std::uint8_t probe[17] = {};
+        UINT br = 0;
+        FRESULT fr = f_lseek(&f, 1); // Sharp name at header offset 1..17
+        if (fr == FR_OK) fr = f_read(&f, probe, sizeof(probe), &br);
+        f_close(&f);
+        if (fr != FR_OK || br != sizeof(probe)) continue;
+
+        bool same = true;
+        for (std::size_t j = 0; j < sizeof(probe); ++j) {
+            if (probe[j] != wr_hdr_[1 + j]) { same = false; break; }
+            if (probe[j] == 0x0d) break; // both names terminated
+        }
+        if (same) { target = files_[i].filename; break; }
+    }
+
+    std::string temp_path(build_full_path(QD_SAVE_TEMP_FNAME));
+
+    if (!target.empty()) {
+        f_unlink(build_full_path(target.c_str())); // same Sharp name: overwrite
+    } else {
+        // New Sharp name: find a FAT container name that does not collide
+        // case-insensitively with any existing entry
+        target = base + ".mzf";
+        bool taken = false;
+        {
+            DIR dir{};
+            FILINFO fno{};
+            if (f_opendir(&dir, dir_.c_str()) == FR_OK) {
+                while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
+                    if (fno.fattrib & AM_DIR) continue;
+                    if (qd_ci_equal(fno.fname, target.c_str())) { taken = true; break; }
+                }
+                f_closedir(&dir);
+            }
+        }
+        if (taken) {
+            bool found = false;
+            for (int k = 1; k < 100 && !found; ++k) {
+                std::string cand = base + "~" + std::to_string(k) + ".mzf";
+                FILINFO fno{};
+                if (f_stat(build_full_path(cand.c_str()), &fno) == FR_NO_FILE) {
+                    target = cand;
+                    found = true;
+                }
+            }
+            if (!found) { // no free container name; drop the save
+                f_unlink(temp_path.c_str());
+                return;
+            }
+        }
+    }
+
+    std::string target_path(build_full_path(target.c_str()));
+    if (f_rename(temp_path.c_str(), target_path.c_str()) != FR_OK) {
+        f_unlink(temp_path.c_str());
+        return;
+    }
+    saved_filename_ = target;
+}
+
+void QDDirSource::doFormat() {
+    abortTemp();
+    close_open();
+    // MZPico extension over mz800emu (which leaves host files in place):
+    // formatting really empties the disk, i.e. deletes the served files
+    for (std::size_t i = 0; i < files_count_; ++i)
+        f_unlink(build_full_path(files_[i].filename));
+    saved_filename_.clear();
+    wr_stage_ = WR_FORMATTING;
+    rebuild();
+}
+
+void QDDirSource::wrSyncEvent(bool at_home) {
+    wr_pos_ = 3;
+    if (wr_stage_ == WR_FORMATTING) return; // swallow the format stream
+    if (at_home) {
+        wr_stage_ = WR_COUNT;
+        return;
+    }
+    if (wr_stage_ == WR_HEADER) {
+        // Header block complete; the body block follows this sync mark
+        openTemp();
+        wr_stage_ = WR_BODY;
+        wr_body_remaining_ = 0;
+    } else {
+        std::memset(wr_hdr_, 0x00, sizeof(wr_hdr_));
+        wr_stage_ = WR_HEADER;
+    }
+}
+
+void QDDirSource::wrDataEvent(std::uint8_t v) {
+    switch (wr_stage_) {
+    case WR_COUNT:
+        if (wr_pos_ == 4) {
+            if (v == 0) {
+                doFormat();
+            } else {
+                // Count rewritten after a save: rescan, saved file last
+                rebuild();
+                wr_stage_ = WR_IDLE;
+            }
+        }
+        ++wr_pos_;
+        break;
+
+    case WR_HEADER:
+        if (wr_pos_ >= 7 && wr_pos_ < 71)
+            wr_hdr_[wr_pos_ - 7] = v;
+        ++wr_pos_;
+        break;
+
+    case WR_BODY:
+        if (wr_pos_ == 5) {
+            wr_body_remaining_ = v;
+            ++wr_pos_;
+        } else if (wr_pos_ == 6) {
+            wr_body_remaining_ |= static_cast<std::uint16_t>(v) << 8;
+            ++wr_pos_;
+            if (wr_body_remaining_ == 0) finalizeSave(); // empty body
+        } else if (wr_pos_ > 6) {
+            if (wr_file_open_) {
+                UINT bw = 0;
+                f_write(&wr_file_, &v, 1, &bw);
+            }
+            if (--wr_body_remaining_ == 0) finalizeSave();
+        } else {
+            ++wr_pos_; // positions 3..4: A5 marker, block id
+        }
+        break;
+
+    default: // WR_IDLE / WR_FORMATTING: gap, CRC trailer, format stream
+        break;
+    }
+}
+
+void QDDirSource::wrAbortEvent() {
+    abortTemp();
+    wr_stage_ = WR_IDLE;
+    wr_pos_ = 0;
+}
+
+void QDDirSource::rdCountEvent() {
+    // A fresh directory listing starts: natural order again, and pick up
+    // external changes (files added/removed over USB) like a disk swap
+    saved_filename_.clear();
+    rebuild();
 }
 
 const char* QDDirSource::build_full_path(const std::string& filename) {

@@ -34,6 +34,14 @@ public:
     int flush() override;
     std::uint32_t size() const override { return storage_size_; }
     inline std::uint32_t getSize() { return storage_size_; }
+    // Drop the cached window (flushing first); next access refetches
+    int invalidate() {
+        int r = flush();
+        cache_start_ = 0;
+        cache_valid_ = 0;
+        cache_dirty_ = false;
+        return r;
+    }
 
 protected:
     void* ctx_;

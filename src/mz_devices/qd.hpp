@@ -7,6 +7,8 @@
 #include "mz_devices.hpp"
 #include "byte_source.hpp"
 
+class QDDirSource;
+
 #define QD_PORTS      4
 #define QDISK_FORMAT_SIZE            82958
 #define QDISK_IMAGE_MAX_SIZE         (QDISK_FORMAT_SIZE + 84 + 0x1a80)
@@ -98,6 +100,7 @@ private:
     std::string stdPath;
     bool writeProtected{false};
     std::unique_ptr<ByteSource> bs;
+    QDDirSource* dirsrc{nullptr}; // non-null when bs is a directory mount
 
     void driveReset();
     uint8_t readByteFromDrive();

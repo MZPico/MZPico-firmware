@@ -129,8 +129,10 @@ void QDDevice::open(void) {
         return;
 
     int ret;
+    dirsrc = nullptr;
     if (fno.fattrib & AM_DIR) {
         ret = ByteSourceFactory::from_qddir(stdPath, 128, bs);
+        if (ret == 0) dirsrc = static_cast<QDDirSource*>(bs.get());
     } else {
         ret = ByteSourceFactory::from_file(stdPath, 0, 128, /* wrap = */false, bs);
     }
@@ -140,8 +142,9 @@ void QDDevice::open(void) {
     }
 
     status = QDSTS_IMG_READY | QDSTS_HEAD_HOME;
-    // Reported via CTS in channel A RR0 and enforced in testDiskIsWriteable;
-    // a directory-backed QD is inherently read-only
+    // Reported via CTS in channel A RR0 and enforced in testDiskIsWriteable.
+    // Directory mounts are writable through the save engine, so only the
+    // ini flag protects them; file mounts also honor a read-only image.
     if (writeProtected || bs->readOnly())
         status |= QDSTS_IMG_READONLY;
 }
@@ -168,6 +171,14 @@ uint8_t QDDevice::readByteFromDrive() {
         return 0xff;
     }
 
+    // Keep the source in step with the head: write events on directory
+    // mounts (and failed reads) move image_position without moving bs.
+    // An unseekable position (past the backing store) reads as 0xff.
+    if (bs->tell() != image_position && bs->seek(image_position) != 0) {
+        image_position++;
+        return 0xff;
+    }
+
     // Past the backing store (which is smaller than QDISK_IMAGE_MAX_SIZE) or
     // on a read error the drive must deliver 0xff, as mz800emu does — a
     // garbage byte here can spuriously match the sync pair during hunt
@@ -188,6 +199,16 @@ int QDDevice::testDiskIsWriteable() {
 
 void QDDevice::writeByteIntoDrive(uint8_t value) {
     if (0 == testDiskIsWriteable()) return;
+
+    if (dirsrc) {
+        // Directory mount: the save engine parses the stream into MZF
+        // files; the synthesized backing store is never written directly.
+        // Clamp the position so a long format stream can't trip the RR1
+        // CRC-error flag (mz800emu never advances position while formatting)
+        dirsrc->wrDataEvent(value);
+        if (image_position < QDISK_IMAGE_MAX_SIZE) image_position++;
+        return;
+    }
 
     if (QDISK_IMAGE_MAX_SIZE <= image_position) {
         if (QDISK_IMAGE_MAX_SIZE == image_position) image_position++;
@@ -262,7 +283,15 @@ int QDDevice::readByte(MZDevice* self_, uint8_t port, uint8_t *dt, uint8_t /*hig
 
         case QDSIO_ADDR_DATA_A:
             self->status &= ~QDSTS_HEAD_HOME;
-            if (self->status & QDSTS_IMG_READY) *dt = self->readByteFromDrive();
+            if (self->status & QDSTS_IMG_READY) {
+                // The count byte (position 4) starting a fresh read pass
+                // rebuilds the directory listing in natural order; the
+                // post-save verify pass never re-reads the count block, so
+                // its saved-file-last ordering survives (mz800emu rule)
+                if (self->dirsrc && self->image_position == 4)
+                    self->dirsrc->rdCountEvent();
+                *dt = self->readByteFromDrive();
+            }
             else *dt = 0xff;
             break;
 
@@ -318,6 +347,8 @@ int QDDevice::writeByte(MZDevice* self_, uint8_t port, uint8_t dt, uint8_t /*hig
                 case QDSIO_REGADDR_5:
                     if (channel->name == 'B') {
                         if ( (channel->Wreg[QDSIO_REGADDR_5] & 0x80) == 0x00 ) {
+                            // Motor off: abandon an unfinished save, rewind
+                            if (self->dirsrc) self->dirsrc->wrAbortEvent();
                             if (self->status & QDSTS_IMG_READY) {
                                 if (self->bs->seek(0) != 0) {
                                     std::fprintf(stderr, "QuickDisk: fseek() error\n");
@@ -328,12 +359,23 @@ int QDDevice::writeByte(MZDevice* self_, uint8_t port, uint8_t dt, uint8_t /*hig
                         }
                     } else {
                         if ( (channel->Wreg[QDSIO_REGADDR_5] & 0x18) == 0x18 ) {
-                            // TX interrupt + TX enable
-                            self->writeByteIntoDrive(0x00);
+                            // TX interrupt + TX enable: gap byte (image mounts
+                            // only; the save engine ignores gaps, as mz800emu)
+                            if (!self->dirsrc) self->writeByteIntoDrive(0x00);
                         } else if ( (channel->Wreg[QDSIO_REGADDR_5] & 0x1a) == 0x0a ) {
                             // TX interrupt + TX enable + RTS => write sync mark
-                            self->writeByteIntoDrive(channel->Wreg[QDSIO_REGADDR_6]);
-                            self->writeByteIntoDrive(channel->Wreg[QDSIO_REGADDR_7]);
+                            if (self->dirsrc) {
+                                // Block boundary: at position 0 the ROM is
+                                // rewriting the count block, otherwise a
+                                // header/body block begins. The next data
+                                // byte lands just past 00 16 16 A5.
+                                if (self->testDiskIsWriteable())
+                                    self->dirsrc->wrSyncEvent(self->image_position == 0);
+                                self->image_position = 3;
+                            } else {
+                                self->writeByteIntoDrive(channel->Wreg[QDSIO_REGADDR_6]);
+                                self->writeByteIntoDrive(channel->Wreg[QDSIO_REGADDR_7]);
+                            }
                         }
                     }
                     break;
