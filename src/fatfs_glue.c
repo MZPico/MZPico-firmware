@@ -173,7 +173,7 @@ DRESULT disk_ioctl(BYTE pdrv, /* Physical drive number (0..) */
           fatfs_disk_sync();
           return RES_OK;
         case GET_SECTOR_COUNT:
-          *(LBA_t*) buff = SECTOR_NUM;
+          *(LBA_t*) buff = flash_fs_num_fat_sectors();
           return RES_OK;
         case GET_SECTOR_SIZE:
           *(WORD*) buff = SECTOR_SIZE;

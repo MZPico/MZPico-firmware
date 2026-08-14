@@ -84,9 +84,32 @@ void blink(uint8_t cnt) {
 #endif
 }
 
+// Z80 reset (core 0 IRQ): flush and reboot IMMEDIATELY. The Pico must
+// restart together with the Z80 - if it reboots late, the freshly reset
+// Z80 boots against an unserved bus, reads garbage from the SRAM-card
+// probe and crashes into junk execution (stuck tone, black screen) that
+// no further reset can recover, because every reset press restarts this
+// race. A deferred-flush design (wait for core 1 to finish its current
+// EXWAIT'd operation) loses the race by seconds during flash-heavy work.
+//
+// Safety of flushing from this IRQ:
+// - While core 1 is inside an actual flash program/erase, core 0 is
+//   parked in the lockout IRQ, so THIS handler is hardware-deferred to a
+//   flash-operation boundary - it cannot tear a flash op.
+// - flash_guard_enter() parks core 1 (pre-lockout, a safe boundary) once
+//   shutting_down is set, so the flush below runs single-context instead
+//   of deadlocking two symmetric lockout initiators.
+// - Per-operation f_sync durability plus the double-buffered MZP1 map
+//   bound the damage of the remaining edge cases (e.g. mid-SD-write).
+//
+// NB: the reset SM runs on pio0 - clearing `pio` (pio1) here leaves the
+// interrupt asserted and this handler storms, starving the SIO lockout
+// IRQ (lower exception number wins on M0+). Historically masked because
+// the handler rebooted without returning.
 RAM_FUNC static void reset_handler(void) {
-    pio_interrupt_clear(pio, 0);
+    pio_interrupt_clear(pio0, 0);
     shutting_down = true;
+    watchdog_enable(8000, 1); // wedge backstop should the flush hang
     MZDeviceManager::flushAll();
     watchdog_reboot(0, 0, 0);
 }

@@ -13,6 +13,7 @@
  */
 
 #include "tusb.h"
+#include "pico/stdlib.h"
 #include "fatfs_disk.h"
 
 // whether host does safe-eject
@@ -40,8 +41,9 @@ bool tud_msc_test_unit_ready_cb(uint8_t lun)
 {
   (void) lun;
 
-  // RAM disk is ready until ejected
-  if (ejected) {
+  // No medium when ejected, or when the flash filesystem could not be
+  // mounted (damaged volume that must not be auto-formatted)
+  if (ejected || !fatfs_is_mounted()) {
     // Additional Sense 3A-00 is NOT_FOUND
     tud_msc_set_sense(lun, SCSI_SENSE_NOT_READY, 0x3a, 0x00);
     return false;
@@ -56,7 +58,8 @@ void tud_msc_capacity_cb(uint8_t lun, uint32_t* block_count, uint16_t* block_siz
 {
   (void) lun;
 
-  *block_count = SECTOR_NUM;
+  // Runtime value: legacy and current flash FS formats differ in size
+  *block_count = flash_fs_num_fat_sectors();
   *block_size  = SECTOR_SIZE;
 }
 
@@ -105,25 +108,34 @@ bool tud_msc_is_writable_cb (uint8_t lun)
 
 // Callback invoked when received WRITE10 command.
 // Process data in buffer to disk's storage and return number of written bytes
-alarm_id_t alarm_id = -1;
-int64_t sync_callback(alarm_id_t id, void *user_data)
+//
+// The map sync is deferred until write activity dies down, and runs from
+// msc_disk_task() in thread context - NOT from an alarm: the alarm IRQ
+// could fire mid-allocator-update of a later write and persist an
+// inconsistent map.
+static volatile bool sync_pending = false;
+static absolute_time_t sync_deadline;
+
+void msc_disk_task(void)
 {
-   	fatfs_disk_sync();
+  if (sync_pending && time_reached(sync_deadline)) {
+    sync_pending = false;
+    fatfs_disk_sync();
+  }
 }
 
 int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize)
 {
   (void) lun;
 
-  if(offset != 0) return -1;	
-  if(bufsize != SECTOR_SIZE) return -1;	
+  if(offset != 0) return -1;
+  if(bufsize != SECTOR_SIZE) return -1;
 
   uint32_t status = fatfs_disk_write(buffer, lba, 1);
 
-  // we need to sync the flash but only do it when activity dies down :-)
-  if(alarm_id >= 0)
-      cancel_alarm(alarm_id);
-  alarm_id = add_alarm_in_ms(250, sync_callback, NULL, false);
+  // sync the flash once activity dies down
+  sync_deadline = make_timeout_time_ms(250);
+  sync_pending = true;
 
   if(status != 0) return -1;
   return (int32_t) bufsize;

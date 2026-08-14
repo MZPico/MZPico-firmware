@@ -17,8 +17,17 @@
 void tud_mount_cb(void)
 {
   printf("Device mounted\n");
-  if (!mount_fatfs_disk())
-    create_fatfs_disk();
+  if (!mount_fatfs_disk()) {
+    // Auto-create ONLY on truly blank (fully erased) flash. A region that
+    // fails to mount but is not blank held a filesystem - e.g. one whose
+    // map sync was interrupted by a power cut - and reformatting it here
+    // would silently destroy every file. Leave it unmounted instead (the
+    // MSC reports no medium); the mzpico_format UF2 reformats explicitly.
+    if (flash_fs_region_is_blank())
+      create_fatfs_disk();
+    else
+      printf("flash FS damaged - not auto-formatting\n");
+  }
 }
 
 // Invoked when device is unmounted
@@ -109,6 +118,7 @@ int main(void) {
     while (1) {
         tud_task();
         cdc_task();
+        msc_disk_task(); // deferred flash map sync (thread context)
     }
 }
 

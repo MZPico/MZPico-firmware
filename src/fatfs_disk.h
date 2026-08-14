@@ -29,6 +29,7 @@ bool fatfs_is_mounted();
 uint32_t fatfs_disk_read(uint8_t* buff, uint32_t sector, uint32_t count);
 uint32_t fatfs_disk_write(const uint8_t* buff, uint32_t sector, uint32_t count);
 void fatfs_disk_sync();
+void msc_disk_task(); // deferred flash map sync; poll from the USB main loop
 #ifdef __cplusplus
 }
 #endif
