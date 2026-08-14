@@ -130,6 +130,12 @@ hold_high:
 still_high:
     jmp x-- hold_high
     irq set 0
+    ; One IRQ per reset assertion: without this the wrap lands back on
+    ; "wait 1" while the pulse is still high and the IRQ re-fires every
+    ; ~350ns for the whole press - historically invisible (the first fire
+    ; rebooted the Pico), fatal for soft reset (the re-fire trips the
+    ; double-reset escape hatch into a full reboot every time).
+    wait 0 gpio 19
 .wrap
 
 

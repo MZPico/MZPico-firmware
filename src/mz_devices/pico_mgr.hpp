@@ -73,6 +73,16 @@ public:
         response_command = result ? PICO_MGR_RESULT_ERR : PICO_MGR_RESULT_OK;
     }
 
+    void softReset() override {
+        // An in-flight async cloud command still owns the data buffer on
+        // core 0; leave IN_PROGRESS standing - the fresh Z80 session sees
+        // busy until it completes (writeControl refuses new commands)
+        if (response_command == PICO_MGR_RESULT_IN_PROGRESS) return;
+        idx = 0;
+        response_command = 0;
+        resetContent();
+    }
+
 private:
     // Buffer and mappings
     uint8_t data[PICO_MGR_BUFF_SIZE];

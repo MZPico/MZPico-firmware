@@ -30,6 +30,8 @@ public:
     RAM_FUNC static int writeAddress(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
     RAM_FUNC static int readHighAddr(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr);
 
+    void softReset() override { pos_ = 0; } // contents persist, like real RAM
+
 private:
     uint8_t* data;
     bool readOnly;

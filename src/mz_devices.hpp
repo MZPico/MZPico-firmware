@@ -60,6 +60,12 @@ public:
     virtual std::pair<std::vector<uint8_t>, std::vector<uint8_t>> applyBasePort(uint8_t basePort) const;
     virtual int readConfig(dictionary *ini) = 0;
     virtual int flush() = 0;
+    // Z80 reset without a Pico reboot: restore power-on REGISTER state
+    // while preserving configuration (mounted images, ini flags). Default
+    // no-op is correct for devices whose real-hardware counterpart has no
+    // reset line (8253, SN76489: the monitor re-initializes them via the
+    // bus and the emulation follows).
+    virtual void softReset() {}
 
     const ReadPortMapping* getReadMappings() const { return readMappings; }
     const WritePortMapping* getWriteMappings() const { return writeMappings; }
@@ -95,6 +101,7 @@ public:
 
     static MZDevice* createDevice(const std::string& devType, const std::string& id);
     static void flushAll();
+    static void softResetAll();
     static int disableDevice(MZDevice* dev);
     static int enableDevice(MZDevice* dev);
     // Configure a device with explicit port lists

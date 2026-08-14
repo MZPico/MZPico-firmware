@@ -27,6 +27,11 @@ public:
     RAM_FUNC static int writePort(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
     RAM_FUNC static int resetPort(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr);
 
+    void softReset() override { // mounted boot image persists
+        firstByte = -1;
+        if (bs) bs->seek(0);
+    }
+
 private:
     uint8_t* data;
     int firstByte;

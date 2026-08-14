@@ -46,6 +46,11 @@ public:
     static int writeAddrs(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
     static int writeAddri(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
 
+    void softReset() override { // contents persist, like real RAM
+        addr_idx = 0;
+        if (bs) bs->seek(0);
+    }
+
 private:
     uint8_t* data;
     uint32_t size;

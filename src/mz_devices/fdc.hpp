@@ -34,6 +34,7 @@ public:
     explicit FDCDevice();
     ~FDCDevice();
     int init() override;
+    void softReset() override;
     int isInterrupt() override;
     RAM_FUNC bool needsExwait() const override { return FDC_EXWAIT; }
     std::vector<uint8_t> getReadPorts() const override;
@@ -92,5 +93,9 @@ private:
     uint8_t reading_status_counter{0};
     uint8_t error_int{0}; // /INT for a command that terminated immediately
     int fd0disabled{-1};
+    // Explorer mounts are session state: softReset() reverts each drive to
+    // its ini-configured image (cfg_image), like the old full reboot did
+    std::string cfg_image[FDC_NUM_DRIVES];
+    std::string cur_image[FDC_NUM_DRIVES];
 };
 

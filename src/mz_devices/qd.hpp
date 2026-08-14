@@ -71,6 +71,7 @@ public:
     ~QDDevice();
 
     int init() override;
+    void softReset() override;
     int isInterrupt() override;
     bool needsExwait() const override { return QD_EXWAIT; }
     std::vector<uint8_t> getReadPorts() const override;
@@ -98,6 +99,7 @@ private:
     uint16_t out_crc16{0};
     unsigned image_position{0};
     std::string stdPath;
+    std::string cfgPath; // ini-configured image; softReset reverts to it
     bool writeProtected{false};
     std::unique_ptr<ByteSource> bs;
     QDDirSource* dirsrc{nullptr}; // non-null when bs is a directory mount

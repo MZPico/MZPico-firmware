@@ -63,6 +63,51 @@ int FDCDevice::init() {
     return 1;
 }
 
+// Z80 reset: WD1793 controller state back to power-on; mounted images and
+// per-drive write protection persist (they are configuration, and the
+// physical head position is revalidated lazily by setTrack/seekToSector)
+void FDCDevice::softReset() {
+    regSTATUS = 0;
+    regDATA = 0;
+    regTRACK = 0;
+    regSECTOR = 0;
+    SIDE = 0;
+    buffer_pos = 0;
+    COMMAND = 0;
+    MOTOR = 0;
+    DENSITY = 0;
+    EINT = 0;
+    DATA_COUNTER = 0;
+    MULTIBLOCK_RW = 0;
+    STATUS_SCRIPT = 0;
+    waitForInt = 0;
+    write_track_stage = 0;
+    write_track_counter = 0;
+    rt_phase = 0;
+    rt_sec_idx = 0;
+    rt_remaining = 0;
+    reading_status_counter = 0;
+    error_int = 0;
+
+    // Revert explorer-mounted images to the ini configuration, so a reset
+    // leaves the boot order as configured (e.g. back to the menu) instead
+    // of re-booting a floppy mounted on the fly
+    for (int i = 0; i < FDC_NUM_DRIVES; i++) {
+        if (cur_image[i] == cfg_image[i]) continue;
+        if (cfg_image[i].empty()) {
+            drive[i].bs.reset(); // flushes and closes the runtime image
+            drive[i].TRACK = 0;
+            drive[i].SECTOR = 0;
+            drive[i].SIDE = 0;
+            drive[i].track_offset = 0;
+            drive[i].sector_size = 0;
+            cur_image[i].clear();
+        } else {
+            setDriveContent(i, cfg_image[i].c_str());
+        }
+    }
+}
+
 int FDCDevice::readConfig(dictionary *ini) {
     if (!ini) return -1;
 
@@ -71,6 +116,7 @@ int FDCDevice::readConfig(dictionary *ini) {
     const int wp_all = iniparser_getboolean(ini, (getDevID() + ":write_protected").c_str(), 0);
     for (int i = 0; i < FDC_NUM_DRIVES; i++) {
         std::string image = iniparser_getstring(ini, (getDevID() + ":image_disk" + std::to_string(i+1)).c_str(), "");
+        cfg_image[i] = image; // what a Z80 reset reverts the drive to
         if (!image.empty())
             setDriveContent(i, image.c_str());
         drive[i].wp = iniparser_getboolean(
@@ -132,6 +178,7 @@ int FDCDevice::setDriveContent(uint8_t drive_id, const char* file_path) {
     }
 
     d.track_offset = getTrackOffset(drive_id, d.TRACK, d.SIDE);
+    cur_image[drive_id] = file_path;
     return 1;
 }
 

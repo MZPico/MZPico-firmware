@@ -61,10 +61,29 @@ int QDDevice::init() {
 
 int QDDevice::isInterrupt() { return 0; }
 
+// Z80 reset: SIO registers and head position back to power-on; the
+// ini-configured image, write protection and connection state persist,
+// while an explorer-mounted image is reverted (session state, like the
+// old full reboot re-parsing the ini)
+void QDDevice::softReset() {
+    memset(channel, 0, sizeof(channel));
+    channel[0].name = 'A';
+    channel[1].name = 'B';
+    out_crc16 = 0;
+    if (dirsrc) dirsrc->wrAbortEvent(); // abandon a save cut off mid-write
+    if (stdPath != cfgPath) {
+        stdPath = cfgPath;
+        open(); // remounts the configured image, or no-disk when empty
+    }
+    if (bs) bs->seek(0);
+    driveReset(); // position 0, head home
+}
+
 int QDDevice::readConfig(dictionary *ini) {
     if (!ini) return -1;
 
     std::string image = iniparser_getstring(ini, (getDevID() + ":image").c_str(), "");
+    cfgPath = image; // what a Z80 reset reverts the drive to
     setWriteProtected(iniparser_getboolean(ini, (getDevID() + ":write_protected").c_str(), false));
     if (!image.empty())
         setDriveContent(image);

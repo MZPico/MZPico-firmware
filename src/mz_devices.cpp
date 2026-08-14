@@ -234,6 +234,11 @@ void MZDeviceManager::flushAll() {
         devices[i]->flush();
 }
 
+void MZDeviceManager::softResetAll() {
+    for (uint8_t i=0; i<deviceCount; i++)
+        devices[i]->softReset();
+}
+
 int MZDeviceManager::enableDevice(MZDevice* dev) {
     if (!dev)
         return 1;

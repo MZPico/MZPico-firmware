@@ -84,15 +84,16 @@ void blink(uint8_t cnt) {
 #endif
 }
 
-// Z80 reset (core 0 IRQ): flush and reboot IMMEDIATELY. The Pico must
-// restart together with the Z80 - if it reboots late, the freshly reset
-// Z80 boots against an unserved bus, reads garbage from the SRAM-card
-// probe and crashes into junk execution (stuck tone, black screen) that
-// no further reset can recover, because every reset press restarts this
-// race. A deferred-flush design (wait for core 1 to finish its current
-// EXWAIT'd operation) loses the race by seconds during flash-heavy work.
+// Z80 reset (core 0 IRQ). Normal path: SOFT reset - core 1 re-initializes
+// device state in place during the reset pulse and keeps serving the bus,
+// while core 0 (WiFi, audio) is untouched, so the WiFi association
+// survives and the bus is live again before the Z80 leaves reset (which
+// also wins the boot race by construction). Escape hatch preserving the
+// old semantics: a reset while the previous soft reset is still pending
+// (core 1 wedged in a long handler) or a second reset within 3 s does the
+// full flush + reboot - the gesture users already make when wedged.
 //
-// Safety of flushing from this IRQ:
+// Safety of the hard path's in-IRQ flush:
 // - While core 1 is inside an actual flash program/erase, core 0 is
 //   parked in the lockout IRQ, so THIS handler is hardware-deferred to a
 //   flash-operation boundary - it cannot tear a flash op.
@@ -106,26 +107,39 @@ void blink(uint8_t cnt) {
 // interrupt asserted and this handler storms, starving the SIO lockout
 // IRQ (lower exception number wins on M0+). Historically masked because
 // the handler rebooted without returning.
+static volatile bool soft_reset_pending = false;
+static volatile uint32_t last_soft_reset_ms = 0;
+static volatile uint32_t last_reset_irq_ms = 0;
+
 RAM_FUNC static void reset_handler(void) {
     pio_interrupt_clear(pio0, 0);
-    shutting_down = true;
-    watchdog_enable(8000, 1); // wedge backstop should the flush hang
-    MZDeviceManager::flushAll();
-    watchdog_reboot(0, 0, 0);
+
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+
+    // Coalesce IRQs closer than 500ms into one reset event: the reset SM
+    // fires once per assertion, but mechanical bounce on the reset line
+    // can assert several times per physical press (the SM's 30-sample
+    // filter spans only ~2us). A distinct user press is always slower.
+    uint32_t prev = last_reset_irq_ms;
+    last_reset_irq_ms = now;
+    if (prev != 0 && (now - prev) < 500) return;
+
+    if (soft_reset_pending ||
+        (last_soft_reset_ms != 0 && (now - last_soft_reset_ms) < 3000)) {
+        // Escape hatch: full reboot with the old immediate semantics
+        shutting_down = true;
+        watchdog_enable(8000, 1); // wedge backstop should the flush hang
+        MZDeviceManager::flushAll();
+        watchdog_reboot(0, 0, 0);
+        return;
+    }
+    soft_reset_pending = true;
 }
 
-RAM_FUNC static void listen_loop(void) {
-    uint8_t low_addr = 0;
-    uint8_t high_addr = 0;
-    uint8_t data = 0;
-    #ifndef BOARD_DELUXE
-    uint32_t raw_bus = 0; // frugal: one 16-bit addr+data write capture
-    #endif
-
-    // The bus SMs have been capturing since long before the devices were
-    // configured; a SM may even be stalled mid-capture on a full FIFO.
-    // Discard the stale backlog and restart both SMs from their entry
-    // points so no pre-boot transaction is dispatched to live devices.
+// Flush stale captures and restart the bus SMs from their entry points.
+// Used at listen_loop startup (SMs captured long before devices existed,
+// possibly stalled mid-capture on a full FIFO) and on Z80 soft reset.
+RAM_FUNC static void restart_bus_sms(void) {
     pio_sm_set_enabled(pio, SM_READ, false);
     pio_sm_set_enabled(pio, SM_WRITE, false);
     pio_sm_clear_fifos(pio, SM_READ);
@@ -136,6 +150,17 @@ RAM_FUNC static void listen_loop(void) {
     pio_sm_exec(pio, SM_WRITE, pio_encode_jmp(bus_write_prog_offset));
     pio_sm_set_enabled(pio, SM_READ, true);
     pio_sm_set_enabled(pio, SM_WRITE, true);
+}
+
+RAM_FUNC static void listen_loop(void) {
+    uint8_t low_addr = 0;
+    uint8_t high_addr = 0;
+    uint8_t data = 0;
+    #ifndef BOARD_DELUXE
+    uint32_t raw_bus = 0; // frugal: one 16-bit addr+data write capture
+    #endif
+
+    restart_bus_sms();
 
     // Ensure the flat fast-path tables reflect the final device config
     MZDeviceManager::buildFlatTables();
@@ -209,6 +234,21 @@ RAM_FUNC static void listen_loop(void) {
                 pio_sm_get_blocking(pio, SM_WRITE);
             }
             #endif
+        }
+        else if (soft_reset_pending) {
+            // Z80 soft reset: the bus is quiet (Z80 held in reset), so
+            // this runs within the reset pulse. Devices return to
+            // power-on register state, mounted images and core 0 (WiFi
+            // association, audio) persist. Sound chips are deliberately
+            // untouched - like the real 8253/SN76489 they have no reset
+            // line; the monitor re-initializes them through the bus.
+            MZDeviceManager::flushAll();
+            MZDeviceManager::softResetAll();
+            restart_bus_sms();
+            release_exwait();
+            release_interrupt();
+            last_soft_reset_ms = to_ms_since_boot(get_absolute_time());
+            soft_reset_pending = false;
         }
     }
 }
