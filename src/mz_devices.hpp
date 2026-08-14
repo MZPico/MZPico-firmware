@@ -5,13 +5,14 @@
 #include <functional>
 #include <memory>
 #include <map>
+#include <new>
 #include <vector>
 
 #include "common.hpp"
 #include "iniparser.h"
 
 #define REGISTER_MZ_DEVICE(CLASS) \
-    MZDevice* create_##CLASS() { return new CLASS(); } \
+    MZDevice* create_##CLASS() { return new (std::nothrow) CLASS(); } \
     namespace { \
         struct AutoRegister_##CLASS { \
             AutoRegister_##CLASS() { \
@@ -32,6 +33,10 @@ constexpr uint8_t E_PORT_NOT_AVAILABLE = 254;
 constexpr uint8_t E_MAX_DEVICES = 253;
 constexpr uint8_t E_DEVICE_ALREADY_REGISTERED = 252;
 constexpr uint8_t E_DEVICE_NOT_REGISTERED = 251;
+// readConfig: the device's RAM buffers don't fit - boot skips the device
+// and continues instead of halting (a missing device is diagnosable from
+// the running machine; a halted boot is not)
+constexpr int E_DEVICE_NO_MEMORY = 250;
 
 class MZDevice {
 public:

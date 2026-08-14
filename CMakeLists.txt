@@ -39,6 +39,15 @@ message(STATUS "Board type: ${BOARD}")
 message(STATUS "Flash size selected: ${FLASH_SIZE}")
 message(STATUS "Pico W WiFi support: ${USE_PICO_W}")
 
+if(USE_PICO_W AND FLASH_SIZE STREQUAL "16M")
+    message(WARNING
+        "16M + Pico W leaves only ~70KB of heap (the 16M flash map costs "
+        "60KB of RAM, WiFi another ~60KB): the default device set does not "
+        "fit. Trim mzpico.ini (e.g. file-backed pico_rd, no ramdisk) - see "
+        "the RAM budget section in README.md. Devices whose buffers do not "
+        "fit are skipped at boot.")
+endif()
+
 add_subdirectory(${EXTERNAL_ROOT}/manager)
 
 # Generate embedded-MZF headers into the build tree, not src/: a shared
@@ -103,6 +112,12 @@ endif()
 
 target_compile_definitions(mzpico PRIVATE
     PICO_FLASH_SIZE_BYTES=${FLASH_SIZE_BYTES}
+    # A failed malloc must return NULL, not panic: the SDK default
+    # (PICO_MALLOC_PANIC=1) dies INSIDE malloc, before the out-of-RAM
+    # checks in the device configs (which skip the device and keep
+    # booting) can ever run. A panic is invisible here anyway - device
+    # mode has no console.
+    PICO_MALLOC_PANIC=0
 )
 
 # Generate PIO header from PIO source
@@ -207,6 +222,7 @@ target_include_directories(mzpico_format PUBLIC
 # inherit same compile definitions as mzpico
 target_compile_definitions(mzpico_format PRIVATE
     PICO_FLASH_SIZE_BYTES=${FLASH_SIZE_BYTES}
+    PICO_MALLOC_PANIC=0
 )
 if(DEFINED VERSION)
     target_compile_definitions(mzpico_format PRIVATE FW_VERSION=\"${VERSION}\")

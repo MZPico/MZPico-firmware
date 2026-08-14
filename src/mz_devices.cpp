@@ -223,6 +223,7 @@ MZDevice* MZDeviceManager::createDevice(const std::string& devType, const std::s
         return nullptr;
 
     MZDevice* dev = (it->second)();
+    if (!dev) return nullptr; // out of RAM (nothrow creation): skip device
     dev->setDevID(id);
     devices[deviceCount++] = dev;
     return dev;

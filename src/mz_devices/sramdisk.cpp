@@ -66,7 +66,7 @@ int SRamDisk::loadMzf(const uint8_t* src, size_t src_size, bool in_ram) {
 
     if (in_ram) {
         uint8_t* buffer = new (std::nothrow) uint8_t[src_size];
-        if (!buffer) return 1;
+        if (!buffer) return E_DEVICE_NO_MEMORY;
 
         std::memcpy(buffer, src, src_size);
         data = buffer;

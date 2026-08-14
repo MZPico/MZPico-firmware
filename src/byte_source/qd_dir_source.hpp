@@ -88,6 +88,9 @@ private:
 
 namespace ByteSourceFactory {
     static inline int from_qddir(const std::string &path, std::uint32_t cache_size, std::unique_ptr<ByteSource>& out)
-        { out = std::make_unique<QDDirSource>(path, cache_size); return 0; }
+    {
+        out.reset(new (std::nothrow) QDDirSource(path, cache_size));
+        return out ? 0 : -1; // out of RAM
+    }
 }
 

@@ -250,6 +250,25 @@ wifi_password=MyPassword
   (e.g. with the `mzpico_format` UF2) to upgrade. A damaged flash volume
   is never reformatted automatically — over USB it shows as "no medium"
 
+### RAM budget
+
+The Pico's RAM is shared between the firmware and the buffers of the
+configured devices, and RAM-backed device images are the dominant
+consumers. The 16 MB flash build and the Pico W WiFi stack each claim a
+substantial extra share of RAM, leaving less room for devices.
+
+What costs RAM: `pico_mgr` needs a large fixed transfer buffer (and is
+always required by the menu/explorer); `pico_rd` without an image file
+and `[ramdisk]` allocate their entire `size` in RAM (ramdisk page
+switching needs at least two pages); `sramdisk` costs almost nothing
+unless `in_ram=true`. File-backed images (`image=...`) cost almost no
+RAM regardless of their size.
+
+If a device's buffers do not fit, **boot continues without that device**
+— it will simply be missing from the explorer's device list. Free RAM by
+preferring file-backed images or smaller `size` values; large RAM-backed
+configurations fit best on the 2 MB non-WiFi builds.
+
 ---
 
 ### PSG (SN76489)

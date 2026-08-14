@@ -57,10 +57,12 @@ int RamDisk::readConfig(dictionary *ini) {
         size = RAMDISK_DEFAULT_SIZE;
     if (!image.empty()) {
         ByteSourceFactory::from_file(image.c_str(), size, 128, /* wrap= */ false, bs, /* auto_increment= */ false);
+        if (!bs)
+            return E_DEVICE_NO_MEMORY;
     } else {
         data = (uint8_t *)malloc(size);
         if (!data)
-            return 1;
+            return E_DEVICE_NO_MEMORY;
         ByteSourceFactory::from_ram(data, size, bs, /* auto_increment= */ false);
     }
     return 0;

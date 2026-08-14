@@ -406,6 +406,14 @@ void device_main1(void) {
                 continue;
             dev->init();
             ret = dev->readConfig(ini);
+            if (ret == E_DEVICE_NO_MEMORY) {
+                // The device's RAM buffers don't fit this variant's heap
+                // (see the README RAM budget). Boot WITHOUT the device:
+                // the running machine (with this device missing from the
+                // explorer) is diagnosable, a halted boot is not.
+                MZDeviceManager::disableDevice(dev);
+                continue;
+            }
             if (ret)
                 halt();
             if (devName == "fdc")

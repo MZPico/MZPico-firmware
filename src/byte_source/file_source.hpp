@@ -40,7 +40,9 @@ namespace ByteSourceFactory {
                                 std::unique_ptr<ByteSource> &out,
                                 bool auto_increment = true)
     {
-        auto fs = std::make_unique<FileSource>(path, size, cache_size, wrap, auto_increment);
+        std::unique_ptr<FileSource> fs(
+            new (std::nothrow) FileSource(path, size, cache_size, wrap, auto_increment));
+        if (!fs) { out.reset(); return -1; } // out of RAM
         const int ret = fs->valid() ? 0 : -1;
         out = std::move(fs);
         return ret;

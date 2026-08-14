@@ -71,11 +71,12 @@ int PicoRD::readConfig(dictionary *ini) {
     {
         data = (uint8_t *)malloc(size);
         if (!data)
-          return 1;
+          return E_DEVICE_NO_MEMORY;
         ByteSourceFactory::from_ram(data, size, bs);
     } else {
        ByteSourceFactory::from_file(image, size, 128, /* wrap =*/true, bs);
-       //     setDriveContent(image, in_ram);
+       if (!bs)
+           return E_DEVICE_NO_MEMORY;
     }
     return 0;
 }
