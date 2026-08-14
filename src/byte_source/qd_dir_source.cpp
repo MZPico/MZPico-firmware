@@ -132,6 +132,18 @@ const char* QDDirSource::build_full_path(const std::string& filename) {
     return path_scratch_.c_str();
 }
 
+// Only MZF program files belong in the synthesized QD stream; anything else
+// in the directory would be misread as an MZF header and corrupt the chain
+static bool is_mzf_name(const char* name) {
+    const char* dot = std::strrchr(name, '.');
+    if (!dot) return false;
+    const char* e = dot + 1;
+    const auto up = [](char c) { return (c >= 'a' && c <= 'z') ? static_cast<char>(c - 32) : c; };
+    if (up(e[0]) == 'M' && up(e[1]) == 'Z' && up(e[2]) == 'F' && e[3] == '\0') return true;
+    if (up(e[0]) == 'M' && e[1] == '1' && e[2] == '2' && e[3] == '\0') return true;
+    return false;
+}
+
 void QDDirSource::build_index() {
     files_count_ = 0;
 
@@ -142,6 +154,7 @@ void QDDirSource::build_index() {
         if (f_opendir(&dir, dir_.c_str()) == FR_OK) {
             while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
                 if (fno.fattrib & AM_DIR) continue;
+                if (!is_mzf_name(fno.fname)) continue;
                 if (files_count_ >= qd::kMaxFilesByBlock) break;
                 ++files_count_;
             }
@@ -174,6 +187,7 @@ void QDDirSource::build_index() {
             std::size_t idx = 0;
             while (idx < files_count_ && f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
                 if (fno.fattrib & AM_DIR) continue;
+                if (!is_mzf_name(fno.fname)) continue;
 
                 FIL f{};
                 if (f_open(&f, build_full_path(fno.fname), FA_READ) != FR_OK) continue;
@@ -376,7 +390,7 @@ int QDDirSource::fetch_bytes(std::uint32_t index, std::uint8_t* out,
         if (index >= QD_MAX_SIZE) break;
 
         const std::uint32_t off = index - count_block_len_ - pairs_total;
-        if (off < qd::kFrameEndSize) {
+        if (off < qd::kFrameStartSize) {
             emit_byte(out, size, read, index, qd::kStartSeq[off]);
         } else if (index > QD_MAX_SIZE - (qd::kFrameEndSize + 1u)) {
             const std::uint32_t eoff = index + qd::kFrameEndSize - QD_MAX_SIZE;

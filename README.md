@@ -160,9 +160,13 @@ key_p=CP/M|flash:/cpm.dsk
 
 ### Quick disk images
 
-Quick disk emulation can use either a MZQ image file or a direcotory.
-Files inside the directory are then served as content of emulated Quick Disk.
-The order of files in the Quick Disk is the same their order in the MZPico device filesystem.
+Quick disk emulation can use either a MZQ image file or a directory.
+MZF files inside the directory (other files are ignored) are then served as
+the content of the emulated Quick Disk. The order of files in the Quick Disk
+is the same as their order in the MZPico device filesystem. A
+directory-backed Quick Disk is always write-protected; an MZQ image is
+writable unless `write_protected` is set or the image file has the FAT
+read-only attribute.
 
 Options:
 - `image` — MZQ file or directory

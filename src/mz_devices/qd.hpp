@@ -90,14 +90,13 @@ public:
     static int writeByte(MZDevice* self_, uint8_t port, uint8_t dt, uint8_t /*high_addr*/);
 
 private:
-    unsigned connected;
-    unsigned status;
-    st_QDSIO_CHANNEL channel[2];
-    FIL image_file;
-    uint16_t out_crc16;
-    unsigned image_position;
+    unsigned connected{QDISK_CONNECTED};
+    unsigned status{QDSTS_NO_DISC};
+    st_QDSIO_CHANNEL channel[2]{};
+    uint16_t out_crc16{0};
+    unsigned image_position{0};
     std::string stdPath;
-    bool writeProtected;
+    bool writeProtected{false};
     std::unique_ptr<ByteSource> bs;
 
     void driveReset();

@@ -1,6 +1,4 @@
 #include "qd.hpp"
-#include <cerrno>
-#include <sys/stat.h>
 #include "ff.h"
 #include "iniparser.h"
 #include "file_source.hpp"
@@ -44,7 +42,6 @@ std::vector<uint8_t> QDDevice::getWritePorts() const {
 int QDDevice::init() {
 
     memset(channel, 0, sizeof(channel));
-    memset(&image_file, 0, sizeof(image_file));
     out_crc16 = 0;
     image_position = 0;
     writeProtected = false;
@@ -120,61 +117,48 @@ void QDDevice::open(void) {
         return;
     }
 
-    status = QDSTS_NO_DISC;
+    close(); // flush the previous image while status still says READY
     driveReset();
-    close();
+    status = QDSTS_NO_DISC;
 
-    if (stdPath.empty()) {
-        status = QDSTS_NO_DISC;
+    if (stdPath.empty())
         return;
-    }
 
     FRESULT fr = f_stat(stdPath.c_str(), &fno);
     if (fr != FR_OK)
         return;
 
-    status = QDSTS_IMG_READY | QDSTS_HEAD_HOME;
+    int ret;
     if (fno.fattrib & AM_DIR) {
-        ByteSourceFactory::from_qddir(stdPath, 128, bs);
+        ret = ByteSourceFactory::from_qddir(stdPath, 128, bs);
     } else {
-        ByteSourceFactory::from_file(stdPath, 0, 128, /* wrap = */false, bs);
+        ret = ByteSourceFactory::from_file(stdPath, 0, 128, /* wrap = */false, bs);
+    }
+    if (ret != 0) { // mount failed: report no disk instead of a dead drive
+        bs.reset();
+        return;
     }
 
-
-/*
-    unsigned roflag = writeProtected ? QDSTS_IMG_READONLY : 0;
-
-    if (FR_OK == f_open(&image_file, stdPath.c_str(), (writeProtected ? FA_READ : (FA_READ | FA_WRITE)))) {
-        status = QDSTS_IMG_READY | QDSTS_HEAD_HOME | roflag;
-    } else {
-        // fallback to RO
-        if (FR_OK == f_open(&image_file, stdPath.c_str(), FA_READ)) {
-            status = QDSTS_IMG_READY | QDSTS_HEAD_HOME | QDSTS_IMG_READONLY;
-        } else {
-            std::fprintf(stderr, "QuickDisk: Can't open file '%s': %s\n",
-                         stdPath.c_str(), std::strerror(errno));
-        }
-    }
-*/
+    status = QDSTS_IMG_READY | QDSTS_HEAD_HOME;
+    // Reported via CTS in channel A RR0 and enforced in testDiskIsWriteable;
+    // a directory-backed QD is inherently read-only
+    if (writeProtected || bs->readOnly())
+        status |= QDSTS_IMG_READONLY;
 }
 
 void QDDevice::close() {
-    if (connected == QDISK_CONNECTED) {
-        if (status & QDSTS_IMG_READY) {
-            if (bs->flush() != 0)  {
-                std::fprintf(stderr, "QuickDisk: fsync() error: %s\n", std::strerror(errno));
-            }
-            //f_close(&image_file);
-            status &= ~QDSTS_IMG_READY;
+    if (connected == QDISK_CONNECTED && (status & QDSTS_IMG_READY)) {
+        if (bs && bs->flush() != 0) {
+            std::fprintf(stderr, "QuickDisk: flush error\n");
         }
+        status &= ~QDSTS_IMG_READY;
     }
 }
 
 // ----------------------------- Data path (read) ----------------------------
 
 uint8_t QDDevice::readByteFromDrive() {
-    uint32_t readlen;
-    uint8_t retval;
+    uint8_t retval = 0xff;
 
     if ((status & QDSTS_IMG_READY) == 0) return 0xff;            // no media
     if ((channel[QDSIO_CHANNEL_B].Wreg[QDSIO_REGADDR_5] & 0x80) == 0x00) return 0xff; // motor off
@@ -184,9 +168,10 @@ uint8_t QDDevice::readByteFromDrive() {
         return 0xff;
     }
 
-    bs->getByte(retval);
-    //bs->get(&retval, 1, readlen);
-    //if (readlen != 1) std::fprintf(stderr, "QuickDisk: fread() error\n");
+    // Past the backing store (which is smaller than QDISK_IMAGE_MAX_SIZE) or
+    // on a read error the drive must deliver 0xff, as mz800emu does — a
+    // garbage byte here can spuriously match the sync pair during hunt
+    if (bs->getByte(retval) != 0) retval = 0xff;
     image_position++;
     return retval;
 }
@@ -202,8 +187,6 @@ int QDDevice::testDiskIsWriteable() {
 }
 
 void QDDevice::writeByteIntoDrive(uint8_t value) {
-    uint32_t len;
-
     if (0 == testDiskIsWriteable()) return;
 
     if (QDISK_IMAGE_MAX_SIZE <= image_position) {
@@ -211,18 +194,15 @@ void QDDevice::writeByteIntoDrive(uint8_t value) {
         return;
     };
     bs->setByte(value);
-    //if (bs->set(&value, 1, len) != 0) {
-    //    std::fprintf(stderr, "QuickDisk: fwrite() error: %s\n", std::strerror(errno));
-    //};
     image_position++;
-    return;
 }
 
 // -------------------------------- Registers --------------------------------
 
 int QDDevice::readByte(MZDevice* self_, uint8_t port, uint8_t *dt, uint8_t /*high_addr*/) {
     auto* self = static_cast<QDDevice*>(self_);
-    uint8_t SIO_addr = port & 0x03;
+    // Register offset relative to the configured base (works for any base_port)
+    uint8_t SIO_addr = static_cast<uint8_t>(port - self->readMappings[0].port) & 0x03;
     st_QDSIO_CHANNEL* channel = &self->channel[SIO_addr & 0x01];
 
     switch (SIO_addr) {
@@ -264,7 +244,10 @@ int QDDevice::readByte(MZDevice* self_, uint8_t port, uint8_t *dt, uint8_t /*hig
         case QDSIO_ADDR_CTRL_B: {
             channel->Rreg[QDSIO_REGADDR_0] = (self->status & QDSTS_HEAD_HOME) ? 0x08 : 0x00;
 
-            if ( (channel[QDSIO_CHANNEL_A].Wreg[QDSIO_REGADDR_5] & 0x1a) == 0x0a ) {
+            // NB: must test channel A's WR5 (TX mode) — `channel` points at
+            // channel B here, so indexing it would silently read B's WR5
+            // (mz800emu: g_qdisk.channel[QDSIO_CHANNEL_A])
+            if ( (self->channel[QDSIO_CHANNEL_A].Wreg[QDSIO_REGADDR_5] & 0x1a) == 0x0a ) {
                 if (self->out_crc16 != 0) {
                     self->writeByteIntoDrive('C');
                     self->writeByteIntoDrive('R');
@@ -294,9 +277,10 @@ int QDDevice::readByte(MZDevice* self_, uint8_t port, uint8_t *dt, uint8_t /*hig
 
 int QDDevice::writeByte(MZDevice* self_, uint8_t port, uint8_t dt, uint8_t /*high_addr*/) {
     auto* self = static_cast<QDDevice*>(self_);
-    st_QDSIO_CHANNEL* channel = &self->channel[port & 0x01];
+    const uint8_t SIO_addr = static_cast<uint8_t>(port - self->writeMappings[0].port) & 0x03;
+    st_QDSIO_CHANNEL* channel = &self->channel[SIO_addr & 0x01];
 
-    if (port & 0x02) {
+    if (SIO_addr & 0x02) {
         // CTRL write
         channel->Wreg[channel->REG_addr] = dt;
 

@@ -6,13 +6,17 @@
 #include "ff.h"
 #include "cached_source.hpp"
 
-// Fixed maximum QD stream size: 64 KiB
+// Fixed QD stream size (media format capacity, == QDISK_FORMAT_SIZE)
 #define QD_MAX_SIZE 82958
 
 class QDDirSource : public CachedSource {
 public:
     QDDirSource(const std::string &path, std::uint32_t cache_size);
     ~QDDirSource();
+
+    // The synthesized stream has no writable backing; reporting read-only
+    // lets the QD device raise write protection instead of losing writes
+    bool readOnly() const override { return true; }
 
 private:
     struct FileEntry {
