@@ -95,7 +95,9 @@ RAM_FUNC static void listen_loop(void) {
     uint8_t low_addr = 0;
     uint8_t high_addr = 0;
     uint8_t data = 0;
-    uint32_t raw_bus;
+    #ifndef BOARD_DELUXE
+    uint32_t raw_bus = 0; // frugal: one 16-bit addr+data write capture
+    #endif
 
     // The bus SMs have been capturing since long before the devices were
     // configured; a SM may even be stalled mid-capture on a full FIFO.
@@ -150,7 +152,16 @@ RAM_FUNC static void listen_loop(void) {
             #endif
         }
         else if (!pio_sm_is_rx_fifo_empty(pio, SM_WRITE)) {
+            #ifdef BOARD_DELUXE
             low_addr = pio_sm_get(pio, SM_WRITE) >> 24;
+            #else
+            // Single 16-bit capture: low address (GPIO 0-7) in bits 23:16,
+            // write data (GPIO 8-15) PIO-latched in bits 31:24 - the data
+            // byte is valid even if this loop runs late (no read_data_bus
+            // race against the end of the Z80 cycle).
+            raw_bus = pio_sm_get(pio, SM_WRITE);
+            low_addr = (raw_bus >> 16) & 0xFF;
+            #endif
             auto fn = MZDeviceManager::flatWriteFn[low_addr];
             if (fn) {
                 MZDevice* dev = MZDeviceManager::flatWriteDev[low_addr];
@@ -161,7 +172,7 @@ RAM_FUNC static void listen_loop(void) {
                 high_addr = pio_sm_get_blocking(pio, SM_WRITE) >> 24;
                 data = pio_sm_get_blocking(pio, SM_WRITE) >> 24;
                 #else
-                data = read_data_bus();
+                data = (raw_bus >> 24) & 0xFF;
                 #endif
                 fn(dev, low_addr, data, high_addr);
                 if (dev->isInterrupt()) set_interrupt();

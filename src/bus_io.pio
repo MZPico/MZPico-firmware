@@ -102,13 +102,19 @@ wait_iorq_high:
     wait 1 gpio 20              ; io: cycle end; mem: IORQ already high, falls through
 .wrap
 
+; Frugal writes capture address (GPIO 0-7) AND write data (GPIO 8-15) in a
+; single 16-bit sample at /WR detection: the Z80 drives write data before
+; /WR falls and holds it for the whole cycle, so the sample is timing-safe
+; and core1 no longer races the end of the cycle with read_data_bus() -
+; the same late-core1 immunity the Deluxe path gets from its third FIFO
+; word. Still one FIFO word per write: the drain contract is unchanged.
 .program bus_write_frugal
 .side_set 4 opt
 .wrap_target
 wait_iorq_low:
     wait 0 gpio 20
     jmp pin, wait_iorq_low
-    in pins, 8
+    in pins, 16
 wait_iorq_high:
     wait 1 gpio 20
 .wrap
@@ -219,7 +225,9 @@ uint bus_write_frugal_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
 
     sm_config_set_in_pins(&c, base_gpio);
     sm_config_set_jmp_pin(&c, jump_gpio);
-    sm_config_set_in_shift(&c, true, true, 8);
+    // 16-bit autopush: address + data in one word (shift right, so the
+    // sample lands in bits 31:16 - address at 23:16, data at 31:24)
+    sm_config_set_in_shift(&c, true, true, 16);
     sm_config_set_clkdiv(&c, 1.0f);
     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
     pio_sm_init(pio, sm, offset, &c);
