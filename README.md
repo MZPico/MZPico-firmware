@@ -240,6 +240,10 @@ wifi_password=MyPassword
 - Keep a copy of `mzpico.ini` on the SD card: if the internal flash ever
   fails to mount, an SD-based config lets the MZPico boot with flash
   unavailable instead of halting
+- The MZ-800 reset button performs a fast in-place reset: the WiFi
+  connection survives and images mounted from the explorer are unmounted
+  (images configured in `mzpico.ini` stay). Press reset **twice within a
+  few seconds** to force a full MZPico restart instead
 - The internal `flash:` storage is best for images that change rarely.
   Bulk-write workloads (e.g. formatting a floppy image) are inherently
   several times slower on `flash:` than on `sd:` — prefer the SD card for
