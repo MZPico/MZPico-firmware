@@ -51,6 +51,10 @@ private:
     uint8_t setTrack();
     int fdcRead(uint8_t port, uint8_t* dt, uint8_t high_addr);
     int fdcWrite(uint8_t port, uint8_t  dt, uint8_t high_addr);
+    int writeTrackByte(uint8_t dt);
+    int finishTrackWrite();
+    int abortTrackWrite();
+    uint8_t readTrackByte();
 
 private:
     struct FDDrive {
@@ -59,8 +63,11 @@ private:
         uint8_t SECTOR{0};
         uint8_t SIDE{0};
         int32_t track_offset{0};
-        int16_t sector_size{0};
+        uint16_t sector_size{0};
+        uint8_t wp{0}; // per-drive write protect from config
     };
+    // effective protection: ini flag or a read-only image file/medium
+    static bool isProtected(const FDDrive& d) { return d.wp || (d.bs && d.bs->readOnly()); }
     uint8_t regSTATUS{0};
     uint8_t regDATA{0};
     uint8_t regTRACK{0};
@@ -79,7 +86,11 @@ private:
     uint8_t waitForInt{0};
     uint8_t write_track_stage{0};
     uint16_t write_track_counter{0};
+    uint8_t rt_phase{0};        // READ TRACK stream synthesis state
+    uint8_t rt_sec_idx{0};
+    uint16_t rt_remaining{0};
     uint8_t reading_status_counter{0};
+    uint8_t error_int{0}; // /INT for a command that terminated immediately
     int fd0disabled{-1};
 };
 

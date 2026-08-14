@@ -23,11 +23,19 @@ FileSource::FileSource(const std::string& path,
         if (storage_size_ > 0) resize_file(storage_size_);
     } else if (fr == FR_OK) {
         fr = f_open(&file_, path.c_str(), FA_READ | FA_WRITE);
+        if (fr == FR_DENIED || fr == FR_WRITE_PROTECTED) {
+            // Read-only file attribute or write-protected medium:
+            // fall back to a read-only mount instead of failing
+            fr = f_open(&file_, path.c_str(), FA_READ);
+            if (fr == FR_OK) read_only_ = true;
+        }
         if (fr != FR_OK) { blink(3); return; }
         valid_ = true;
 
         std::uint32_t fileSize = f_size(&file_);
-        if (storage_size_ == 0) {
+        if (read_only_) {
+            storage_size_ = fileSize; // never resize a read-only file
+        } else if (storage_size_ == 0) {
             storage_size_ = fileSize;
         } else if (storage_size_ != fileSize) {
             resize_file(storage_size_);
@@ -46,8 +54,22 @@ int FileSource::flush() {
     int ret = CachedSource::flush();
     // Push FatFS's dirty sector buffer and directory entry to the medium;
     // without this the tail of a write sits in RAM until the file is closed.
-    if (valid_ && f_sync(&file_) != FR_OK) ret = -1;
+    if (valid_ && !read_only_ && f_sync(&file_) != FR_OK) ret = -1;
     return ret;
+}
+
+int FileSource::resize(std::uint32_t new_size) {
+    if (!valid_ || read_only_) return -1;
+    if (CachedSource::flush() != 0) return -1;
+    // The cache may cover a region past the new end; drop it entirely
+    cache_start_ = 0;
+    cache_valid_ = 0;
+    cache_dirty_ = false;
+    resize_file(new_size);
+    if (f_size(&file_) != new_size) return -1;
+    storage_size_ = new_size;
+    if (pos_ > new_size) pos_ = new_size;
+    return 0;
 }
 
 void FileSource::resize_file(std::uint32_t new_size) {
@@ -71,9 +93,10 @@ void FileSource::resize_file(std::uint32_t new_size) {
         std::vector<std::uint8_t> zeros(128, 0);
         std::uint32_t remaining = new_size - current_size;
         while (remaining > 0) {
-            UINT bw;
+            UINT bw = 0;
             std::uint32_t chunk = (remaining > zeros.size()) ? zeros.size() : remaining;
             f_write(&file_, zeros.data(), chunk, &bw);
+            if (bw != chunk) return; // medium full/error; caller sees the short size
             remaining -= bw;
         }
         f_sync(&file_);
@@ -120,6 +143,7 @@ int FileSource::store(void *ctx, std::uint32_t index, const std::uint8_t* buf,
 {
     FileSource* self = static_cast<FileSource*>(ctx);
     written = 0;
+    if (self->read_only_) return -1;
     if (self->storage_size_ == 0) return -1;
 
     if (self->wrap_)

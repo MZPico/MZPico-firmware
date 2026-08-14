@@ -16,6 +16,9 @@ public:
     virtual int seek(std::uint32_t new_pos) = 0;
     virtual int next() = 0;
     virtual int flush() { return 0; }
+    virtual std::uint32_t size() const { return 0; }
+    virtual int resize(std::uint32_t) { return -1; } // grow/truncate backing store
+    virtual bool readOnly() const { return false; }  // backing store rejects writes
     inline std::uint32_t tell() const { return pos_; }
 protected:
     std::uint32_t pos_ = 0;

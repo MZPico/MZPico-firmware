@@ -17,6 +17,8 @@ public:
     ~FileSource();
 
     int flush() override;
+    int resize(std::uint32_t new_size) override;
+    bool readOnly() const override { return read_only_; }
     bool valid() const { return valid_; }
 
 private:
@@ -27,6 +29,7 @@ private:
 
     FIL file_{};
     bool valid_ = false;
+    bool read_only_ = false;
 };
 
 namespace ByteSourceFactory {

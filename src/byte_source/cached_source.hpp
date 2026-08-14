@@ -32,6 +32,7 @@ public:
     int seek(std::uint32_t new_pos) override;
     int next() override;
     int flush() override;
+    std::uint32_t size() const override { return storage_size_; }
     inline std::uint32_t getSize() { return storage_size_; }
 
 protected:

@@ -66,15 +66,16 @@ int FDCDevice::init() {
 int FDCDevice::readConfig(dictionary *ini) {
     if (!ini) return -1;
 
+    // write_protected sets the default for all drives; write_protected<N>
+    // overrides it per drive (N = 1..4, matching image_disk<N>)
+    const int wp_all = iniparser_getboolean(ini, (getDevID() + ":write_protected").c_str(), 0);
     for (int i = 0; i < FDC_NUM_DRIVES; i++) {
         std::string image = iniparser_getstring(ini, (getDevID() + ":image_disk" + std::to_string(i+1)).c_str(), "");
         if (!image.empty())
             setDriveContent(i, image.c_str());
+        drive[i].wp = iniparser_getboolean(
+            ini, (getDevID() + ":write_protected" + std::to_string(i+1)).c_str(), wp_all) ? 1 : 0;
     }
-        
-    //setWriteProtected(iniparser_getboolean(ini, (getDevID() + ":write_protected").c_str(), false));
-    //if (!image.empty())
-        //setDriveContent(image);
     return 0;
 }
 
@@ -92,12 +93,15 @@ int FDCDevice::isInterrupt() {
     // Original behavior: if INT mode enabled and data is pending for
     bool pending = false;
     if (!EINT) return 0;
+    if (error_int) return 1; // immediate command termination (e.g. WP reject)
     if (DATA_COUNTER) {
         const uint8_t t2 = (COMMAND >> 5);
-        pending = (t2 == 0x03 /*READ*/ || t2 == 0x02 /*WRITE*/ || COMMAND == 0x3f
-                   || COMMAND == 0x0f || COMMAND == 0x0b /*WRITE TRACK stages*/
-        );
+        pending = (t2 == 0x03 /*READ*/ || t2 == 0x02 /*WRITE*/
+                   || (COMMAND >> 4) == 0x03 /*READ ADDRESS*/
+                   || (COMMAND >> 4) == 0x01 /*READ TRACK*/);
     }
+    // WRITE TRACK paces the whole format stream on /INT, DATA_COUNTER or not
+    if (COMMAND == 0x0f || COMMAND == 0x0b) pending = true;
     if (pending) {
         if (++waitForInt > 2) { // every ~3rd poll
             return 1;
@@ -223,7 +227,8 @@ uint8_t FDCDevice::setTrack() {
 // -------------------- Core I/O (ported main state machine) --------------------
 
 int FDCDevice::fdcWrite(uint8_t port, uint8_t dt, uint8_t /*high_addr*/) {
-    const uint8_t off = static_cast<uint8_t>(port - FDC_DEFAULT_BASE_PORT) & 0x07;
+    // Register offset relative to the configured base (write port 0)
+    const uint8_t off = static_cast<uint8_t>(port - writeMappings[0].port) & 0x07;
 
     // Convenience aliases
     auto drvIdx = [&]() -> uint8_t   { return static_cast<uint8_t>(MOTOR & 0x03); };
@@ -231,7 +236,7 @@ int FDCDevice::fdcWrite(uint8_t port, uint8_t dt, uint8_t /*high_addr*/) {
 
     switch (off) {
     case 0: { // COMMAND / STATUS register write: process command
-        if (waitForInt) { waitForInt = 0; release_interrupt(); } // drop /INT on write to cmd
+        if (waitForInt || error_int) { waitForInt = 0; error_int = 0; release_interrupt(); } // drop /INT on write to cmd
         COMMAND = dt;
         reading_status_counter = 0;
 
@@ -252,6 +257,9 @@ int FDCDevice::fdcWrite(uint8_t port, uint8_t dt, uint8_t /*high_addr*/) {
             }
             COMMAND = 0x00; DATA_COUNTER = 0; buffer_pos = 0;
             if (regTRACK == 0) regSTATUS |= 0x04; // TRK00
+            // NB: write-protect is deliberately NOT reported in Type I status;
+            // the Sharp ROM expects clean status here (matches mz800emu and
+            // the original unicard). WP surfaces on write-command rejection.
             STATUS_SCRIPT = 1;                   // one BUSY, next READY
             return 0;
         }
@@ -261,14 +269,18 @@ int FDCDevice::fdcWrite(uint8_t port, uint8_t dt, uint8_t /*high_addr*/) {
             regSTATUS = 0; DATA_COUNTER = 0; buffer_pos = 0; STATUS_SCRIPT = 1;
             if (!curDrv().bs) { regSTATUS = 0x80; return 1; } // not ready
 
+            // READ SECTOR (t2 == 3) or WRITE SECTOR (t2 == 2)
+            const uint8_t t2 = static_cast<uint8_t>(COMMAND >> 5);
+            if (t2 == 0x02 && isProtected(curDrv())) {
+                regSTATUS = 0x40; COMMAND = 0x00; return 1; // write protect
+            }
+
             MULTIBLOCK_RW = (COMMAND & 0x10) ? 0 : 1; // original inverted meaning
             if (setTrack()) { STATUS_SCRIPT = 3; return 1; }
 
             // sector select and seek
             if (seekToSector(drvIdx(), regSECTOR)) { STATUS_SCRIPT = 3; return 1; }
 
-            // READ SECTOR (t2 == 3) or WRITE SECTOR (t2 == 2)
-            const uint8_t t2 = static_cast<uint8_t>(COMMAND >> 5);
             if (t2 == 0x03) {
                 // Preload first chunk into buffer
                 uint16_t chunk = (curDrv().sector_size < sizeof(buffer))
@@ -276,7 +288,7 @@ int FDCDevice::fdcWrite(uint8_t port, uint8_t dt, uint8_t /*high_addr*/) {
                                   : sizeof(buffer);
                 uint32_t rlen = 0;
                 curDrv().bs->get(buffer, chunk, rlen);
-                if (rlen != chunk) return 1;
+                if (rlen != chunk) { COMMAND = 0x00; regSTATUS = 0x08; return 1; }
             }
             DATA_COUNTER = curDrv().sector_size;
             regSTATUS |= 0x01; // BUSY
@@ -298,9 +310,76 @@ int FDCDevice::fdcWrite(uint8_t port, uint8_t dt, uint8_t /*high_addr*/) {
             buffer[3]   = static_cast<uint8_t>(curDrv().sector_size / 0x100);
             buffer[4] = buffer[5] = 0;
             DATA_COUNTER = 6;
+            buffer_pos = 0;
             regSTATUS = 0x00;
             regSTATUS |= 0x01; // BUSY
             regSTATUS |= 0x02; // DRQ
+            STATUS_SCRIPT = 1;
+            return 0;
+        }
+
+        // ---- Type III: READ TRACK (real 0xE0-0xEF -> 0x10-0x1F) ----
+        // Streams a synthetic track image (mz800emu layout: index mark, then
+        // per sector 0xFE, C, H, R, N, 0xFB, data — no gaps, no CRC bytes);
+        // CP/M uses this for the post-format verify pass.
+        if ((COMMAND >> 4) == 0x01) {
+            DATA_COUNTER = 0; buffer_pos = 0; STATUS_SCRIPT = 1;
+            if (!curDrv().bs) { regSTATUS = 0x80; return 1; } // not ready
+            if (setTrack()) { regSTATUS = 0x10; COMMAND = 0x00; return 1; } // RNF
+
+            auto& d = curDrv();
+            uint32_t rlen = 0;
+            uint8_t nsec = 0;
+            if (d.bs->seek(d.track_offset + 0x15) != 0) { regSTATUS = 0x10; COMMAND = 0x00; return 1; }
+            d.bs->get(&nsec, 1, rlen);
+            if (rlen != 1 || !nsec || nsec > 29) { regSTATUS = 0x10; COMMAND = 0x00; return 1; }
+
+            // Collect the sector IDs (and size code) from the descriptors
+            if (d.bs->seek(d.track_offset + 0x18) != 0) { regSTATUS = 0x10; COMMAND = 0x00; return 1; }
+            uint8_t size_code = 0;
+            for (uint8_t i = 0; i < nsec; ++i) {
+                uint8_t desc[8];
+                d.bs->get(desc, 8, rlen);
+                if (rlen != 8) { regSTATUS = 0x10; COMMAND = 0x00; return 1; }
+                buffer[8 + i] = desc[2];
+                size_code = desc[3]; // uniform per track on MZ formats
+            }
+            buffer[4] = size_code;
+            buffer[5] = nsec;
+
+            const uint32_t total =
+                1u + static_cast<uint32_t>(nsec) * (6u + static_cast<uint32_t>(size_code) * 0x100u);
+            if (!size_code || total > 0xFFFF) { regSTATUS = 0x10; COMMAND = 0x00; return 1; }
+
+            // Sector data streams sequentially from the track's data area
+            if (d.bs->seek(d.track_offset + 0x100) != 0) { regSTATUS = 0x10; COMMAND = 0x00; return 1; }
+
+            rt_phase = 0;
+            rt_sec_idx = 0;
+            rt_remaining = 0;
+            DATA_COUNTER = static_cast<uint16_t>(total);
+            regSTATUS = 0x03; // BUSY | DRQ
+            return 0;
+        }
+
+        // ---- Type III: WRITE TRACK / format (real 0xF0/0xF4 -> 0x0f/0x0b) ----
+        if (COMMAND == 0x0f || COMMAND == 0x0b) {
+            // Rejections terminate immediately: one BUSY status pulse for
+            // pollers, and a completion /INT for INT-paced format routines
+            // (mz800emu asserts INTRQ here too) — without the /INT a routine
+            // waiting for the first data-request interrupt hangs forever.
+            STATUS_SCRIPT = 1;
+            if (!curDrv().bs) { // not ready
+                regSTATUS = 0x80; COMMAND = 0x00; error_int = 1; return 1;
+            }
+            if (isProtected(curDrv())) { // write protect
+                regSTATUS = 0x40; COMMAND = 0x00; error_int = 1; return 1;
+            }
+            write_track_stage = 0;
+            write_track_counter = 0;
+            DATA_COUNTER = 0;
+            buffer_pos = 0;
+            regSTATUS = 0x03; // BUSY | DRQ
             STATUS_SCRIPT = 1;
             return 0;
         }
@@ -323,11 +402,19 @@ int FDCDevice::fdcWrite(uint8_t port, uint8_t dt, uint8_t /*high_addr*/) {
         regSECTOR = static_cast<uint8_t>(~dt);
         return 0;
 
-    case 3: { // DATA register (either data byte or staged writes)
-        if (waitForInt) { waitForInt = 0; release_interrupt(); }
+    case 3: { // DATA register (data byte, format stream, or regDATA staging)
+        if (waitForInt || error_int) { waitForInt = 0; error_int = 0; release_interrupt(); }
 
-        // If no active transfer, this is just regDATA staging for SEEK
-        if (!DATA_COUNTER) { regDATA = static_cast<uint8_t>(~dt); return 0; }
+        // WRITE TRACK (format) consumes the raw byte stream
+        if (COMMAND == 0x0f || COMMAND == 0x0b)
+            return writeTrackByte(dt);
+
+        // Only an active WRITE SECTOR streams to disk; anything else just
+        // stages regDATA (e.g. the SEEK target)
+        if (!DATA_COUNTER || (COMMAND >> 5) != 0x02) {
+            regDATA = static_cast<uint8_t>(~dt);
+            return 0;
+        }
 
         // WRITE SECTOR data path (only if a drive is mounted)
         if (!curDrv().bs) { regSTATUS = 0x80; return 1; }
@@ -344,7 +431,11 @@ int FDCDevice::fdcWrite(uint8_t port, uint8_t dt, uint8_t /*high_addr*/) {
             uint32_t wlen = 0;
             buffer_pos = 0;
             curDrv().bs->set(buffer, chunk, wlen);
-            if (wlen != chunk) return 1;
+            if (wlen != chunk) { // write fault: terminate the command
+                DATA_COUNTER = 0; COMMAND = 0x00; STATUS_SCRIPT = 0;
+                regSTATUS = 0x20;
+                return 1;
+            }
         } else {
             ++buffer_pos;
         }
@@ -389,7 +480,7 @@ int FDCDevice::fdcWrite(uint8_t port, uint8_t dt, uint8_t /*high_addr*/) {
 
     case 7: // EINT (interrupt mode)
         EINT = static_cast<uint8_t>(dt & 0x01);
-        if (!EINT) { waitForInt = 0; release_interrupt(); }
+        if (!EINT) { waitForInt = 0; error_int = 0; release_interrupt(); }
         return 0;
 
     default:
@@ -397,14 +488,237 @@ int FDCDevice::fdcWrite(uint8_t port, uint8_t dt, uint8_t /*high_addr*/) {
     }
 }
 
+// -------------------- WRITE TRACK (format), ported from unicard fdc.c --------------------
+//
+// The Z80 streams a raw WD1793 MFM track image through the DATA register;
+// the state machine picks out the marks (bytes arrive inverted: 0x03 = index
+// 0xFC, 0x01 = ID mark 0xFE, 0x04/0x07 = data mark 0xFB/0xF8), collects the
+// sector IDs and size, and rebuilds the DSK track block when the trailing
+// gap runs out. buffer[] doubles as scratch: [0..7] track header fields,
+// [8..] the sector ID list, [255] the sector fill byte.
+
+int FDCDevice::abortTrackWrite() {
+    regSTATUS = 0x00;
+    STATUS_SCRIPT = 0;
+    COMMAND = 0x00;
+    return 1;
+}
+
+int FDCDevice::writeTrackByte(uint8_t dt) {
+    auto& d = drive[MOTOR & 0x03];
+    if (!d.bs) { regSTATUS = 0x80; return 1; }
+
+    switch (write_track_stage) {
+    case 0: // waiting for the index mark
+        if (dt == 0x03) { // ~0xfc
+            write_track_stage = 1;
+            write_track_counter = 0;
+            std::memset(buffer, 0x00, sizeof(buffer));
+            if (regTRACK == 0 && SIDE == 0) {
+                // First track: stamp the DSK header and clear the track
+                // table; offsets rebuild as the tracks are formatted
+                static const uint8_t dsk_hdr[18] =
+                    {'U','n','i','c','a','r','d',' ','v','1','.','0','0',0,0,2,0,0};
+                uint32_t wlen = 0;
+                if (d.bs->size() < 0x100 && d.bs->resize(0x100) != 0)
+                    return abortTrackWrite();
+                if (d.bs->seek(0x22) != 0) return abortTrackWrite();
+                d.bs->set(dsk_hdr, sizeof(dsk_hdr), wlen);
+                if (wlen != sizeof(dsk_hdr)) return abortTrackWrite();
+                d.bs->set(buffer, 204, wlen); // zero the table, 0x34..0xff
+                if (wlen != 204) return abortTrackWrite();
+            }
+        } else if (write_track_counter > 100) {
+            return abortTrackWrite(); // format never started
+        }
+        break;
+
+    case 1: // waiting for the first ID address mark
+        if (dt == 0x01) { // ~0xfe
+            write_track_stage = 2;
+            write_track_counter = 0;
+            buffer[0] = regTRACK;
+            buffer[1] = SIDE;
+            // [2..3] unused, [4] sector size code (filled below)
+            buffer[5] = 1;    // number of sectors on the track
+            buffer[6] = 0x4e; // GAP#3 length
+            buffer[7] = 0xe5; // filler byte
+            buffer_pos = 8;   // the sector ID list grows from here
+        } else if (write_track_counter > 100) {
+            return abortTrackWrite();
+        }
+        break;
+
+    case 2: // ID field: C, H, R, N at counters 1..4, then the data mark
+        if (write_track_counter <= 4) {
+            if (write_track_counter == 3)
+                buffer[buffer_pos++] = static_cast<uint8_t>(~dt); // sector ID
+            else if (write_track_counter == 4)
+                buffer[4] = static_cast<uint8_t>(~dt);            // size code
+        } else if (dt == 0x04 || dt == 0x07) { // ~0xfb / ~0xf8
+            write_track_stage = 3;
+            write_track_counter = 0;
+            DATA_COUNTER = static_cast<uint16_t>(buffer[4] * 0x100);
+        } else if (write_track_counter > 100) {
+            return abortTrackWrite();
+        }
+        break;
+
+    case 3: // sector data: remember the fill byte, count to the end
+        if (write_track_counter == 1)
+            buffer[sizeof(buffer) - 1] = static_cast<uint8_t>(~dt);
+        if (write_track_counter > DATA_COUNTER) {
+            write_track_stage = 4;
+            write_track_counter = 0;
+            DATA_COUNTER = 0;
+        }
+        break;
+
+    case 4: // either the next sector's ID mark, or the trailing gap
+        if (dt == 0x01) { // ~0xfe: another sector follows
+            write_track_stage = 2;
+            write_track_counter = 0;
+            buffer[5]++;
+        } else if (write_track_counter > 200) {
+            return finishTrackWrite(); // end of the track
+        }
+        break;
+
+    default: // stage 5: track finished, ignore trailing bytes
+        break;
+    }
+
+    write_track_counter++;
+    return 0;
+}
+
+// One byte of the synthetic READ TRACK stream (real, uninverted value).
+// buffer[4] = size code, buffer[5] = sector count, buffer[8..] = ID list,
+// all cached by the command setup; data bytes come sequentially from the
+// image via the ByteSource cache.
+uint8_t FDCDevice::readTrackByte() {
+    auto& d = drive[MOTOR & 0x03];
+
+    switch (rt_phase) {
+    case 0: rt_phase = 1; return 0xfc;                    // index address mark
+    case 1: rt_phase = 2; return 0xfe;                    // ID address mark
+    case 2: rt_phase = 3; return regTRACK;                // C
+    case 3: rt_phase = 4; return static_cast<uint8_t>(SIDE & 0x01); // H
+    case 4: rt_phase = 5; return buffer[8 + rt_sec_idx];  // R (sector ID)
+    case 5: rt_phase = 6; return buffer[4];               // N (size code)
+    case 6:
+        rt_phase = 7;
+        rt_remaining = static_cast<uint16_t>(buffer[4] * 0x100);
+        return 0xfb;                                      // data address mark
+    default: { // phase 7: sector data
+        uint8_t b = 0;
+        if (!d.bs || d.bs->getByte(b) != 0) b = 0xe5;     // filler on failure
+        if (--rt_remaining == 0) { ++rt_sec_idx; rt_phase = 1; }
+        return b;
+    }
+    }
+}
+
+int FDCDevice::finishTrackWrite() {
+    const uint8_t drv = static_cast<uint8_t>(MOTOR & 0x03);
+    auto& d = drive[drv];
+
+    COMMAND = 0x00;
+    regSTATUS = 0x00;
+    STATUS_SCRIPT = 0;
+    write_track_stage = 5;
+
+    const uint8_t nsec = buffer[5];
+    const uint8_t size_code = buffer[4];
+    if (!nsec || !size_code) { regSTATUS = 0x10; return 1; }
+
+    // The table entries for all preceding tracks are in place (they were
+    // formatted before this one), so the offset can be recomputed fresh
+    const int32_t off = getTrackOffset(drv, regTRACK, SIDE);
+    if (!off) { regSTATUS = 0x10; return 1; }
+    d.track_offset = off;
+    d.TRACK = regTRACK;
+    d.SIDE = SIDE;
+    d.SECTOR = 0;
+    d.sector_size = 0;
+
+    // Size the DSK to end exactly at this track: grows a fresh image,
+    // truncates leftovers of a previous layout
+    const uint32_t data_bytes = static_cast<uint32_t>(nsec) * size_code * 0x100u;
+    const uint32_t track_end = static_cast<uint32_t>(off) + 0x100u + data_bytes;
+    if (d.bs->resize(track_end) != 0) { regSTATUS = 0x20; return 1; }
+
+    uint32_t wlen = 0;
+
+    // 0x100-byte track header: signature, track info, 29 sector descriptors
+    static const uint8_t tinfo[16] =
+        {'T','r','a','c','k','-','I','n','f','o',0x0d,0x0a,0,0,0,0};
+    if (d.bs->seek(static_cast<uint32_t>(off)) != 0) { regSTATUS = 0x20; return 1; }
+    d.bs->set(tinfo, sizeof(tinfo), wlen);
+    if (wlen != sizeof(tinfo)) { regSTATUS = 0x20; return 1; }
+    d.bs->set(buffer, 8, wlen); // track, side, -, -, size, count, gap, filler
+    if (wlen != 8) { regSTATUS = 0x20; return 1; }
+
+    const uint8_t fill = buffer[sizeof(buffer) - 1];
+
+    // Descriptor template: track, side, sector ID, size code, two FDC
+    // status bytes, actual sector size little-endian (size_code * 0x100)
+    buffer[3] = size_code;
+    buffer[4] = 0x00;
+    buffer[5] = 0x00;
+    buffer[6] = 0x00;
+    buffer[7] = size_code;
+    buffer_pos = 8; // walk the ID list collected during formatting
+    for (uint8_t i = 1; i <= 29; ++i) {
+        if (buffer_pos != 0) {
+            if (buffer[buffer_pos] != 0x00) {
+                buffer[2] = buffer[buffer_pos++];
+            } else { // list exhausted: pad with zeroed descriptors
+                std::memset(buffer, 0x00, 8);
+                buffer_pos = 0;
+            }
+        }
+        d.bs->set(buffer, 8, wlen);
+        if (wlen != 8) { regSTATUS = 0x20; return 1; }
+    }
+
+    // Sector data, filled with the byte captured from the format stream
+    std::memset(buffer, fill, sizeof(buffer));
+    uint32_t remaining = data_bytes;
+    while (remaining) {
+        const uint32_t len = (remaining > sizeof(buffer)) ? sizeof(buffer) : remaining;
+        d.bs->set(buffer, len, wlen);
+        if (wlen != len) { regSTATUS = 0x20; return 1; }
+        remaining -= len;
+    }
+
+    // File-level bookkeeping: track count at 0x30, size entry in the table
+    uint8_t b = (SIDE == 1) ? static_cast<uint8_t>(regTRACK + 1) : regTRACK;
+    if (d.bs->seek(0x30) != 0) { regSTATUS = 0x20; return 1; }
+    d.bs->set(&b, 1, wlen);
+    if (wlen != 1) { regSTATUS = 0x20; return 1; }
+
+    b = static_cast<uint8_t>(nsec * size_code + 1); // in 0x100 units incl. header
+    if (d.bs->seek(0x34u + regTRACK * 2u + SIDE) != 0) { regSTATUS = 0x20; return 1; }
+    d.bs->set(&b, 1, wlen);
+    if (wlen != 1) { regSTATUS = 0x20; return 1; }
+
+    return (d.bs->flush() != 0) ? 1 : 0;
+}
+
 int FDCDevice::fdcRead(uint8_t port, uint8_t* dt, uint8_t /*high_addr*/) {
-    const uint8_t off = static_cast<uint8_t>(port - FDC_DEFAULT_BASE_PORT) & 0x07;
+    const uint8_t off = static_cast<uint8_t>(port - readMappings[0].port) & 0x07;
 
     auto curDrv = [&]() -> FDDrive& { return drive[MOTOR & 0x03]; };
     auto drvIdx = [&]() -> uint8_t   { return static_cast<uint8_t>(MOTOR & 0x03); };
 
     switch (off) {
     case 0: { // STATUS register read (with STATUS_SCRIPT choreography)
+        // A status read acknowledges an immediate-termination /INT (real
+        // WD1793 clears INTRQ on status read); the transfer-pacing
+        // waitForInt deliberately survives status polls, as in the original.
+        if (error_int) { error_int = 0; release_interrupt(); }
+
         // Timeout/“lazy next sector” hacks from original implementation:
         // If controller is in READ SECTOR and host keeps polling STATUS without reading DATA,
         if (regSTATUS != 0x18) {
@@ -422,7 +736,11 @@ int FDCDevice::fdcRead(uint8_t port, uint8_t* dt, uint8_t /*high_addr*/) {
                                                      ? curDrv().sector_size
                                                      : sizeof(buffer);
                             curDrv().bs->get(buffer, chunk, rlen);
-                            if (rlen != chunk) return 1;
+                            if (rlen != chunk) {
+                                DATA_COUNTER = 0; COMMAND = 0x00; STATUS_SCRIPT = 0;
+                                regSTATUS = 0x08;
+                                return 1;
+                            }
                             buffer_pos = 0;
                             DATA_COUNTER = curDrv().sector_size;
                             STATUS_SCRIPT = 2;
@@ -467,12 +785,19 @@ int FDCDevice::fdcRead(uint8_t port, uint8_t* dt, uint8_t /*high_addr*/) {
     }
 
     case 3: { // DATA
-        if (waitForInt) { waitForInt = 0; release_interrupt(); }
+        if (waitForInt || error_int) { waitForInt = 0; error_int = 0; release_interrupt(); }
         reading_status_counter = 0;
 
         if (!curDrv().bs) { regSTATUS = 0x80; *dt = 0xFF; return 1; }
 
-        if (COMMAND == 0x3f) { // READ ADDRESS payload (6 bytes)
+        if ((COMMAND >> 4) == 0x01) { // READ TRACK stream
+            if (!DATA_COUNTER) { *dt = 0xFF; return 1; }
+            *dt = static_cast<uint8_t>(~readTrackByte());
+            if (--DATA_COUNTER == 0) { COMMAND = 0x00; regSTATUS = 0x00; STATUS_SCRIPT = 0; }
+            return 0;
+        }
+
+        if ((COMMAND >> 4) == 0x03) { // READ ADDRESS payload (6 bytes)
             *dt = static_cast<uint8_t>(~buffer[6 - DATA_COUNTER]);
             if (--DATA_COUNTER == 0) { COMMAND = 0x00; regSTATUS = 0x00; STATUS_SCRIPT = 0; }
             return 0;
@@ -489,7 +814,11 @@ int FDCDevice::fdcRead(uint8_t port, uint8_t* dt, uint8_t /*high_addr*/) {
                 buffer_pos = 0;
                 uint32_t rlen = 0;
                 curDrv().bs->get(buffer, chunk, rlen);
-                if (rlen != chunk) return 1;
+                if (rlen != chunk) { // data error: terminate the command
+                    DATA_COUNTER = 0; COMMAND = 0x00; STATUS_SCRIPT = 0;
+                    regSTATUS = 0x08;
+                    return 1;
+                }
             } else {
                 ++buffer_pos;
             }
@@ -507,7 +836,11 @@ int FDCDevice::fdcRead(uint8_t port, uint8_t* dt, uint8_t /*high_addr*/) {
                                              ? curDrv().sector_size
                                              : sizeof(buffer);
                         curDrv().bs->get(buffer, c2, rlen);
-                        if (rlen != c2) return 1;
+                        if (rlen != c2) {
+                            DATA_COUNTER = 0; COMMAND = 0x00; STATUS_SCRIPT = 0;
+                            regSTATUS = 0x08;
+                            return 1;
+                        }
                         buffer_pos = 0;
                         DATA_COUNTER = curDrv().sector_size;
                         STATUS_SCRIPT = 2;

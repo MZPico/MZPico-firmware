@@ -182,7 +182,20 @@ The `[fdc]` section emulates the MZ-800 floppy disk controller with up to 4 driv
 [fdc]
 image_disk1=flash:/cpm.dsk
 image_disk2=sd:/games.dsk
+write_protected=false     ; default for all drives
+write_protected1=true     ; per-drive override (1..4, matches image_disk1..4)
 ```
+
+Sector reads and writes, multi-sector transfers, track formatting
+(WRITE TRACK) and the READ TRACK verify pass are supported; formatting
+rebuilds the DSK image in place and can create a fresh disk from an
+empty image file.
+A write-protected drive rejects write commands and reports the WD1793
+write-protect status bit to the host, like a disk with the notch covered.
+`write_protected` sets the default for all four drives and
+`write_protected<N>` overrides it per drive. A drive also becomes
+write-protected automatically when its image file has the FAT read-only
+attribute set or sits on a write-protected medium.
 
 ### Example full configuration
 
