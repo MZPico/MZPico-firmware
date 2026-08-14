@@ -29,7 +29,10 @@ FileSource::FileSource(const std::string& path,
             fr = f_open(&file_, path.c_str(), FA_READ);
             if (fr == FR_OK) read_only_ = true;
         }
-        if (fr != FR_OK) { blink(3); return; }
+        // No blink() here: a runtime mount runs under EXWAIT and a blocking
+        // LED pattern would hold the Z80 in /WAIT long enough to risk DRAM
+        // decay. The caller sees the failure via valid().
+        if (fr != FR_OK) return;
         valid_ = true;
 
         std::uint32_t fileSize = f_size(&file_);

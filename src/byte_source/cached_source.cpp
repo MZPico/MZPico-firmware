@@ -142,7 +142,11 @@ int CachedSource::setByte(std::uint8_t in) {
     else if (pos_ >= storage_size_)
         return -1;
 
+    // Writing past cache_valid_ would leave a gap of never-fetched bytes
+    // that flush() would push to storage; only write contiguously with the
+    // valid region, otherwise refill at the new position first.
     if (!(pos_ >= cache_start_ &&
+          pos_ <= cache_start_ + cache_valid_ &&
           pos_ < cache_start_ + cache_size_)) {
         if (refill_cache() != 0) return -1;
     }
@@ -212,7 +216,9 @@ int CachedSource::set(const std::uint8_t *in, std::uint32_t size, std::uint32_t 
         else if (pos_ >= storage_size_)
             break;
 
+        // Same gap rule as setByte(): stay contiguous with the valid bytes
         if (!(pos_ >= cache_start_ &&
+              pos_ <= cache_start_ + cache_valid_ &&
               pos_ < cache_start_ + cache_size_)) {
             if (refill_cache() != 0) return -1;
         }
