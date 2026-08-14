@@ -18,6 +18,13 @@ constexpr uint8_t PICO_MGR_DEFAULT_BASE_PORT = 0x40;
 constexpr bool PICO_MGR_EXWAIT = true;
 constexpr const char PICO_MGR_ID[] = "pico_mgr";
 
+// Command status values, must match COMMAND_RESULT_* in external/manager/
+// mz-comm.h — the Z80 polls the control port until the status leaves
+// ACCEPTED/IN_PROGRESS (the manager has done this since day one)
+constexpr uint8_t PICO_MGR_RESULT_IN_PROGRESS = 0x02;
+constexpr uint8_t PICO_MGR_RESULT_OK          = 0x03;
+constexpr uint8_t PICO_MGR_RESULT_ERR         = 0x04;
+
 using PackFn = void (*)(const void* record, uint8_t* dst);            // record -> packed bytes
 using UnpackFn = void (*)(const uint8_t* src, void* recordOut);         // packed bytes -> record
 
@@ -55,10 +62,21 @@ public:
     inline uint16_t getNumberOfRecords() const { return getLength() / recordSize_; }
     inline void resetContent() { setLength(0); }
 
+    // Async command support: core 0 fills the buffer and reports completion
+    // while the Z80 polls IN_PROGRESS on the control port
+    inline uint8_t* payloadBase() { return data + 2; }
+    inline uint16_t payloadCapacity() const {
+        return PICO_MGR_BUFF_SIZE - 2; // 2 bytes reserved for length
+    }
+    inline void asyncComplete(int result) {
+        __asm volatile("" ::: "memory"); // buffer contents before status
+        response_command = result ? PICO_MGR_RESULT_ERR : PICO_MGR_RESULT_OK;
+    }
+
 private:
     // Buffer and mappings
     uint8_t data[PICO_MGR_BUFF_SIZE];
-    uint8_t  response_command;
+    volatile uint8_t response_command; // written by core 0 on async completion
     uint16_t idx;
 
     inline uint16_t getLength() const {
@@ -72,10 +90,6 @@ private:
         data[0] = static_cast<uint8_t>(len & 0xFF);
         data[1] = static_cast<uint8_t>((len >> 8) & 0xFF);
         return true;
-    }
-
-    inline uint16_t payloadCapacity() const {
-        return PICO_MGR_BUFF_SIZE - 2; // 2 bytes reserved for length
     }
 
     inline uint16_t remainingCapacity() const {

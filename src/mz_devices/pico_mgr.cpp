@@ -109,12 +109,15 @@ bool PicoMgr::getRecord(uint16_t index, void* outRecord) const {
 
 int PicoMgr::writeControl(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
     auto* mgr = static_cast<PicoMgr*>(self);
-    char path[256];
     int ret = 0;
     uint16_t len = mgr->getLength();
 
+    // While core 0 executes an async cloud command it owns the data buffer;
+    // refuse new commands until it completes (bounded by the HTTP timeouts)
+    if (mgr->response_command == PICO_MGR_RESULT_IN_PROGRESS) return -1;
+
     auto setResponse = [&](int result) {
-        mgr->response_command = result ? 0x04 : 0x03;
+        mgr->response_command = result ? PICO_MGR_RESULT_ERR : PICO_MGR_RESULT_OK;
     };
 
     switch (dt) {
@@ -124,6 +127,20 @@ int PicoMgr::writeControl(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
             std::string path(reinterpret_cast<char*>(mgr->data + 2), len-1);
             mgr->idx = 0;
             mgr->resetContent();
+#ifdef USE_PICO_W
+            // Cloud commands defer to core 0 and the Z80 polls IN_PROGRESS:
+            // a Z80 held in /WAIT for the whole HTTP exchange executes no
+            // M1 cycles, so MZ-800 DRAM refresh would stop (see CLAUDE.md)
+            if (path.rfind("cloud:", 0) == 0) {
+                if (cloud_submit_command(mgr, dt == REPO_CMD_LIST_DIR, path.c_str())) {
+                    mgr->response_command = PICO_MGR_RESULT_IN_PROGRESS;
+                } else {
+                    mgr->setString("Cloud busy");
+                    mgr->response_command = PICO_MGR_RESULT_ERR;
+                }
+                break;
+            }
+#endif
             if (dt == REPO_CMD_LIST_DIR)
                 ret = read_directory(path.c_str(), mgr);
             else

@@ -47,4 +47,10 @@ int cloud_read_directory(const char *path, PicoMgr *mgr);
 // Mount (fetch) a file from cloud:/ path.
 int cloud_mount_file(const char *path, PicoMgr *mgr);
 
+// Queue a cloud command for asynchronous execution on core 0; the Z80
+// polls the manager status (IN_PROGRESS) meanwhile, so it never sits in
+// /WAIT across the HTTP exchange. Returns false while a command or an
+// abandoned HTTP request is still in flight.
+bool cloud_submit_command(PicoMgr *mgr, bool list_dir, const char *path);
+
 #endif // USE_PICO_W

@@ -41,18 +41,23 @@ static volatile int g_last_error = 0;
 static CloudWifiConfig g_cfg{g_wifi_ssid, g_wifi_pass, DEFAULT_AUTH, DEFAULT_MAX_RETRIES};
 static volatile bool g_reconnect_requested = false;
 
-// Cross-core HTTP request mechanism
-typedef struct {
-    volatile bool pending;
-    volatile bool complete;
-    char hostname[64];
-    char url[128];
-    uint16_t port;
-    HTTP_REQUEST_T req;
-    int result;
-} HTTP_REQUEST_QUEUE;
+// In-flight HTTP request state. Cloud commands execute on core 0 (the
+// async_context/lwIP core), so no cross-core queue is needed. Everything
+// here is static: a timed-out request is ABANDONED, and its late lwIP
+// callbacks must land in valid memory, gated by g_http_cb_armed.
+static HTTP_REQUEST_T g_http_req;
+static char g_http_hostname[64];
+static char g_http_url[128];
+static bool g_http_in_flight = false;
+static volatile bool g_http_cb_armed = false;
 
-static HTTP_REQUEST_QUEUE g_http_queue = {0};
+// Async cloud command handoff (core 1 writeControl -> core 0 poll loop)
+static struct {
+    volatile bool pending;
+    bool list_dir;
+    PicoMgr *mgr;
+    char path[160];
+} g_cloud_cmd;
 
 // Internal helpers
 static inline void set_state(CloudWifiState s, int err = 0) {
@@ -210,18 +215,28 @@ static bool is_wifi_connecting(void) {
            g_state == CloudWifiState::CONNECTING;
 }
 
-static void handle_http_request(void) {
-    if (!g_http_queue.pending) return;
-    
-    // Copy parameters and clear pending flag
-    g_http_queue.req.hostname = g_http_queue.hostname;
-    g_http_queue.req.url = g_http_queue.url;
-    g_http_queue.req.port = g_http_queue.port;
-    g_http_queue.pending = false;
-    
-    // Make synchronous request
-    g_http_queue.result = http_client_request_sync(cyw43_arch_async_context(), &g_http_queue.req);
-    g_http_queue.complete = true;
+bool cloud_submit_command(PicoMgr *mgr, bool list_dir, const char *path) {
+    if (g_cloud_cmd.pending) return false;
+    // An abandoned (timed-out) request still owns the HTTP client state
+    // until its lwIP callbacks finish; don't start a new exchange under it
+    if (g_http_in_flight && !g_http_req.complete) return false;
+    g_cloud_cmd.mgr = mgr;
+    g_cloud_cmd.list_dir = list_dir;
+    snprintf(g_cloud_cmd.path, sizeof(g_cloud_cmd.path), "%s", path);
+    __asm volatile("" ::: "memory");
+    g_cloud_cmd.pending = true;
+    return true;
+}
+
+static void handle_cloud_command(void) {
+    if (!g_cloud_cmd.pending) return;
+    g_cloud_cmd.pending = false;
+
+    int ret = g_cloud_cmd.list_dir
+        ? cloud_read_directory(g_cloud_cmd.path, g_cloud_cmd.mgr)
+        : cloud_mount_file(g_cloud_cmd.path, g_cloud_cmd.mgr);
+
+    g_cloud_cmd.mgr->asyncComplete(ret);
 }
 
 static void handle_reconnect_request(void) {
@@ -249,9 +264,11 @@ static void core0_poll_loop(void) {
             if (!shutting_down) {
                 cyw43_arch_poll();
             }
-            handle_http_request();
             handle_reconnect_request();
         }
+        // Run in every state: a command queued while WiFi is down must
+        // fail fast (the Z80 is polling IN_PROGRESS on the status port)
+        handle_cloud_command();
         tight_loop_contents();
     }
 }
@@ -291,16 +308,19 @@ static void unpack_cloud_entry(const uint8_t* src, void* outPtr) {
 #define CLOUD_DIR_ENTRY_SIZE (1 + 32 + 4)
 #define MAX_JSON_RESPONSE_SIZE 16384  // 16KB should be enough for directory listing
 
-// Context for accumulating HTTP response
+// Context for accumulating HTTP response. Static: 16KB must not live on a
+// 2KB core stack, and an abandoned request's late callbacks need a valid
+// target (they are dropped via g_http_cb_armed, but the pointer must hold)
 typedef struct {
     char buffer[MAX_JSON_RESPONSE_SIZE];
     uint16_t offset;
     bool overflow;
 } HTTP_RESPONSE_CTX;
 
-// Context for accumulating file download
-#define MAX_DOWNLOAD_BUFFER_SIZE PICO_MGR_BUFF_SIZE
+static HTTP_RESPONSE_CTX g_response_ctx;
 
+// Context for a file download, streamed directly into the PicoMgr payload
+// buffer (no intermediate copy)
 enum ChunkState {
     CHUNK_SIZE,
     CHUNK_DATA,
@@ -308,7 +328,8 @@ enum ChunkState {
 };
 
 typedef struct {
-    uint8_t buffer[MAX_DOWNLOAD_BUFFER_SIZE];
+    uint8_t *buffer;
+    uint32_t capacity;
     uint32_t offset;
     bool overflow;
     // Chunked transfer encoding state
@@ -318,16 +339,18 @@ typedef struct {
     uint8_t size_buf_len;
 } FILE_DOWNLOAD_CTX;
 
+static FILE_DOWNLOAD_CTX g_download_ctx;
+
 // Custom receive callback that accumulates response data
 static err_t cloud_receive_fn(void *arg, struct altcp_pcb *conn, struct pbuf *p, err_t err) {
     if (err != ERR_OK || !p) {
         return err;
     }
-    
+
     HTTP_RESPONSE_CTX *ctx = (HTTP_RESPONSE_CTX*)arg;
-    if (!ctx) {
+    if (!ctx || !g_http_cb_armed) { // abandoned request: drop the data
         pbuf_free(p);
-        return ERR_ARG;
+        return ctx ? ERR_OK : ERR_ARG;
     }
     
     // Copy data from pbuf to buffer
@@ -475,30 +498,50 @@ static void normalize_cloud_path(const char *path, char *normalized_path, size_t
     }
 }
 
-// Helper to queue and wait for HTTP request
-static bool http_request_and_wait(const char *hostname, const char *url, void *context, 
+// Run one HTTP exchange on core 0. The request is started asynchronously
+// and pumped from here, keeping lwIP AND the I2S audio path alive (the old
+// sync exchange froze audio for its whole duration: the DMA replayed the
+// last 2.9 ms buffer as a steady tone and the PSG queue overflowed). The
+// Z80 is not in EXWAIT during any of this — it polls the manager status.
+static bool http_request_and_wait(const char *hostname, const char *url, void *context,
                                    err_t (*recv_fn)(void*, struct altcp_pcb*, struct pbuf*, err_t),
                                    uint32_t timeout_ms, int *result_out) {
-    g_http_queue.req = {0};
-    g_http_queue.req.headers_fn = http_client_header_print_fn;
-    g_http_queue.req.recv_fn = recv_fn;
-    g_http_queue.req.callback_arg = context;
-    snprintf(g_http_queue.hostname, sizeof(g_http_queue.hostname), "%s", hostname);
-    snprintf(g_http_queue.url, sizeof(g_http_queue.url), "%s", url);
-    g_http_queue.port = 80;
-    g_http_queue.complete = false;
-    g_http_queue.pending = true;
-    
-    // Wait for request to complete
-    uint32_t elapsed = 0;
-    while (!g_http_queue.complete && elapsed < timeout_ms) {
-        sleep_ms(100);
-        elapsed += 100;
+    if (g_http_in_flight && !g_http_req.complete) return false; // abandoned request still active
+
+    snprintf(g_http_hostname, sizeof(g_http_hostname), "%s", hostname);
+    snprintf(g_http_url, sizeof(g_http_url), "%s", url);
+    memset(&g_http_req, 0, sizeof(g_http_req));
+    g_http_req.hostname = g_http_hostname;
+    g_http_req.url = g_http_url;
+    g_http_req.port = 80;
+    g_http_req.headers_fn = http_client_header_print_fn;
+    g_http_req.recv_fn = recv_fn;
+    g_http_req.callback_arg = context;
+
+    g_http_cb_armed = true;
+    if (http_client_request_async(cyw43_arch_async_context(), &g_http_req) != 0) {
+        g_http_cb_armed = false;
+        return false;
     }
-    
-    if (!g_http_queue.complete) return false;
-    
-    if (result_out) *result_out = g_http_queue.result;
+    g_http_in_flight = true;
+
+    absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
+    while (!g_http_req.complete) {
+        cyw43_arch_poll();
+        i2s_audio_poll();
+        if (time_reached(deadline)) {
+            // Abandon: the connection may still deliver callbacks later;
+            // disarming makes them drop their data instead of writing
+            // into a context that has been handed back
+            g_http_cb_armed = false;
+            return false;
+        }
+        tight_loop_contents();
+    }
+
+    g_http_in_flight = false;
+    g_http_cb_armed = false;
+    if (result_out) *result_out = g_http_req.result;
     return true;
 }
 
@@ -516,25 +559,25 @@ int cloud_read_directory(const char *path, PicoMgr *mgr) {
     char url[128];
     snprintf(url, sizeof(url), "/list?path=%s", normalized_path);
     
-    HTTP_RESPONSE_CTX response_ctx = {0};
+    memset(&g_response_ctx, 0, sizeof(g_response_ctx));
     int result;
-    
-    if (!http_request_and_wait("api.mzpico.com", url, &response_ctx, cloud_receive_fn, 10000, &result)) {
+
+    if (!http_request_and_wait("api.mzpico.com", url, &g_response_ctx, cloud_receive_fn, 10000, &result)) {
         mgr->setString("HTTP request timeout");
         return 1;
     }
-    
+
     if (result != 0) {
         mgr->setString("HTTP request failed");
         return 1;
     }
-    
-    if (response_ctx.overflow) {
+
+    if (g_response_ctx.overflow) {
         mgr->setString("Response too large");
         return 1;
     }
-    
-    if (!parse_cloud_directory_json(response_ctx.buffer, normalized_path, mgr)) {
+
+    if (!parse_cloud_directory_json(g_response_ctx.buffer, normalized_path, mgr)) {
         return 1;
     }
     
@@ -548,9 +591,10 @@ static err_t cloud_download_fn(void *arg, struct altcp_pcb *conn, struct pbuf *p
     }
     
     FILE_DOWNLOAD_CTX *ctx = (FILE_DOWNLOAD_CTX*)arg;
-    if (!ctx) {
+    if (!ctx || !g_http_cb_armed) { // abandoned request: drop the data
+        if (ctx) altcp_recved(conn, p->tot_len);
         pbuf_free(p);
-        return ERR_ARG;
+        return ctx ? ERR_OK : ERR_ARG;
     }
     
     // Process each pbuf segment in the chain
@@ -594,12 +638,12 @@ static err_t cloud_download_fn(void *arg, struct altcp_pcb *conn, struct pbuf *p
                 
                 // Only copy if buffer has space
                 if (!ctx->overflow) {
-                    if (ctx->offset + to_copy < MAX_DOWNLOAD_BUFFER_SIZE) {
+                    if (ctx->offset + to_copy < ctx->capacity) {
                         memcpy(ctx->buffer + ctx->offset, data + i, to_copy);
                         ctx->offset += to_copy;
                     } else {
                         // Fill remaining space
-                        uint32_t space = MAX_DOWNLOAD_BUFFER_SIZE - ctx->offset;
+                        uint32_t space = ctx->capacity - ctx->offset;
                         if (space > 0) {
                             memcpy(ctx->buffer + ctx->offset, data + i, space);
                             ctx->offset += space;
@@ -630,33 +674,31 @@ static err_t cloud_download_fn(void *arg, struct altcp_pcb *conn, struct pbuf *p
     return ERR_OK;
 }
 
-// Helper to extract and copy MZF file data to manager
-static int copy_mzf_to_manager(const FILE_DOWNLOAD_CTX *download_ctx, PicoMgr *mgr) {
+// Validate the MZF downloaded into the manager payload and claim it. The
+// bytes are already in place (the download streamed directly into the
+// buffer), so this only checks sizes and sets the payload length.
+static int finalize_mzf_in_manager(const FILE_DOWNLOAD_CTX *download_ctx, PicoMgr *mgr) {
     const uint32_t MZF_HEADER_SIZE = 128;
     const uint32_t MZF_BODY_LEN_OFFSET = 18;
-    
+
     if (download_ctx->offset < MZF_HEADER_SIZE) {
         mgr->setString("File too small (invalid MZF)");
         return 2;
     }
-    
-    // Copy header
-    uint8_t *header = mgr->allocateRaw(MZF_HEADER_SIZE);
-    memcpy(header, download_ctx->buffer, MZF_HEADER_SIZE);
-    
-    // Extract body length
+
     uint16_t body_len;
-    memcpy(&body_len, header + MZF_BODY_LEN_OFFSET, sizeof(body_len));
-    
-    // Validate and copy body
-    if (download_ctx->offset < MZF_HEADER_SIZE + body_len) {
+    memcpy(&body_len, download_ctx->buffer + MZF_BODY_LEN_OFFSET, sizeof(body_len));
+
+    const uint32_t total = MZF_HEADER_SIZE + body_len;
+    if (download_ctx->offset < total) {
         mgr->setString("File truncated (incomplete MZF)");
         return 2;
     }
-    
-    uint8_t *body = mgr->allocateRaw(body_len);
-    memcpy(body, download_ctx->buffer + MZF_HEADER_SIZE, body_len);
-    
+    if (total > mgr->payloadCapacity() ||
+        !mgr->allocateRaw(static_cast<uint16_t>(total))) {
+        mgr->setString("File too large");
+        return 2;
+    }
     return 0;
 }
 
@@ -673,27 +715,29 @@ int cloud_mount_file(const char *path, PicoMgr *mgr) {
     char url[128];
     snprintf(url, sizeof(url), "/download?path=%s", normalized_path);
     
-    // Download file
-    FILE_DOWNLOAD_CTX download_ctx = {0};
+    // Download straight into the manager payload buffer
+    memset(&g_download_ctx, 0, sizeof(g_download_ctx));
+    g_download_ctx.buffer = mgr->payloadBase();
+    g_download_ctx.capacity = mgr->payloadCapacity();
     int result;
-    
-    if (!http_request_and_wait("api.mzpico.com", url, &download_ctx, cloud_download_fn, 30000, &result)) {
+
+    if (!http_request_and_wait("api.mzpico.com", url, &g_download_ctx, cloud_download_fn, 30000, &result)) {
         mgr->setString("Download timeout");
         return 2;
     }
-    
+
     if (result != 0) {
         std::string msg = "Download failed, error code: " + std::to_string(result);
         mgr->setString(msg.c_str());
         return 2;
     }
-    
-    if (download_ctx.overflow) {
+
+    if (g_download_ctx.overflow) {
         mgr->setString("File too large");
         return 2;
     }
-    
-    return copy_mzf_to_manager(&download_ctx, mgr);
+
+    return finalize_mzf_in_manager(&g_download_ctx, mgr);
 }
 
 #endif // USE_PICO_W
