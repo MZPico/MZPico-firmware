@@ -237,6 +237,18 @@ wifi_password=MyPassword
 - Any device can be disabled using `enabled=false`
 - Configuring multiple devices is supported, as long as each has non-conflicting ports
 - If a section does **not** exist in the `.ini` file, it will be disabled
+- Keep a copy of `mzpico.ini` on the SD card: if the internal flash ever
+  fails to mount, an SD-based config lets the MZPico boot with flash
+  unavailable instead of halting
+- The internal `flash:` storage is best for images that change rarely.
+  Bulk-write workloads (e.g. formatting a floppy image) are inherently
+  several times slower on `flash:` than on `sd:` — prefer the SD card for
+  working disks
+- The internal flash filesystem is protected against power loss during
+  writes (double-buffered metadata). Volumes created by older firmware
+  keep working but lack this protection; back up the files and reformat
+  (e.g. with the `mzpico_format` UF2) to upgrade. A damaged flash volume
+  is never reformatted automatically — over USB it shows as "no medium"
 
 ---
 
