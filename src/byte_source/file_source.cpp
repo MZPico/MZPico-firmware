@@ -68,8 +68,23 @@ int FileSource::resize(std::uint32_t new_size) {
     cache_start_ = 0;
     cache_valid_ = 0;
     cache_dirty_ = false;
-    resize_file(new_size);
+
+    std::uint32_t current = f_size(&file_);
+    if (new_size > current) {
+        // Fast expansion: allocate clusters WITHOUT writing fill data
+        // (f_lseek past EOF in write mode expands the file; the grown
+        // region's content is undefined). resize() callers - the FDC
+        // formatter - overwrite the whole grown area, and zero-filling
+        // it first through FatFS doubled every page program on flash.
+        // File creation (resize_file in the constructor) still zero-fills.
+        if (f_lseek(&file_, new_size) != FR_OK) return -1;
+    } else if (new_size < current) {
+        if (f_lseek(&file_, new_size) != FR_OK) return -1;
+        if (f_truncate(&file_) != FR_OK) return -1;
+    }
     if (f_size(&file_) != new_size) return -1;
+    // No f_sync here: the caller's flush() makes the result durable, and
+    // an extra sync per call meant an extra flash map cycle per track.
     storage_size_ = new_size;
     if (pos_ > new_size) pos_ = new_size;
     return 0;

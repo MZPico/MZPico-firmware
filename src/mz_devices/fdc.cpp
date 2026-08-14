@@ -123,7 +123,10 @@ int FDCDevice::setDriveContent(uint8_t drive_id, const char* file_path) {
     d.track_offset = 0;
     d.sector_size = 0;
 
-    if (ByteSourceFactory::from_file(file_path, 0, 128, /* wrap = */false, d.bs) != 0) {
+    // 512-byte cache: writes reach FatFS in whole FAT sectors, which
+    // matters on flash where every partial write still costs a full
+    // remapped page program
+    if (ByteSourceFactory::from_file(file_path, 0, 512, /* wrap = */false, d.bs) != 0) {
         d.bs.reset();
         return -1;
     }
@@ -522,7 +525,12 @@ int FDCDevice::writeTrackByte(uint8_t dt) {
                 uint32_t wlen = 0;
                 if (d.bs->size() < 0x100 && d.bs->resize(0x100) != 0)
                     return abortTrackWrite();
-                if (d.bs->seek(0x22) != 0) return abortTrackWrite();
+                // Write the whole header sector: resize() expands without
+                // zero-filling, so bytes 0x00..0x21 of a fresh image are
+                // undefined until written here
+                if (d.bs->seek(0) != 0) return abortTrackWrite();
+                d.bs->set(buffer, 0x22, wlen); // zero 0x00..0x21
+                if (wlen != 0x22) return abortTrackWrite();
                 d.bs->set(dsk_hdr, sizeof(dsk_hdr), wlen);
                 if (wlen != sizeof(dsk_hdr)) return abortTrackWrite();
                 d.bs->set(buffer, 204, wlen); // zero the table, 0x34..0xff
