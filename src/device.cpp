@@ -517,11 +517,19 @@ void device_main() {
     irq_set_enabled(PIO0_IRQ_0, true);
     pio_set_irq0_source_enabled(pio0, pis_interrupt0, true);
 
-    // workaround for unstability after cold boot
-    if (!watchdog_caused_reboot()) {
-        busy_wait_ms(100);
-        watchdog_reboot(0, 0, 0);
-    }
+    // NOTE: the A8PicoCart-inherited cold-boot workaround lived here for
+    // years: on a non-watchdog boot, busy_wait 100ms + watchdog_reboot, so
+    // every power-up booted TWICE. Removed after hardware-measured boot
+    // telemetry showed (a) the first pass reaches a fully working
+    // listen_loop anyway, and (b) the ~102ms it burned was most of the
+    // power-on budget: the MZ-800's one-shot IPL boot probe lands ~180ms
+    // after power-on and readiness is ~71ms (2M) / ~97ms (16M) per pass -
+    // with the double boot, 2M builds won the race by ~10ms and 16M builds
+    // deterministically LOST it (the field symptom: no menu at power-up,
+    // works after one reset press). The Z80 soft-reset path provides the
+    // clean re-init the reboot used to approximate, and the escape hatch
+    // (double reset press -> flush + watchdog_reboot) still covers a
+    // genuinely wedged cold boot.
 
     // Wait for core1 to finish device initialization and register audio sources
     // Use memory barrier to ensure we see the latest value

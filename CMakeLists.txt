@@ -31,6 +31,11 @@ if(FLASH_SIZE STREQUAL "2M")
     set(FLASH_SIZE_BYTES 2097152)
 elseif(FLASH_SIZE STREQUAL "16M")
     set(FLASH_SIZE_BYTES 16777216)
+    # A 16 MB module is by definition a third-party board (genuine Pico
+    # boards ship 2 MB Winbond flash): assume clone-grade crystal and flash
+    # and derate accordingly (see board.h). Global, not per-target: the
+    # SDK's boot_stage2 and hardware_xosc objects must see it too.
+    add_compile_definitions(MZPICO_THIRD_PARTY_16M=1)
 else()
     message(FATAL_ERROR "Invalid FLASH_SIZE value. Use one of: 2M, 16M")
 endif()
