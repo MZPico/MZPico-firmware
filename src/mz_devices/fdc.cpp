@@ -12,6 +12,7 @@
 #include "ff.h"
 #include "common.hpp"
 #include "file_source.hpp"
+#include "fdc_dir_source.hpp"
 
 REGISTER_MZ_DEVICE(FDCDevice)
 
@@ -96,6 +97,7 @@ void FDCDevice::softReset() {
         if (cur_image[i] == cfg_image[i]) continue;
         if (cfg_image[i].empty()) {
             drive[i].bs.reset(); // flushes and closes the runtime image
+            drive[i].dirsrc = nullptr;
             drive[i].TRACK = 0;
             drive[i].SECTOR = 0;
             drive[i].SIDE = 0;
@@ -106,6 +108,13 @@ void FDCDevice::softReset() {
             setDriveContent(i, cfg_image[i].c_str());
         }
     }
+
+    // Directory mounts that stay mounted: drop the dead session's in-flight
+    // state (staged data of an unfinished save, uncommitted directory)
+    for (int i = 0; i < FDC_NUM_DRIVES; i++) {
+        if (drive[i].dirsrc)
+            drive[i].dirsrc->sessionAbort();
+    }
 }
 
 int FDCDevice::readConfig(dictionary *ini) {
@@ -115,6 +124,14 @@ int FDCDevice::readConfig(dictionary *ini) {
     // overrides it per drive (N = 1..4, matching image_disk<N>)
     const int wp_all = iniparser_getboolean(ini, (getDevID() + ":write_protected").c_str(), 0);
     for (int i = 0; i < FDC_NUM_DRIVES; i++) {
+        // Directory mounts: fs_disk<N> picks the synthesized filesystem
+        // ("basic" or "cpm"); default auto-detects from the dir contents
+        const char* fs = iniparser_getstring(
+            ini, (getDevID() + ":fs_disk" + std::to_string(i+1)).c_str(), "auto");
+        if (fs[0] == 'b' || fs[0] == 'B')      drive[i].fs_cfg = 1;
+        else if (fs[0] == 'c' || fs[0] == 'C') drive[i].fs_cfg = 2;
+        else                                   drive[i].fs_cfg = 0;
+
         std::string image = iniparser_getstring(ini, (getDevID() + ":image_disk" + std::to_string(i+1)).c_str(), "");
         cfg_image[i] = image; // what a Z80 reset reverts the drive to
         if (!image.empty())
@@ -163,18 +180,54 @@ int FDCDevice::setDriveContent(uint8_t drive_id, const char* file_path) {
 
     auto& d = drive[drive_id];
     d.bs.reset(); // flushes and closes the previous image, if any
+    d.dirsrc = nullptr;
     d.TRACK = 0;
     d.SECTOR = 0;
     d.SIDE = 0;
     d.track_offset = 0;
     d.sector_size = 0;
 
-    // 512-byte cache: writes reach FatFS in whole FAT sectors, which
-    // matters on flash where every partial write still costs a full
-    // remapped page program
-    if (ByteSourceFactory::from_file(file_path, 0, 512, /* wrap = */false, d.bs) != 0) {
-        d.bs.reset();
-        return -1;
+    // A directory path mounts as a synthesized disk (BASIC or CP/M
+    // filesystem, per fs_disk<N> or auto-detected from the contents)
+    std::string path(file_path);
+    while (path.size() > 1 && path.back() == '/' && path[path.size() - 2] != ':')
+        path.pop_back();
+    FILINFO fno{};
+    if (f_stat(path.c_str(), &fno) == FR_OK && (fno.fattrib & AM_DIR)) {
+        // One directory, one drive: two mounts would fight over the staging
+        // temp file and commit conflicting models onto the same FAT dir
+        for (int j = 0; j < FDC_NUM_DRIVES; j++) {
+            if (j == drive_id || !drive[j].dirsrc) continue;
+            std::string other = cur_image[j];
+            while (other.size() > 1 && other.back() == '/' && other[other.size() - 2] != ':')
+                other.pop_back();
+            if (other == path) {
+                printf("fdc: %s already dir-mounted on drive %d\n", path.c_str(), j + 1);
+                return -1;
+            }
+        }
+        const FDCDirSource::Fs fs =
+            (d.fs_cfg == 1) ? FDCDirSource::Fs::BASIC :
+            (d.fs_cfg == 2) ? FDCDirSource::Fs::CPM :
+                              FDCDirSource::detectFs(path);
+        if (ByteSourceFactory::from_fdcdir(path, fs, 512, d.bs) != 0) {
+            d.bs.reset();
+            // The constructor only fails on allocation failure, so this is
+            // the out-of-RAM degrade path: drive stays empty, boot continues
+            printf("fdc: dir mount %s failed: out of RAM\n", path.c_str());
+            return -1;
+        }
+        d.dirsrc = static_cast<FDCDirSource*>(d.bs.get());
+        printf("fdc: dir mount %s as %s\n", path.c_str(),
+               fs == FDCDirSource::Fs::BASIC ? "basic" : "cpm");
+    } else {
+        // 512-byte cache: writes reach FatFS in whole FAT sectors, which
+        // matters on flash where every partial write still costs a full
+        // remapped page program
+        if (ByteSourceFactory::from_file(file_path, 0, 512, /* wrap = */false, d.bs) != 0) {
+            d.bs.reset();
+            return -1;
+        }
     }
 
     d.track_offset = getTrackOffset(drive_id, d.TRACK, d.SIDE);
@@ -492,8 +545,16 @@ int FDCDevice::fdcWrite(uint8_t port, uint8_t dt, uint8_t /*high_addr*/) {
 
         // Sector finished?
         if (!DATA_COUNTER) {
-            
+
             curDrv().bs->flush();
+            // A directory mount reports dropped/failed physical writes
+            // (e.g. the backing medium is full) as a write fault - the
+            // guest must not believe a write that never landed
+            if (curDrv().dirsrc && curDrv().dirsrc->takeWriteError()) {
+                DATA_COUNTER = 0; COMMAND = 0x00; STATUS_SCRIPT = 0;
+                regSTATUS = 0x20;
+                return 1;
+            }
             if (MULTIBLOCK_RW) {
                 // advance to next sector id on track
                 regSECTOR = static_cast<uint8_t>(curDrv().SECTOR + 1);
@@ -758,7 +819,9 @@ int FDCDevice::finishTrackWrite() {
     d.bs->set(&b, 1, wlen);
     if (wlen != 1) { regSTATUS = 0x20; return 1; }
 
-    return (d.bs->flush() != 0) ? 1 : 0;
+    if (d.bs->flush() != 0) return 1;
+    if (d.dirsrc && d.dirsrc->takeWriteError()) { regSTATUS = 0x20; return 1; }
+    return 0;
 }
 
 int FDCDevice::fdcRead(uint8_t port, uint8_t* dt, uint8_t /*high_addr*/) {

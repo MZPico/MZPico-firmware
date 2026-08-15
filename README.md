@@ -206,6 +206,42 @@ write-protect status bit to the host, like a disk with the notch covered.
 write-protected automatically when its image file has the FAT read-only
 attribute set or sits on a write-protected medium.
 
+#### Directory-mounted floppy
+
+A drive can also point at a **directory** instead of a DSK image. The
+directory is presented to the MZ-800 as a synthesized floppy in one of two
+on-disk formats:
+
+- `basic` — a Sharp Disk BASIC (MZ-2Z046) disk, 320 KB. The `.mzf` files
+  in the directory appear as its files (up to 63).
+- `cpm` — an LEC CP/M 2.2 SD data disk, 720 KB. All files in the
+  directory appear under 8.3 names (up to 128 directory entries).
+
+```ini
+[fdc]
+image_disk2=sd:/floppy/basic     ; a directory mounts as a disk
+fs_disk2=basic                   ; or cpm; omit to auto-detect
+```
+
+`fs_disk<N>` selects the filesystem; without it, a directory containing
+`.mzf` files mounts as `basic`, anything else as `cpm`. One directory can
+be mounted on one drive at a time.
+
+Directory mounts are fully writable: files saved by BASIC or copied under
+CP/M appear as real files in the directory moments after the guest updates
+the disk's directory, deletes and renames are mirrored, and **formatting
+the disk deletes all served files** (like directory-backed Quick Disks).
+The disk advertises only as much free space as the backing medium really
+has, and a write that cannot be stored physically reports a disk error to
+the guest instead of pretending success.
+
+Limitations: directory-mounted disks are not bootable (boot the system
+from a DSK image or another device and use the dir mount as a data disk);
+BASIC BRD random-access files are not supported; CP/M file sizes round up
+to 128-byte records; long or exotic filenames are shortened for CP/M.
+Writable directory mounts work best on `sd:/` — flash makes every save
+pay the flash filesystem's sync cost.
+
 ### Example full configuration
 
 ```ini

@@ -5,6 +5,7 @@ set(BYTE_SOURCE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/file_source.cpp
     ${CMAKE_CURRENT_LIST_DIR}/mzf_sram_file_source.cpp
     ${CMAKE_CURRENT_LIST_DIR}/qd_dir_source.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/fdc_dir_source.cpp
     ${CMAKE_CURRENT_LIST_DIR}/sharpmz_ascii.c
     CACHE INTERNAL "byte sources"
 )

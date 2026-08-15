@@ -20,6 +20,8 @@
 #include "common.hpp"
 #include "byte_source.hpp"
 
+class FDCDirSource;
+
 constexpr bool FDC_EXWAIT = true;
 constexpr uint8_t FDC_DEFAULT_BASE_PORT = 0xd8;
 constexpr const char FDC_ID[] = "fdc";
@@ -60,12 +62,14 @@ private:
 private:
     struct FDDrive {
         std::unique_ptr<ByteSource> bs;
+        FDCDirSource* dirsrc{nullptr}; // non-null when bs is a directory mount
         uint8_t TRACK{0};
         uint8_t SECTOR{0};
         uint8_t SIDE{0};
         int32_t track_offset{0};
         uint16_t sector_size{0};
-        uint8_t wp{0}; // per-drive write protect from config
+        uint8_t wp{0};     // per-drive write protect from config
+        uint8_t fs_cfg{0}; // dir-mount filesystem: 0 auto, 1 basic, 2 cpm
     };
     // effective protection: ini flag or a read-only image file/medium
     static bool isProtected(const FDDrive& d) { return d.wp || (d.bs && d.bs->readOnly()); }

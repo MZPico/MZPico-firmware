@@ -279,7 +279,8 @@ void QDDirSource::finalizeSave() {
             DIR dir{};
             FILINFO fno{};
             if (f_opendir(&dir, dir_.c_str()) == FR_OK) {
-                while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
+                int scan = 0; // bounded: corrupt media can loop the chain
+            while (++scan <= 2048 && f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
                     if (fno.fattrib & AM_DIR) continue;
                     if (qd_ci_equal(fno.fname, target.c_str())) { taken = true; break; }
                 }
@@ -429,7 +430,8 @@ void QDDirSource::build_index() {
         DIR dir{};
         FILINFO fno{};
         if (f_opendir(&dir, dir_.c_str()) == FR_OK) {
-            while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
+            int scan = 0; // bounded: corrupt media can loop the chain
+            while (++scan <= 2048 && f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
                 if (fno.fattrib & AM_DIR) continue;
                 if (!is_mzf_name(fno.fname)) continue;
                 if (files_count_ >= qd::kMaxFilesByBlock) break;
@@ -462,7 +464,8 @@ void QDDirSource::build_index() {
         FILINFO fno{};
         if (f_opendir(&dir, dir_.c_str()) == FR_OK) {
             std::size_t idx = 0;
-            while (idx < files_count_ && f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
+            int scan = 0; // bounded: corrupt media can loop the chain
+            while (idx < files_count_ && ++scan <= 2048 && f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
                 if (fno.fattrib & AM_DIR) continue;
                 if (!is_mzf_name(fno.fname)) continue;
 
