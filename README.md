@@ -518,7 +518,9 @@ After build completion, the generated `.uf2` firmware file will appear in the `b
 
 ## Limitations
 
-- Floppy disk write support is still limited; Quick Disk and the RAM disks are writable (see the `write_protected` / `read_only` options).
+- Only extended-CPC-style `.DSK` floppy images are supported; the standard (non-extended) DSK variant is not. Copy-protected disks relying on low-level quirks (deleted data marks, index timing) are not modeled.
+- The explorer mounts DSK images into drive 1 only, and cannot mount directories (use `mzpico.ini` for those).
+- Directory-mounted floppies are not bootable, and BASIC BRD random-access files are not supported on them.
 - Sound emulation (PSG + 8253 beeper) requires the Deluxe board's I2S sound card.
 - The power-on beep right after reset is heard only from the machine's internal speaker (it plays before MZPico's audio pipeline has started).
 
