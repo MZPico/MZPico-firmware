@@ -78,6 +78,13 @@ static uint8_t map_active_slot[FLASH_MEGS];       // MZP1: 0 -> sector 2i, 1 -> 
 static uint32_t map_generation = 0;               // MZP1: last written generation
 
 uint8_t used_bitmap[NUM_FLASH_SECTORS];    // we will use 256 flash sectors for 2048 fat sectors
+// Pages freed since the last successful map sync. The PERSISTED map still
+// references them, so recycling one before the next sync would make a power
+// cut fatal: mount would load a checksum-valid but stale map pointing at
+// erased/reused pages (this exact sequence killed a volume in the field
+// during a near-full bulk copy). Quarantined pages are not allocatable;
+// when only they block an allocation, one forced map sync frees them.
+uint8_t pending_free_bitmap[NUM_FLASH_SECTORS];
 
 uint16_t write_sector = 0;   // which flash sector we are writing to
 uint8_t write_sector_bitmap = 0;   // 1 for each free 512 byte page on the sector
@@ -204,6 +211,8 @@ void write_fs_map()
                 fs_map_needs_written[i] = false;
             }
         }
+        // The persisted map now matches RAM: quarantined pages become free
+        memset(pending_free_bitmap, 0, NUM_FLASH_SECTORS);
         return;
     }
 
@@ -228,6 +237,14 @@ void write_fs_map()
             printf("flash_fs: map sector %d program failed\n", sector);
         }
     }
+
+    // Quarantined pages become free only once EVERY dirty meg persisted:
+    // a failed meg's old slot still references its pre-sync pages
+    bool all_clean = true;
+    for (int i=0; i<FLASH_MEGS; i++)
+        if (fs_map_needs_written[i]) { all_clean = false; break; }
+    if (all_clean)
+        memset(pending_free_bitmap, 0, NUM_FLASH_SECTORS);
 }
 
 // Returns a map entry for a free 512-byte page, or 0 when the volume is
@@ -236,34 +253,56 @@ void write_fs_map()
 // The legacy geometry over-commits FAT sectors by a few pages; without
 // this guard a full volume fabricated an offset-8 entry and programmed
 // the NEXT flash sector's first page - corrupting unrelated data.
+static bool any_pending_free(void)
+{
+    for (int i=0; i<NUM_FLASH_SECTORS; i++)
+        if (pending_free_bitmap[i]) return true;
+    return false;
+}
+
 uint16_t getNextWriteSector()
 {
     static uint16_t search_start_pos = 0;
     int i;
     if (write_sector == 0 || write_sector_bitmap == 0)
-    {   // first try to find a completely free sector
-        for (i=0; i<NUM_FLASH_SECTORS; i++) {
-            if (used_bitmap[(i + search_start_pos) % NUM_FLASH_SECTORS] == 0)
-                break;
-        }
-        if (i < NUM_FLASH_SECTORS) {
-           write_sector = (i + search_start_pos) % NUM_FLASH_SECTORS;
-           write_sector_bitmap = 0xFF;
-           flash_erase_sector(write_sector);
-        }
-        else
-        {   // no completely free sector, just return the first sector with space
+    {
+        // Occupancy is used | pending: quarantined pages must survive both
+        // selection and the erase below (their content is what the
+        // persisted map still points at)
+        for (int attempt = 0; ; attempt++) {
+            // first try to find a completely free sector
             for (i=0; i<NUM_FLASH_SECTORS; i++) {
-                if (used_bitmap[(i + search_start_pos) % NUM_FLASH_SECTORS] != 0xFF)
+                uint16_t s = (i + search_start_pos) % NUM_FLASH_SECTORS;
+                if ((uint8_t)(used_bitmap[s] | pending_free_bitmap[s]) == 0)
                     break;
             }
-            if (i == NUM_FLASH_SECTORS) {
+            if (i < NUM_FLASH_SECTORS) {
+                write_sector = (i + search_start_pos) % NUM_FLASH_SECTORS;
+                write_sector_bitmap = 0xFF;
+                flash_erase_sector(write_sector);
+                break;
+            }
+            // no completely free sector, first sector with eligible space
+            for (i=0; i<NUM_FLASH_SECTORS; i++) {
+                uint16_t s = (i + search_start_pos) % NUM_FLASH_SECTORS;
+                if ((uint8_t)(used_bitmap[s] | pending_free_bitmap[s]) != 0xFF)
+                    break;
+            }
+            if (i < NUM_FLASH_SECTORS) {
+                write_sector = (i + search_start_pos) % NUM_FLASH_SECTORS;
+                uint8_t occupied = used_bitmap[write_sector] | pending_free_bitmap[write_sector];
+                write_sector_bitmap = (uint8_t)~occupied;
+                flash_erase_with_copy_sector(write_sector, occupied);
+                break;
+            }
+            // Nothing eligible. If quarantined pages are what blocks us,
+            // persist the map once - that makes their frees real - and
+            // retry; otherwise (or if the sync failed) the volume is full.
+            if (attempt > 0 || !any_pending_free()) {
                 printf("flash_fs: volume full\n");
                 return 0;
             }
-            write_sector = (i + search_start_pos) % NUM_FLASH_SECTORS;
-            write_sector_bitmap = ~used_bitmap[write_sector];
-            flash_erase_with_copy_sector(write_sector, used_bitmap[write_sector]);
+            write_fs_map();
         }
         search_start_pos = (i + search_start_pos) % NUM_FLASH_SECTORS;
     }
@@ -280,6 +319,7 @@ uint16_t getNextWriteSector()
 
 void init_used_bitmap() {
     memset(used_bitmap, 0, NUM_FLASH_SECTORS);
+    memset(pending_free_bitmap, 0, NUM_FLASH_SECTORS);
     for (int i=0; i<reserved_sectors(); i++)
         used_bitmap[i] = 0xFF;    // flash sectors used by the fs map
 
@@ -427,15 +467,22 @@ bool flash_fs_write_FAT_sector(uint16_t fat_sector, const void *buffer)
 
     uint16_t oldEntry = fs_map.sectors[fat_sector];
     if (oldEntry)
-    {   // let the allocator reclaim the previous page for this write
+    {   // The previous page is dead in RAM but the persisted map may still
+        // reference it: quarantine it until the next successful map sync
+        // (a forced sync inside the allocator can still reclaim it - after
+        // syncing, the only content at risk is this very sector's, which
+        // an in-flight write puts at risk regardless)
         used_bitmap[getMapSector(oldEntry)] &= ~(1 << getMapOffset(oldEntry));
+        pending_free_bitmap[getMapSector(oldEntry)] |= (1 << getMapOffset(oldEntry));
     }
     uint16_t mapEntry = getNextWriteSector();
     if (mapEntry == 0) {
         // Volume full: restore the old page's bookkeeping; the previously
         // stored data and the map entry are untouched
-        if (oldEntry)
+        if (oldEntry) {
             used_bitmap[getMapSector(oldEntry)] |= (1 << getMapOffset(oldEntry));
+            pending_free_bitmap[getMapSector(oldEntry)] &= ~(1 << getMapOffset(oldEntry));
+        }
         return false;
     }
     fs_map.sectors[fat_sector] = mapEntry;
