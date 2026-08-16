@@ -70,10 +70,11 @@ All notable changes to the MZPico firmware.
   reporting.
 - FDC: write durability (per-sector sync), disk-swap teardown, empty-drive
   crashes.
-- Explorer: execute key fixed after a z88dk toolchain change; build hardened
-  against toolchain drift.
-
 ### Changed
+
+- Build hardened against z88dk toolchain drift (the snap auto-updates; a
+  z88dk behavior change once broke the explorer's execute key in fresh
+  source builds — release binaries were unaffected).
 
 - Default `mzpico.ini` now includes the sound devices and ships `pico_rd`
   file-backed (`image=flash:/pico_rd.img`) so the default set fits Pico W
