@@ -258,29 +258,88 @@ pay the flash filesystem's sync cost.
 
 ### Example full configuration
 
+Every device and every option. The file below is a working configuration
+as-is; lines starting with `;` are optional settings shown with their
+defaults or with example values.
+
 ```ini
 [menu]
 key_b=Basic|@basic
 key_e=Explorer|@explorer
 key_y=Flappy|flash:/flappy.mzf
-key_p=CP/M|flash:/cpm.dsk
+key_p=CP/M|sd:/cpm_boot.dsk
 
+; SRAM boot card - serves the boot menu by default
 [sramdisk]
 image=@menu
+;allow_boot=true         ; answer the boot probe
+;read_only=true
+;in_ram=false            ; copy the image to RAM (writable, costs its size)
+;size=32768              ; size override in bytes
 
+; PicoRD RAM disk - the bundled @basic has a PicoRD driver; works on all boards
 [pico_rd]
+image=flash:/pico_rd.img ; file-backed: persistent, costs almost no RAM
+size=65536
+;read_only=false
 
+; Management device - required by the menu and explorer
 [pico_mgr]
+;base_port=0x40
 
+; Floppy controller: 4 drives, DSK images and directory mounts mix freely
 [fdc]
+image_disk1=sd:/cpm_boot.dsk   ; bootable extended-DSK image
+image_disk2=sd:/cpm_files      ; directory served as a LEC CP/M data disk
+fs_disk2=cpm
+image_disk3=sd:/basic_files    ; directory served as a Disk BASIC disk
+fs_disk3=basic                 ; omit fs_disk to auto-detect (.mzf inside -> basic)
+;image_disk4=sd:/games.dsk
+;write_protected=false         ; default for all four drives
+;write_protected1=true         ; per-drive override (1..4)
+;base_port=0xd8
 
+; Quick Disk: a .mzq image or a directory of .mzf files
 [qd]
-image=flash:/qd1.mzq
+image=sd:/qd_files
+;write_protected=false
+;base_port=0xf4
 
+; ---- Sound: Deluxe board only (sections are skipped on Frugal) ----
+
+[psg]
+;volume=20
+;tone0_pan=20             ; stereo position 0-100 per channel
+;tone1_pan=80
+;tone2_pan=40
+;noise_pan=60
+;base_port=0xf2
+
+[ctc]
+;volume=20
+;pan=50
+; (fixed machine addresses; base_port does not apply)
+
+; ---- Optional devices (not part of the default set) ----
+
+; MZ-1R18-style paged RAM disk. Full 16-bit addressing needs the Deluxe
+; board; a RAM-backed size must fit the RAM budget (see below)
+;[ramdisk]
+;image=sd:/ramdisk.img
+;size=131072
+;read_only=false
+;base_port=0xe9           ; the reset port stays fixed at 0xf8
+
+; WiFi + cloud:/ storage (Pico W builds only)
 [cloud]
 wifi_ssid=MyWiFiNetwork
 wifi_password=MyPassword
 ```
+
+Any device section additionally accepts `enabled=false` (keep the
+section, disable the device) and explicit `read_ports=`/`write_ports=`
+lists instead of `base_port` (advanced; the list lengths must match the
+device's port count exactly).
 
 ### Notes
 
@@ -303,32 +362,6 @@ wifi_password=MyPassword
   keep working but lack this protection; back up the files and reformat
   (e.g. with the `mzpico_format` UF2) to upgrade. A damaged flash volume
   is never reformatted automatically — over USB it shows as "no medium"
-
-### RAM budget
-
-The Pico's RAM is shared between the firmware and the buffers of the
-configured devices, and RAM-backed device images are the dominant
-consumers. The 16 MB flash build and the Pico W WiFi stack each claim a
-substantial extra share of RAM, leaving less room for devices.
-
-What costs RAM: `pico_mgr` needs a large fixed transfer buffer (and is
-always required by the menu/explorer); `pico_rd` without an image file
-and `[ramdisk]` allocate their entire `size` in RAM (ramdisk page
-switching needs at least two pages); `sramdisk` costs almost nothing
-unless `in_ram=true`; the sound devices are cheap but not free (`ctc`
-≈ 8 KB, `psg` ≈ 1 KB). File-backed images (`image=...`) cost almost no
-RAM regardless of their size — this is why the default `mzpico.ini`
-ships `pico_rd` file-backed (`image=flash:/pico_rd.img`): a RAM-backed
-64 KB pico_rd plus the full default device set does not fit the Pico W
-builds' heap, and the device that then fails to allocate can be
-`pico_mgr` itself, which presents as a dead menu.
-
-If a device's buffers do not fit, **boot continues without that device**
-— it will simply be missing from the explorer's device list. Free RAM by
-preferring file-backed images or smaller `size` values; large RAM-backed
-configurations fit best on the 2 MB non-WiFi builds.
-
----
 
 ### PSG (SN76489)
 
@@ -444,7 +477,9 @@ image=@menu
 
 ### PicoRD RAM disk
 
-The `[pico_rd]` section provides MZPico's own PicoRD-type RAM disk (default `base_port=0x45`). Backed by Pico RAM, or by a file for persistent content that also saves RAM.
+The `[pico_rd]` section provides MZPico's own PicoRD-type RAM disk (default `base_port=0x45`).
+
+Why it exists when there is already an MZ-1R18-style `[ramdisk]`: PicoRD's simple port protocol needs no 16-bit bus capture, so it is **fully functional on every board — including Frugal**, where the MZ-1R18 emulation is limited to sequential access. The bundled **`@basic` ships with a PicoRD driver**, so the disk is usable from BASIC out of the box on any MZPico. Backed by Pico RAM, or by an image file for persistent content — file-backed it costs almost no RAM, which is why the default configuration ships it as `image=flash:/pico_rd.img`.
 
 Config section name: `[pico_rd]`
 
@@ -465,6 +500,32 @@ image=flash:/pico_rd.img
 ### Management device
 
 The `[pico_mgr]` section provides MZPico's management/control interface (default `base_port=0x40`). The boot menu and the file explorer communicate with the firmware through it — **without this section they cannot start**. It has no options of its own, but note its fixed RAM cost (see *RAM budget*).
+
+---
+
+### RAM budget
+
+The Pico's RAM is shared between the firmware and the buffers of the
+configured devices, and RAM-backed device images are the dominant
+consumers. The 16 MB flash build and the Pico W WiFi stack each claim a
+substantial extra share of RAM, leaving less room for devices.
+
+What costs RAM: `pico_mgr` needs a large fixed transfer buffer (and is
+always required by the menu/explorer); `pico_rd` without an image file
+and `[ramdisk]` allocate their entire `size` in RAM (ramdisk page
+switching needs at least two pages); `sramdisk` costs almost nothing
+unless `in_ram=true`; the sound devices are cheap but not free (`ctc`
+≈ 7 KB, `psg` ≈ 1 KB). File-backed images (`image=...`) cost almost no
+RAM regardless of their size — this is why the default `mzpico.ini`
+ships `pico_rd` file-backed (`image=flash:/pico_rd.img`): a RAM-backed
+64 KB pico_rd plus the full default device set does not fit the Pico W
+builds' heap, and the device that then fails to allocate can be
+`pico_mgr` itself, which presents as a dead menu.
+
+If a device's buffers do not fit, **boot continues without that device**
+— it will simply be missing from the explorer's device list. Free RAM by
+preferring file-backed images or smaller `size` values; large RAM-backed
+configurations fit best on the 2 MB non-WiFi builds.
 
 ---
 
