@@ -61,12 +61,6 @@ All notable changes to the MZPico firmware.
   metadata is persisted (fixes a total-loss scenario after over-filling the
   volume), no auto-format of damaged volumes, full-disk overflow guard,
   and much faster device-side formatting.
-- Beeper correctness (verified against mz800emu and the Disk BASIC
-  disassembly): GATE0 is mode-dependent — the E008 latch drives it only in
-  MZ-700 mode, native MZ-800 mode forces it open (Disk BASIC `BEEP` relies
-  on this); the 8255 audio mask is tracked on both access paths; the snoop
-  consumer is immune to ring overruns under heavy memory traffic; 8253
-  count writes work even when the programming history was missed.
 - Cloud commands run asynchronously on core 0: no more multi-second bus
   holds or frozen audio during cloud transfers; WiFi reconnect backoff no
   longer blocks audio.
