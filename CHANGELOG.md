@@ -38,7 +38,9 @@ All notable changes to the MZPico firmware.
 - Soft Z80 reset: the reset button re-initializes devices in place — WiFi
   association and audio survive, explorer-mounted images revert to the ini
   configuration. Press twice within a few seconds for a full restart.
-- REST API server on Pico W builds.
+- Minimal HTTP status API on Pico W builds (port 8080): `/api/ping` and
+  `/api/status` liveness/uptime checks; groundwork for future remote
+  control.
 - 16-bit I/O addressing on Deluxe for reads and writes (high address byte
   available to devices).
 - `sd:/mzpico.ini` is used when present; internal flash is the fallback.
