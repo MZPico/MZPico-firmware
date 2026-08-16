@@ -67,6 +67,14 @@ public:
     // bus and the emulation follows).
     virtual void softReset() {}
 
+    // Whether this board variant can support the device at all (e.g. psg
+    // and ctc need the Deluxe I2S output and memory-write snoop hardware).
+    // A device configured in the ini but unsupported here is skipped at
+    // boot like the out-of-RAM case: boot continues, the device is simply
+    // absent (it never registers port listeners, so it cannot consume a
+    // listener slot on a shared port either).
+    virtual bool supportedOnBoard() const { return true; }
+
     const ReadPortMapping* getReadMappings() const { return readMappings; }
     const WritePortMapping* getWriteMappings() const { return writeMappings; }
 

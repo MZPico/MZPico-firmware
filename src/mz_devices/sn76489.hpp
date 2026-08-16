@@ -24,6 +24,14 @@ public:
     int init() override;
     int isInterrupt() override { return 0; }
     bool needsExwait() const override { return SN76489_EXWAIT; }
+    // Sound output needs the Deluxe board's I2S hardware
+    bool supportedOnBoard() const override {
+        #ifdef BOARD_DELUXE
+        return true;
+        #else
+        return false;
+        #endif
+    }
     std::vector<uint8_t> getReadPorts() const override;
     std::vector<uint8_t> getWritePorts() const override;
     int readConfig(dictionary *ini) override;

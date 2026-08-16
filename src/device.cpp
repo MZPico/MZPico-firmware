@@ -401,16 +401,28 @@ void device_main1(void) {
             picoConfig.emplace_back(sectionName, std::move(config));
         } else { // devices
             std::string devName = stripTrailingNumbers(sectionName);
-            
-            // Sound devices only available on DELUXE board
-            #ifndef BOARD_DELUXE
-            if (devName == "psg" || devName == "ctc") {
+
+            MZDevice* dev = MZDeviceManager::createDevice(devName, sectionName);
+            if (!dev) {
+                // Unknown type OR the device object allocation failed
+                // (e.g. pico_mgr's 49KB buffer on a tight W heap). Keep
+                // booting, but leave a trace: a silently missing pico_mgr
+                // presents as a dead menu with no clue otherwise.
+                printf("%s: not created (unknown type or out of RAM)\n",
+                       sectionName.c_str());
                 continue;
             }
-            #endif
-            
-            MZDevice* dev = MZDeviceManager::createDevice(devName, sectionName);
-            if (!dev) continue;
+            if (!dev->supportedOnBoard()) {
+                // This board variant can't support the device (e.g. psg/ctc
+                // need the Deluxe I2S/snoop hardware). Skip it BEFORE port
+                // registration - a dead device must not consume one of the
+                // MAX_DEVICES_PER_PORT listener slots on a shared port -
+                // and keep booting: same policy as the out-of-RAM skip.
+                printf("%s: not supported on this board, skipping\n",
+                       sectionName.c_str());
+                MZDeviceManager::disableDevice(dev);
+                continue;
+            }
             bool enabled = (bool)iniparser_getboolean(ini, (sectionName + ":enabled").c_str(), true);
             if (!enabled)
                 MZDeviceManager::disableDevice(dev);

@@ -97,16 +97,18 @@ Related hardware:
 
 ## Configuration
 
-MZPico uses a simple **INI-style configuration file** (`mzpico.ini`) stored on the root directory of internal flash.  
-This file defines which virtual devices are enabled, their I/O base ports, and which storage images they use.
+MZPico uses a simple **INI-style configuration file** (`mzpico.ini`). At boot it is looked up on the **SD card first** (`sd:/mzpico.ini`), then on internal flash (`flash:/mzpico.ini`). Keep a copy on the SD card — it lets the machine boot even if the flash volume ever fails to mount.  
+This file defines which virtual devices are enabled, their I/O base ports, and which storage images they use. Formatting the internal flash (with the `mzpico_format` UF2, or automatically on first USB use of a blank flash) writes a commented default `mzpico.ini` with every device section present and the most common options shown commented out — this README is the full option reference.
 
 ### General rules
 
 - If a section exists in the file, **the device is enabled**  
   (unless the section contains `enabled=false`)
 - Multiple instances of the same device type are allowed  
-  Example: `[fdc1]`, `[fdc2]`, `[qd1]`, `[qd2]`, etc.
+  Example: `[fdc1]`, `[fdc2]`, `[qd1]`, `[qd2]`, etc.  
+  (The instance name is the device type plus trailing digits — the type itself never ends in a digit.)
 - Each instance must use a **unique not overlapping ports using `base_port`**
+- Instead of `base_port`, explicit `read_ports=` / `write_ports=` lists may be given (comma-separated, decimal or `0x` hex). The list lengths must match the device's port count exactly, or boot halts
 - Built-in images can be referenced using `@name`
 
 ### Defaults (used when not specified)
@@ -123,6 +125,18 @@ This file defines which virtual devices are enabled, their I/O base ports, and w
 | `ctc` (8253 beeper) | fixed system ports (`base_port` not applicable) |
 
 Default `enabled=true` for all devices.
+
+### Board support
+
+| Device | Frugal | Deluxe |
+|--------|--------|--------|
+| `sramdisk`, `qd`, `fdc`, `pico_rd`, `pico_mgr` | ✓ | ✓ |
+| `ramdisk` | partial | ✓ |
+| `psg`, `ctc` | — | ✓ |
+
+`psg` and `ctc` need the Deluxe board's I2S sound output (`ctc` additionally its memory-write snooping). `ramdisk` works on both boards, but 16-bit random-access positioning — what real MZ-1R18 software uses — needs the Deluxe bus capture; on Frugal only sequential access and page selection work.
+
+A configured device that the board cannot support is **skipped at boot**: the machine boots normally and the device is simply absent (missing from the explorer's device list) — the same behavior as when a device's buffers do not fit in RAM (see *RAM budget*). The same `mzpico.ini` can therefore be shared between boards.
 
 ### Built-in images (`@...`)
 
@@ -301,8 +315,13 @@ What costs RAM: `pico_mgr` needs a large fixed transfer buffer (and is
 always required by the menu/explorer); `pico_rd` without an image file
 and `[ramdisk]` allocate their entire `size` in RAM (ramdisk page
 switching needs at least two pages); `sramdisk` costs almost nothing
-unless `in_ram=true`. File-backed images (`image=...`) cost almost no
-RAM regardless of their size.
+unless `in_ram=true`; the sound devices are cheap but not free (`ctc`
+≈ 8 KB, `psg` ≈ 1 KB). File-backed images (`image=...`) cost almost no
+RAM regardless of their size — this is why the default `mzpico.ini`
+ships `pico_rd` file-backed (`image=flash:/pico_rd.img`): a RAM-backed
+64 KB pico_rd plus the full default device set does not fit the Pico W
+builds' heap, and the device that then fails to allocate can be
+`pico_mgr` itself, which presents as a dead menu.
 
 If a device's buffers do not fit, **boot continues without that device**
 — it will simply be missing from the explorer's device list. Free RAM by
@@ -313,7 +332,7 @@ configurations fit best on the 2 MB non-WiFi builds.
 
 ### PSG (SN76489)
 
-The Programmable Sound Generator (PSG) emulates the Texas Instruments SN76489 used in Sharp MZ-800. It provides 3 tone channels and 1 noise channel, mixed to stereo with per-channel panning.
+The Programmable Sound Generator (PSG) emulates the Texas Instruments SN76489 used in Sharp MZ-800. It provides 3 tone channels and 1 noise channel, mixed to stereo with per-channel panning. **Deluxe board only** (needs the I2S sound output) — on Frugal the section is skipped at boot.
 
 Config section name: `[psg]`
 
@@ -352,7 +371,7 @@ volume=60
 
 ### CTC (8253 beeper)
 
-Emulates the MZ-800 built-in beeper — the 8253 counter 0 with its gate latch and the 8255 audio mask — rendered to the I2S output on the Deluxe board. Both hardware access paths are captured:
+Emulates the MZ-800 built-in beeper — the 8253 counter 0 with its gate latch and the 8255 audio mask — rendered to the I2S output. **Deluxe board only** — on Frugal the section is skipped at boot. Both hardware access paths are captured:
 
 - the **I/O-mapped** ports used in MZ-800 mode (`0xd0`–`0xd7`)
 - the **memory-mapped** window at `0xE004`–`0xE008`, used by MZ-700-mode software and many games (captured by snooping memory writes on the bus, with bank-switch tracking so RAM banked over the window never produces sound)
@@ -382,7 +401,7 @@ pan=50
 
 ### RAM disk (paged)
 
-The `[ramdisk]` section emulates a paged RAM disk: 64 KB pages selected via the page register, byte access with auto-increment, and full 16-bit intra-page addressing on writes (Deluxe board). Backed by Pico RAM, or by a file for persistent content.
+The `[ramdisk]` section emulates a paged RAM disk: 64 KB pages selected via the page register, byte access with auto-increment, and full 16-bit intra-page addressing on writes. Backed by Pico RAM, or by a file for persistent content. The 16-bit random-access positioning — what real MZ-1R18 software uses — needs the **Deluxe** board's bus capture; on Frugal only sequential access and page selection work.
 
 Config section name: `[ramdisk]`
 
@@ -420,6 +439,32 @@ Example:
 [sramdisk]
 image=@menu
 ```
+
+---
+
+### PicoRD RAM disk
+
+The `[pico_rd]` section provides MZPico's own PicoRD-type RAM disk (default `base_port=0x45`). Backed by Pico RAM, or by a file for persistent content that also saves RAM.
+
+Config section name: `[pico_rd]`
+
+Options:
+- `image` — optional backing file; omitted = volatile RAM
+- `size` — capacity in bytes; default `65536` when RAM-backed
+- `read_only` — `true`/`false` (default `false`)
+
+Example:
+
+```ini
+[pico_rd]
+image=flash:/pico_rd.img
+```
+
+---
+
+### Management device
+
+The `[pico_mgr]` section provides MZPico's management/control interface (default `base_port=0x40`). The boot menu and the file explorer communicate with the firmware through it — **without this section they cannot start**. It has no options of its own, but note its fixed RAM cost (see *RAM budget*).
 
 ---
 
