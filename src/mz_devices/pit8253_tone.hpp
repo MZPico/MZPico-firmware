@@ -121,13 +121,23 @@ struct Pit8253Tone {
     //   semantics: low forces OUT high and pauses counting; a rising edge
     //   reloads the counter and restarts the tone phase-aligned.
     // - audioMask: 8255 PC0, a plain AND on the speaker line after OUT.
-    bool gate0 = true;        // post-boot state; the IPL opens the latch
+    bool gate0 = false;       // GDG reset state: 700 mode, E008 latch low
+                              // (the monitor's boot beep opens it; in
+                              // native 800 mode the CTC device forces it
+                              // open on the DMD mode switch)
     bool audioMask = true;
     volatile bool outLevel = true;
     volatile bool running = false;
     volatile uint8_t mode = 3;            // normalized M bits of control word
     volatile uint32_t reloadValue = 0;
-    LoadMode loadMode = LoadMode::None;
+    // Power-on default is BOTH BYTES, not None: Sharp software universally
+    // programs RW=LSB+MSB, and monitor beep/click routines write the count
+    // WITHOUT a leading control word (the boot beep programmed it). If the
+    // session-start history is lost (W builds: cyw43_arch_init blocks
+    // core0's consumer through the monitor boot; floods after soft reset),
+    // a None default leaves every count write dead until the next control
+    // word - field symptom: first monitor beep silent, second one fine.
+    LoadMode loadMode = LoadMode::LSB_MSB;
     bool waitingMsb = false;
     uint8_t latchedLsb = 0;
 
