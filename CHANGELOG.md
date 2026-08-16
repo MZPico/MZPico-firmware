@@ -14,6 +14,9 @@ All notable changes to the MZPico firmware.
   existing SN76489 PSG emulation, covering monitor beeps, S-BASIC `MUSIC`,
   MZ-700 melody, and 1-bit "beeper engine" game music with microsecond
   event timing; both chips mix into the I2S output.
+- **Paged RAM disk (MZ-1R18 style)** — a new `ramdisk` device with 64 KB
+  page switching and full 16-bit addressing on the Deluxe board, backed by
+  Pico RAM or by an image file for persistent content.
 - **Reliable power-up boot** — the firmware now wins the MZ-800's boot race
   on every board on the first power-up; 16 MB clone boards no longer need a
   reset press to reach the menu.
