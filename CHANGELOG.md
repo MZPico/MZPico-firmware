@@ -66,9 +66,6 @@ All notable changes to the MZPico firmware.
   longer blocks audio.
 - Frugal boards: write data is captured in the PIO at /WR time, closing a
   sampling race under load.
-- Deluxe bus reliability campaign: ghost-transaction spike filter on IORQ,
-  flat dispatch tables restoring v0.2.0 latency, transceiver gate-line edge
-  conditioning — two-word 16-bit reads validated on both PCB layouts.
 - Quick Disk: save trailer format, end-of-media reads, write-protect
   reporting.
 - FDC: write durability (per-sector sync), disk-swap teardown, empty-drive
