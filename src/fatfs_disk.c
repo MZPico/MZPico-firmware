@@ -108,7 +108,7 @@ void create_fatfs_disk()
            "\r\n"
            "; ---- Optional (not enabled by default) ----\r\n"
            "\r\n"
-           "; MZ-1R18-style paged RAM disk (16-bit addressing needs the Deluxe board)\r\n"
+           "; MZ-1R18-style paged RAM disk (Deluxe board only - skipped on Frugal)\r\n"
            ";[ramdisk]\r\n"
            ";image=sd:/ramdisk.img\r\n"
            ";size=131072\r\n"

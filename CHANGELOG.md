@@ -14,8 +14,8 @@ All notable changes to the MZPico firmware.
   existing SN76489 PSG emulation, covering monitor beeps, S-BASIC `MUSIC`,
   MZ-700 melody, and 1-bit "beeper engine" game music with microsecond
   event timing; both chips mix into the I2S output.
-- **Paged RAM disk (MZ-1R18 style)** — a new `ramdisk` device with 64 KB
-  page switching and full 16-bit addressing on the Deluxe board, backed by
+- **Paged RAM disk (MZ-1R18 style)** — a new `ramdisk` device (Deluxe
+  board) with 64 KB page switching and full 16-bit addressing, backed by
   Pico RAM or by an image file for persistent content.
 
 ### Added
@@ -28,8 +28,9 @@ All notable changes to the MZPico firmware.
   ~1 µs timestamps), with mode-aware GATE0 and bank-switch tracking. The
   I2S path was reworked into a multi-source mixer so it plays alongside
   the existing `psg` (SN76489) device, with matched volume defaults.
-- `ramdisk` device: MZ-1R18-style paged RAM disk (full 16-bit addressing on
-  Deluxe), RAM- or file-backed.
+- `ramdisk` device: MZ-1R18-style paged RAM disk with full 16-bit
+  addressing, RAM- or file-backed (Deluxe board only — Frugal cannot
+  capture the 16-bit positioning; use `pico_rd` there).
 - FDC: track formatting (WRITE TRACK), READ TRACK, multi-sector transfers,
   per-drive write protection (`write_protected<N>`); formatting an empty
   image file creates a usable disk.

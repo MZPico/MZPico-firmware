@@ -131,10 +131,9 @@ Default `enabled=true` for all devices.
 | Device | Frugal | Deluxe |
 |--------|--------|--------|
 | `sramdisk`, `qd`, `fdc`, `pico_rd`, `pico_mgr` | ✓ | ✓ |
-| `ramdisk` | partial | ✓ |
-| `psg`, `ctc` | — | ✓ |
+| `ramdisk`, `psg`, `ctc` | — | ✓ |
 
-`psg` and `ctc` need the Deluxe board's I2S sound output (`ctc` additionally its memory-write snooping). `ramdisk` works on both boards, but 16-bit random-access positioning — what real MZ-1R18 software uses — needs the Deluxe bus capture; on Frugal only sequential access and page selection work.
+`psg` and `ctc` need the Deluxe board's I2S sound output (`ctc` additionally its memory-write snooping). `ramdisk` needs the Deluxe bus capture for its 16-bit random-access positioning — what real MZ-1R18 software uses — so it is Deluxe-only (use `pico_rd` for a RAM disk on Frugal).
 
 A configured device that the board cannot support is **skipped at boot**: the machine boots normally and the device is simply absent (missing from the explorer's device list) — the same behavior as when a device's buffers do not fit in RAM (see *RAM budget*). The same `mzpico.ini` can therefore be shared between boards.
 
@@ -349,7 +348,7 @@ pan=50
 
 ### RAM disk (paged)
 
-The `[ramdisk]` section emulates a paged RAM disk: 64 KB pages selected via the page register, byte access with auto-increment, and full 16-bit intra-page addressing on writes. Backed by Pico RAM, or by a file for persistent content. The 16-bit random-access positioning — what real MZ-1R18 software uses — needs the **Deluxe** board's bus capture; on Frugal only sequential access and page selection work.
+The `[ramdisk]` section emulates a paged RAM disk: 64 KB pages selected via the page register, byte access with auto-increment, and full 16-bit intra-page addressing on writes. Backed by Pico RAM, or by a file for persistent content. **Deluxe board only** (the 16-bit positioning that real MZ-1R18 software uses needs the Deluxe bus capture) — on Frugal the section is skipped at boot; use `pico_rd` for a RAM disk there.
 
 Config section name: `[ramdisk]`
 
@@ -521,8 +520,8 @@ image=sd:/qd_files
 
 ; ---- Optional devices (not part of the default set) ----
 
-; MZ-1R18-style paged RAM disk. Full 16-bit addressing needs the Deluxe
-; board; a RAM-backed size must fit the RAM budget (see below)
+; MZ-1R18-style paged RAM disk (Deluxe board only - skipped on Frugal);
+; a RAM-backed size must fit the RAM budget (see below)
 ;[ramdisk]
 ;image=sd:/ramdisk.img
 ;size=131072

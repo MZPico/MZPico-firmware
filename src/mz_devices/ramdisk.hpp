@@ -32,6 +32,20 @@ public:
 
     void softReset() override { pos_ = 0; } // contents persist, like real RAM
 
+    // Deluxe only: 16-bit intra-page positioning (what real MZ-1R18
+    // software uses) needs the Deluxe write capture - on Frugal the
+    // device would silently corrupt random-access writes, so it is
+    // skipped entirely. NB: the frugal bus-validation instruments
+    // (rdtest/rdrtest/rdstress) target these ports; a frugal bus
+    // campaign needs a diagnostic build with this returning true.
+    bool supportedOnBoard() const override {
+        #ifdef BOARD_DELUXE
+        return true;
+        #else
+        return false;
+        #endif
+    }
+
 private:
     uint8_t* data;
     bool readOnly;
