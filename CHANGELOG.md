@@ -17,9 +17,6 @@ All notable changes to the MZPico firmware.
 - **Paged RAM disk (MZ-1R18 style)** — a new `ramdisk` device with 64 KB
   page switching and full 16-bit addressing on the Deluxe board, backed by
   Pico RAM or by an image file for persistent content.
-- **Reliable power-up boot** — the firmware now wins the MZ-800's boot race
-  on every board on the first power-up; 16 MB clone boards no longer need a
-  reset press to reach the menu.
 
 ### Added
 
