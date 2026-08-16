@@ -10,10 +10,10 @@ All notable changes to the MZPico firmware.
   it is served as a live floppy: MZF files appear as a Disk BASIC disk, or
   any files as a LEC CP/M data disk. Fully writable: guest saves, deletes and
   renames become real files; formatting the disk clears the directory.
-- **MZ-800 sound over I2S** (Deluxe board) — both sound sources emulated:
-  the SN76489 PSG (stereo, per-channel panning) and the 8253 beeper,
-  covering monitor beeps, S-BASIC `MUSIC`, MZ-700 melody, and 1-bit
-  "beeper engine" game music with microsecond event timing.
+- **Complete MZ-800 sound** (Deluxe board) — the 8253 beeper joins the
+  existing SN76489 PSG emulation, covering monitor beeps, S-BASIC `MUSIC`,
+  MZ-700 melody, and 1-bit "beeper engine" game music with microsecond
+  event timing; both chips mix into the I2S output.
 - **Reliable power-up boot** — the firmware now wins the MZ-800's boot race
   on every board on the first power-up; 16 MB clone boards no longer need a
   reset press to reach the menu.
@@ -23,10 +23,11 @@ All notable changes to the MZPico firmware.
 - Directory-mounted floppy (`image_disk<N>=` a directory; `fs_disk<N>=basic|cpm`
   or auto-detect). Honest free-space reporting and write-error propagation to
   the guest; not bootable by design.
-- `psg` device: SN76489 emulation rendered to I2S, multiple-audio-source mixer.
 - `ctc` device: the 8253 beeper, fed from both the I/O-mapped ports and the
   memory-mapped E00x path (captured with a hardware memory-write snoop and
-  ~1 µs timestamps), with mode-aware GATE0 and bank-switch tracking.
+  ~1 µs timestamps), with mode-aware GATE0 and bank-switch tracking. The
+  I2S path was reworked into a multi-source mixer so it plays alongside
+  the existing `psg` (SN76489) device, with matched volume defaults.
 - `ramdisk` device: MZ-1R18-style paged RAM disk (full 16-bit addressing on
   Deluxe), RAM- or file-backed.
 - FDC: track formatting (WRITE TRACK), READ TRACK, multi-sector transfers,
