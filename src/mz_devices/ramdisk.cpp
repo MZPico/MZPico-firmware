@@ -4,6 +4,7 @@
 #include "ram_source.hpp"
 #include "file_source.hpp"
 #include "ramdisk.hpp"
+#include "bus.hpp"
 
 REGISTER_MZ_DEVICE(RamDisk)
 
@@ -56,9 +57,20 @@ int RamDisk::readConfig(dictionary *ini) {
     if (!size)
         size = RAMDISK_DEFAULT_SIZE;
     if (!image.empty()) {
-        ByteSourceFactory::from_file(image.c_str(), size, 128, /* wrap= */ false, bs, /* auto_increment= */ false);
-        if (!bs)
+        // Missing/short image: freeze the Z80 with EXWAIT while creating
+        // it - see pico_rd.cpp for the full rationale (cold-boot IPL race)
+        FILINFO fno;
+        const bool creating =
+            (f_stat(image.c_str(), &fno) != FR_OK || fno.fsize < size);
+        if (creating) set_exwait();
+        const int ret = ByteSourceFactory::from_file(image.c_str(), size, 128,
+                                                     /* wrap= */ false, bs,
+                                                     /* auto_increment= */ false);
+        if (creating) release_exwait();
+        if (ret != 0) {
+            bs.reset();
             return E_DEVICE_NO_MEMORY;
+        }
     } else {
         data = (uint8_t *)malloc(size);
         if (!data)

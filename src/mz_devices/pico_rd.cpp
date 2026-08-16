@@ -2,6 +2,7 @@
 #include "device.hpp"
 #include "file_source.hpp"
 #include "pico_rd.hpp"
+#include "bus.hpp"
 
 REGISTER_MZ_DEVICE(PicoRD)
 
@@ -74,9 +75,26 @@ int PicoRD::readConfig(dictionary *ini) {
           return E_DEVICE_NO_MEMORY;
         ByteSourceFactory::from_ram(data, size, bs);
     } else {
-       ByteSourceFactory::from_file(image, size, 128, /* wrap =*/true, bs);
-       if (!bs)
+       // Creating (or growing) a missing image zero-fills it through the
+       // filesystem - hundreds of ms on flash:, enough to lose the cold-
+       // boot IPL race (field-observed: no menu on the first boot after a
+       // format). Freeze the Z80 with EXWAIT for the duration: at this
+       // point of boot it is still in power-on reset or stalls on its
+       // first bus cycle, so the one-time cost is invisible. (DRAM
+       // refresh stalls too; harmless before the monitor has run.)
+       // Creation failure disables the device like any other resource
+       // shortfall - boot continues without it.
+       FILINFO fno;
+       const bool creating =
+           (f_stat(image.c_str(), &fno) != FR_OK || fno.fsize < size);
+       if (creating) set_exwait();
+       const int ret = ByteSourceFactory::from_file(image, size, 128,
+                                                    /* wrap =*/true, bs);
+       if (creating) release_exwait();
+       if (ret != 0) {
+           bs.reset();
            return E_DEVICE_NO_MEMORY;
+       }
     }
     return 0;
 }
