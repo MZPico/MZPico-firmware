@@ -17,7 +17,6 @@
 #include "fatfs_disk.h"
 
 #include <stdio.h>
-#include <string.h>
 #include "pico/stdlib.h"
 #include "hardware/flash.h"
 
@@ -120,22 +119,6 @@ void create_fatfs_disk()
            ";wifi_password=secret\r\n"
            "\r\n", &fil);
     f_close(&fil);
-
-    // Pre-create the default pico_rd backing image HERE, in the race-free
-    // formatter/USB context: a 64KB zero-fill through the flash filesystem
-    // takes hundreds of ms, and leaving it to the first MZ-800 boot makes
-    // that one boot lose the ~180ms IPL race (field-observed: "first boot
-    // after formatting doesn't reach the menu"). Must match the [pico_rd]
-    // defaults in the ini above.
-    res = f_open(&fil, "pico_rd.img", FA_CREATE_NEW | FA_WRITE);
-    if (res == FR_OK) {
-        BYTE zeros[512];
-        memset(zeros, 0, sizeof(zeros));
-        UINT bw;
-        for (int i = 0; i < 65536 / 512; i++)
-            f_write(&fil, zeros, sizeof(zeros), &bw);
-        f_close(&fil);
-    }
     f_mount(0, "", 0);
 }
 
