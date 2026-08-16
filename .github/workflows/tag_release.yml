@@ -26,7 +26,10 @@ jobs:
           submodules: recursive
 
       - name: Fetch tags
-        run: git fetch --tags
+        # --force: with an ANNOTATED release tag, actions/checkout leaves a
+        # local tag pointing at the peeled commit; a plain fetch then fails
+        # with "would clobber existing tag" and kills the release build
+        run: git fetch --tags --force
 
       - name: Get tag that triggered the workflow
         run: |
