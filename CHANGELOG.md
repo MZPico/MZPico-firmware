@@ -2,6 +2,18 @@
 
 All notable changes to the MZPico firmware.
 
+## Unreleased
+
+### Fixed
+
+- FDC: READ SECTOR no longer refills its data buffer past the end of the sector.
+  On the physically last sector of an image that refill hit end-of-file and
+  the command terminated with a CRC error, so any program whose data ends on
+  the last sector of the disk failed to load — MZIX (uMZix) stopped booting
+  in v0.3.0 with a blinking border (its loader's read-retry loop). Regression
+  from v0.3.0's read-error reporting; v0.2.0 masked it by leaving the
+  controller BUSY, which the loader cleared with FORCE INTERRUPT.
+
 ## v0.3.0 — 2026-08-16
 
 ### Highlights

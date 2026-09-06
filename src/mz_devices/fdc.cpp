@@ -930,12 +930,22 @@ int FDCDevice::fdcRead(uint8_t port, uint8_t* dt, uint8_t /*high_addr*/) {
 
             if (buffer_pos == chunk - 1) {
                 buffer_pos = 0;
-                uint32_t rlen = 0;
-                curDrv().bs->get(buffer, chunk, rlen);
-                if (rlen != chunk) { // data error: terminate the command
-                    DATA_COUNTER = 0; COMMAND = 0x00; STATUS_SCRIPT = 0;
-                    regSTATUS = 0x08;
-                    return 1;
+                // Refill only while bytes of THIS sector remain. The chunk
+                // after the sector's last byte is not ours to read: on the
+                // physically last sector of an image it lies past EOF, and
+                // reporting that short read as a CRC error failed every
+                // read of that sector (MZIX's kernel ends there - the boot
+                // died in the loader's retry loop with a blinking border).
+                // The next sector, if any, is positioned by seekToSector()
+                // in the completion block below.
+                if (DATA_COUNTER) {
+                    uint32_t rlen = 0;
+                    curDrv().bs->get(buffer, chunk, rlen);
+                    if (rlen != chunk) { // data error: terminate the command
+                        DATA_COUNTER = 0; COMMAND = 0x00; STATUS_SCRIPT = 0;
+                        regSTATUS = 0x08;
+                        return 1;
+                    }
                 }
             } else {
                 ++buffer_pos;
