@@ -6,6 +6,12 @@ All notable changes to the MZPico firmware.
 
 ### Fixed
 
+- Deluxe: the data transceiver is now turned toward the Z80 only for reads
+  a device actually serves. Previously every I/O read re-drove the stale
+  Pico-side bus level onto the Z80 data bus, so the ROM's SRAM-card probe
+  read its own 0xA5 back ("SRAM checksum error" on any ini without
+  `[sramdisk]`) and a second MZPico card on the same expansion bus had its
+  replies overdriven (a Frugal floppy card beside a Deluxe was invisible).
 - FDC: READ SECTOR no longer refills its data buffer past the end of the sector.
   On the physically last sector of an image that refill hit end-of-file and
   the command terminated with a CRC error, so any program whose data ends on

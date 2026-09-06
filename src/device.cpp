@@ -174,6 +174,13 @@ RAM_FUNC static void listen_loop(void) {
             low_addr = pio_sm_get(pio, SM_READ) >> 24;
             auto fn = MZDeviceManager::flatReadFn[low_addr];
             if (fn) {
+                #ifdef BOARD_DELUXE
+                // Go-word for the read SM: only now does it turn the data
+                // transceiver toward the Z80. Ports nobody serves are never
+                // driven (see the verdict loop in bus_io.pio). First thing
+                // after the lookup: the reversal waits on it.
+                pio_sm_put(pio, SM_READ, 1);
+                #endif
                 MZDevice* dev = MZDeviceManager::flatReadDev[low_addr];
                 if (MZDeviceManager::flatExwait[low_addr]) set_exwait();
                 #ifdef BOARD_DELUXE
