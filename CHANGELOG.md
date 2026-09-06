@@ -2,7 +2,10 @@
 
 All notable changes to the MZPico firmware.
 
-## Unreleased
+## v0.3.1 — 2026-09-06
+
+Bug-fix release: two regressions/defects found booting MZIX (uMZix) and running
+two MZPico cards on one expansion bus. No configuration changes.
 
 ### Fixed
 
