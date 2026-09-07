@@ -25,20 +25,25 @@ wait_iorq_low:
 high_settle_r:
     jmp x-- high_settle_r
     in pins, 8                  side GATES_BLOCK_ALL
-    ; The data gate stays BLOCKED until core1 queues a go-word in the TX
-    ; FIFO, i.e. until it has found a device that serves this port. A port
-    ; nobody serves (the ROM's SRAM-card probe on 0xF9, or a port served by
-    ; another card on the same bus) must never be driven: the Pico-side
-    ; bus C0-C7 has no pulls and holds the last I/O byte, so an unconditional
-    ; reversal re-drove it onto the Z80 bus - the IPL read its own 0xA5
-    ; probe back ("SRAM checksum error") and a second MZPico's floppy
-    ; replies were overdriven. mov status is all-ones while TX is empty;
-    ; /RD rising means the Z80 finished without us - leave the bus alone.
-verdict:
-    jmp pin, wait_iorq_high
-    mov y, status
-    jmp y--, verdict
-    pull block                  side GATES_WRITE_DATA
+    ; The data gate stays BLOCKED until core 1 delivers its verdict as one
+    ; TX FIFO word per read: 1 = a device serves this port and the byte is
+    ; already on the pins (sent right before /WAIT is released), 0 = nobody
+    ; listens. A port nobody serves is never driven: the Pico-side bus C0-C7
+    ; holds the high address byte (the Z80's A register for IN A,(n)), and
+    ; an unconditional reversal re-drove it - the IPL read its own 0xA5
+    ; SRAM-card probe back ("SRAM checksum error") and a second MZPico's
+    ; floppy replies were overdriven. Waiting for the word instead of
+    ; watching /RD or IORQ mid-cycle matters: a glitch coupled into those
+    ; inputs by a gate edge once abandoned reads core 1 was serving (one
+    ; undriven byte per 10^4..10^5 reads, layout-dependent) - the Z80 is
+    ; held by EXWAIT, so the word always comes, and exactly one per read
+    ; keeps the FIFO balanced. Reads stall the Z80 until served, and the
+    ; drain path answers unserved ports within ~150ns, so the pull never
+    ; outlives a cycle by more than that.
+    pull block
+    out x, 32
+    jmp !x, wait_iorq_high
+    nop                         side GATES_WRITE_DATA
     ; End-of-cycle IORQ spike filter: a few-ns crosstalk spike (coupled from
     ; a gate edge into the IORQ input trace) can be latched by the 2-cycle
     ; input synchronizer and satisfy a single wait, wrapping the SM early -
@@ -77,14 +82,15 @@ public mem_entry:
 mem_wait:
     wait 0 gpio 22              ; /WR falls
     jmp pin, capture            ; snoop SM maps jmp pin = IORQ: high -> memory write
-    jmp mem_wait_high           ; I/O write - the write SM's business; no gate action mid-cycle
+    ; I/O write: the write SM's business, no gate action mid-cycle. It falls
+    ; through the push with an empty ISR (iffull, threshold 24 = one packed
+    ; event: nothing is pushed) and just waits the pulse out.
 public mem_done:                ; snoop SM wrap target (reached after the tail)
     ; One packed event word: (data<<24)|(high<<16)|(low<<8). Noblock: if
     ; the FIFO is full the event is dropped - the snoop SM must NEVER
     ; stall mid-dance or it parks the gates in the wrong state and
     ; corrupts subsequent I/O captures.
-    push noblock
-mem_wait_high:
+    push iffull noblock
     wait 1 gpio 22              ; wait out the write pulse
     ; Idle gates restored only once /WR has risen: on the I/O-write branch
     ; the write SM is still capturing behind its own side-sets until then.
@@ -172,11 +178,9 @@ uint bus_read_deluxe_init(PIO pio, uint sm, uint base_gpio, uint jump_gpio) {
     sm_config_set_in_shift(&c, true, true, 8);
     sm_config_set_clkdiv(&c, 1.0f);
     sm_config_set_sideset_pins(&c, 8);
-    // TX FIFO carries core1's go-word (serve this read), so it cannot be
-    // joined into RX: RX keeps its native 4 words (2 transactions). Reads
-    // stall the Z80 until served, so that is all the headroom they need.
-    // mov y, status reads all-ones while the TX FIFO holds fewer than 1 word.
-    sm_config_set_mov_status(&c, STATUS_TX_LESSTHAN, 1);
+    // TX FIFO carries core1's verdict word (1 = serve, 0 = unserved), so it
+    // cannot be joined into RX: RX keeps its native 4 words (2 transactions).
+    // Reads stall the Z80 until served, so that is all the headroom they need.
 
     pio_sm_set_consecutive_pindirs(pio, sm, 8, 4, true);
     pio_sm_init(pio, sm, offset, &c);
@@ -232,7 +236,9 @@ void bus_mem_snoop_init(PIO pio, uint sm, uint base_gpio, uint write_prog_base) 
 
     sm_config_set_in_pins(&c, base_gpio);
     sm_config_set_jmp_pin(&c, 20);           // IORQ
-    sm_config_set_in_shift(&c, true, false, 32);
+    // Threshold 24 = one packed event; "push iffull" at mem_done then pushes
+    // only after a capture, so the I/O-write branch can share it.
+    sm_config_set_in_shift(&c, true, false, 24);
     sm_config_set_sideset_pins(&c, 8);
     sm_config_set_clkdiv(&c, 1.0f);
     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);

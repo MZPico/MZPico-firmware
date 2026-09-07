@@ -16,6 +16,29 @@ All notable changes to the MZPico firmware.
   it. First step of the manager migration (docs/unicard-migration-plan.md).
 - `tests/unicard_sim`: host-side protocol harness for the device.
 - FDC: `ejectDrive()` (used by FDDMOUNT with an empty path).
+## v0.3.2 — 2026-09-07
+
+Bug-fix release for the v0.3.1 Deluxe bus change. No configuration changes,
+no other changes.
+
+### Fixed
+
+- Deluxe: v0.3.1 turned the data transceiver toward the Z80 on core 1's
+  go-word sent *before* the port handler ran, with the Pico's data pins still
+  inputs, and its read state machine watched /RD mid-cycle to learn whether
+  the Z80 had given up. On one board layout the early flip drove a floating
+  byte and corrupted roughly one read in ten thousand (BASIC and larger
+  programs loaded with wrong bytes, the explorer showed garbage, a soft
+  reset could end in "SRAM checksum error"); on the other layout a glitch
+  coupled into the /RD input abandoned reads core 1 was serving (BASIC froze
+  after loading in about a third of attempts). v0.3.0 was unaffected. The
+  read state machine now waits for one verdict word per read from core 1:
+  1 = serve, sent only after the byte is on the pins and immediately before
+  /WAIT is released, or 0 = nobody listens. Unserved ports are still never
+  driven (the v0.3.1 two-card and SRAM-probe fix stands), a served port
+  never has a stale or floating byte driven onto the bus, and no bus input
+  is sampled mid-cycle any more. Bisected v0.3.0 → v0.3.1 on hardware and
+  verified with a checksummed 42 KB load and rdrtest.
 
 ## v0.3.1 — 2026-09-06
 
