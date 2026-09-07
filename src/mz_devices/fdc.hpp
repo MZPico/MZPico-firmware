@@ -46,6 +46,7 @@ public:
     static ALWAYS_INLINE std::string getDevType() { return FDC_ID; }
     int setDriveContent(uint8_t drive_id, const char* file_path);
     void ejectDrive(uint8_t drive_id); // leave the drive empty (session state)
+    const std::string& currentImage(uint8_t drive_id) const { return cur_image[drive_id < FDC_NUM_DRIVES ? drive_id : 0]; }
 
 private:
     static int ReadThunk(MZDevice* dev, uint8_t port, uint8_t* dt, uint8_t high_addr);

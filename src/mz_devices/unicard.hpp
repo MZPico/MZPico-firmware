@@ -34,7 +34,7 @@ enum : uint8_t {
     cmdRTCSETD = 0x60, cmdRTCSETT = 0x61, cmdRTCGETD = 0x62, cmdRTCGETT = 0x63,
     // MZPico extensions (docs/unicard-migration-plan.md)
     cmdX_LISTVOL = 0x90, cmdX_GETCONFIG = 0x92, cmdX_WIFISTATUS = 0x93,
-    cmdX_INFO = 0x95, cmdX_SETSORT = 0x96, cmdX_SERVEDSUM = 0x97,
+    cmdX_INFO = 0x95, cmdX_SETSORT = 0x96, cmdX_SERVEDSUM = 0x97, cmdX_MOUNTS = 0x98,
     // Internal: reported in status byte 1 while streaming a file
     cmdINTGETC = 0xF0, cmdINTPUTC = 0xF1
 };

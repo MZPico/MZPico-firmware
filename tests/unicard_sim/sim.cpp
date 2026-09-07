@@ -191,6 +191,9 @@ int main() {
     CHECK(fdcdev.mounted[1] == "sd:/games/a.dsk", "drive 2 mounted");
     cmd(uc::cmdFDDMOUNT); wr(1); wr(0x0D); CHECK(fdcdev.mounted[1].empty(), "drive 2 ejected");
     cmd(uc::cmdFDDMOUNT); wr(5); wstr("sd:/x.mzq"); CHECK(qddev.path == "sd:/x.mzq", "QD mounted via id 5");
+    cmd(uc::cmdFDDMOUNT); wr(2); wstr("sd:/games/a.dsk");
+    cmd(uc::cmdX_MOUNTS); { std::string m; for (int i = 0; i < 5; i++) { m += rstr(); m += "|"; } CHECK(m == "1:|2:|3:sd:/games/a.dsk|4:|Q:sd:/x.mzq|", "MOUNTS text '%s'", m.c_str()); }
+    cmd(uc::cmdFDDMOUNT); wr(2); wr(0x0D);
     cmd(uc::cmdFDDMOUNT); wr(9); wstr("x"); { uint8_t s[4]; st4(s); CHECK((s[0] & 0x80) && s[2] == uc::errBAD_PARAM, "bad device id"); }
 
     // --- 12. extensions

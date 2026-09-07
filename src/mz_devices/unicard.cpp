@@ -369,6 +369,18 @@ void UnicardDevice::doCommand(uint8_t cmd) {
     // Sum of every data byte served from the open file since OPEN: lets a
     // loader verify what the Z80 actually received against what was sent
     case uc::cmdX_SERVEDSUM:  { uint8_t s[2] = {static_cast<uint8_t>(served_sum_), static_cast<uint8_t>(served_sum_ >> 8)}; setOutput(s, 2, false); break; }
+    // Current session mounts as text: "1:<path>\r2:\r3:\r4:\rQ:<path>\r"
+    // (empty path = drive empty; absent device = line omitted)
+    case uc::cmdX_MOUNTS: {
+        int n = 0;
+        char* b = reinterpret_cast<char*>(buf_);
+        if (fdc) for (uint8_t d = 0; d < 4; d++)
+            n += snprintf(b + n, PARAM_BUFFER_SIZE - n, "%d:%s\r", d + 1, fdc->currentImage(d).c_str());
+        if (qd) n += snprintf(b + n, PARAM_BUFFER_SIZE - n, "Q:%s\r", qd->currentImage().c_str());
+        if (n >= PARAM_BUFFER_SIZE) n = PARAM_BUFFER_SIZE - 1;
+        setOutput(buf_, static_cast<uint16_t>(n), false);
+        break;
+    }
     case uc::cmdX_SETSORT:    beginParams("B"); break;
     default:
         setError(uc::errNOT_IMPLEMENTED);
