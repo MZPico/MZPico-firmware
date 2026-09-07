@@ -72,7 +72,7 @@ changes.
   server buffer, rejected.
 - **Test**: the 300-entry directory from A3, listing time before/after.
 
-### B2. F1 "Inf" panel
+### B2. F1 "Inf" panel — done (file-centric: MZF header / DSK geometry)
 - **Problem**: the footer advertises F1 = Inf, `inkey()` delivers code 1, and
   nothing handles it.
 - **Change**: an overlay panel (rows 8–16) with the selected entry's name,
