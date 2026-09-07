@@ -174,13 +174,6 @@ RAM_FUNC static void listen_loop(void) {
             low_addr = pio_sm_get(pio, SM_READ) >> 24;
             auto fn = MZDeviceManager::flatReadFn[low_addr];
             if (fn) {
-                #ifdef BOARD_DELUXE
-                // Go-word for the read SM: only now does it turn the data
-                // transceiver toward the Z80. Ports nobody serves are never
-                // driven (see the verdict loop in bus_io.pio). First thing
-                // after the lookup: the reversal waits on it.
-                pio_sm_put(pio, SM_READ, 1);
-                #endif
                 MZDevice* dev = MZDeviceManager::flatReadDev[low_addr];
                 if (MZDeviceManager::flatExwait[low_addr]) set_exwait();
                 #ifdef BOARD_DELUXE
@@ -192,6 +185,18 @@ RAM_FUNC static void listen_loop(void) {
                 fn(dev, low_addr, &data, high_addr);
                 acquire_data_bus_for_writing();
                 write_data_bus(data);
+                #ifdef BOARD_DELUXE
+                // Verdict word for the read SM: 1 = serve. Only now, with the
+                // byte already on the pins, does it turn the data transceiver
+                // toward the Z80, immediately before /WAIT is released. A
+                // served port never sees a stale or floating byte driven onto
+                // the bus (v0.3.1 flipped before the handler, with the pins
+                // still inputs: ~1 in 10^4 reads corrupt on one layout), and
+                // the SM never has to sample /RD to learn the Z80 gave up
+                // (that abandoned served reads on the other layout). Exactly
+                // one word per read: the drain path below sends the 0.
+                pio_sm_put(pio, SM_READ, 1);
+                #endif
 
                 if (dev->isInterrupt()) set_interrupt();
                 if (MZDeviceManager::flatExwait[low_addr]) release_exwait();
@@ -201,8 +206,11 @@ RAM_FUNC static void listen_loop(void) {
             #ifdef BOARD_DELUXE
             else {
                 // Drain the high-address word even when no device listens on
-                // this port, otherwise the RX FIFO desyncs.
+                // this port, otherwise the RX FIFO desyncs; then tell the SM
+                // not to drive the bus (verdict 0). Fast: the Z80 is not held
+                // by EXWAIT on an unserved port.
                 pio_sm_get_blocking(pio, SM_READ);
+                pio_sm_put(pio, SM_READ, 0);
             }
             #endif
         }
