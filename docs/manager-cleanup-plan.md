@@ -83,7 +83,7 @@ changes.
   field only if the FILINFO timestamp is wanted (the client currently
   discards bytes 4–7).
 
-### B3. Loader/menu robustness on the Z80 side
+### B3. Loader/menu robustness on the Z80 side — done
 - **Change**: `read_and_execute()` validates the header before jumping —
   body size non-zero and `0x1200 + size <= 0xD000`; on failure print a short
   message via the monitor and return to the menu (`mount_entry("@menu")` +
@@ -91,12 +91,12 @@ changes.
 - **Why**: the same failure class as A1 for any future client of
   `read_and_execute` (explorer, F5 return path).
 
-### B4. Stack-headroom guard in the build
+### B4. Stack-headroom guard in the build — done (`check_tail.cmake`)
 - **Change**: a CMake post-build step in the manager that parses the `.map`
   for `__tail` and fails the build if it exceeds `0xCC00` (1 KB of stack
   margin left). Cheap insurance for the 2.8 KB budget.
 
-### B5. Small cleanups
+### B5. Small cleanups — done
 - `cycle_device()` busy-wait loop removed (no purpose after the redraw).
 - `ENABLE_TEST` / `MZ800PICO_TEST` CMake option removed (no source uses it).
 - `ATT_ALT` macro removed; footer text and key legend aligned with the
