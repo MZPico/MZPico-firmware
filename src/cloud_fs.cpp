@@ -55,9 +55,22 @@ static volatile bool g_http_cb_armed = false;
 static struct {
     volatile bool pending;
     bool list_dir;
-    PicoMgr *mgr;
+    CloudDirSink *dir_sink;
+    CloudFileSink *file_sink;
+    CloudCompleteFn done;
+    void *done_ctx;
     char path[160];
 } g_cloud_cmd;
+
+// PicoMgr adapters: the manager device keeps its record/blob buffer API;
+// the generic sinks below feed it
+static int cloud_list_dir(const char *path, CloudDirSink *sink, char *msg, size_t msg_len);
+static int cloud_download(const char *path, CloudFileSink *sink, char *msg, size_t msg_len);
+static void mgr_sink_add(void *ctx, const char *name, size_t name_len, bool is_dir, uint32_t size);
+static void pack_cloud_entry(const void* recPtr, uint8_t* dst);
+static void unpack_cloud_entry(const uint8_t* src, void* outPtr);
+#define CLOUD_DIR_ENTRY_SIZE (1 + 32 + 4)
+static struct { PicoMgr *mgr; CloudDirSink dir; CloudFileSink file; } g_mgr_cloud;
 
 // Internal helpers
 static inline void set_state(CloudWifiState s, int err = 0) {
@@ -215,28 +228,65 @@ static bool is_wifi_connecting(void) {
            g_state == CloudWifiState::CONNECTING;
 }
 
-bool cloud_submit_command(PicoMgr *mgr, bool list_dir, const char *path) {
+static bool cloud_submit(const char *path, bool list_dir, CloudDirSink *dsink, CloudFileSink *fsink,
+                         CloudCompleteFn done, void *done_ctx) {
     if (g_cloud_cmd.pending) return false;
     // An abandoned (timed-out) request still owns the HTTP client state
     // until its lwIP callbacks finish; don't start a new exchange under it
     if (g_http_in_flight && !g_http_req.complete) return false;
-    g_cloud_cmd.mgr = mgr;
     g_cloud_cmd.list_dir = list_dir;
+    g_cloud_cmd.dir_sink = dsink;
+    g_cloud_cmd.file_sink = fsink;
+    g_cloud_cmd.done = done;
+    g_cloud_cmd.done_ctx = done_ctx;
     snprintf(g_cloud_cmd.path, sizeof(g_cloud_cmd.path), "%s", path);
     __asm volatile("" ::: "memory");
     g_cloud_cmd.pending = true;
     return true;
 }
 
+bool cloud_submit_dir(const char *path, CloudDirSink *sink, CloudCompleteFn done, void *done_ctx) {
+    return cloud_submit(path, true, sink, nullptr, done, done_ctx);
+}
+
+bool cloud_submit_file(const char *path, CloudFileSink *sink, CloudCompleteFn done, void *done_ctx) {
+    return cloud_submit(path, false, nullptr, sink, done, done_ctx);
+}
+
+// PicoMgr completion: error text into the blob, a download is claimed as
+// the payload, then the status flips for the polling Z80
+static void mgr_cloud_done(void *ctx, int result, const char *msg) {
+    PicoMgr *mgr = static_cast<PicoMgr*>(ctx);
+    if (result) mgr->setString(msg);
+    else if (!g_cloud_cmd.list_dir &&
+             !mgr->allocateRaw(static_cast<uint16_t>(g_mgr_cloud.file.length))) {
+        mgr->setString("File too large");
+        result = 2;
+    }
+    mgr->asyncComplete(result);
+}
+
+bool cloud_submit_command(PicoMgr *mgr, bool list_dir, const char *path) {
+    g_mgr_cloud.mgr = mgr;
+    g_mgr_cloud.dir.ctx = mgr;
+    g_mgr_cloud.dir.add = mgr_sink_add;
+    g_mgr_cloud.file.buffer = mgr->payloadBase();
+    g_mgr_cloud.file.capacity = mgr->payloadCapacity();
+    g_mgr_cloud.file.length = 0;
+    if (list_dir) mgr->setContent(CLOUD_DIR_ENTRY_SIZE, pack_cloud_entry, unpack_cloud_entry);
+    return cloud_submit(path, list_dir, &g_mgr_cloud.dir, &g_mgr_cloud.file, mgr_cloud_done, mgr);
+}
+
 static void handle_cloud_command(void) {
     if (!g_cloud_cmd.pending) return;
     g_cloud_cmd.pending = false;
 
+    char msg[64] = {0};
     int ret = g_cloud_cmd.list_dir
-        ? cloud_read_directory(g_cloud_cmd.path, g_cloud_cmd.mgr)
-        : cloud_mount_file(g_cloud_cmd.path, g_cloud_cmd.mgr);
+        ? cloud_list_dir(g_cloud_cmd.path, g_cloud_cmd.dir_sink, msg, sizeof(msg))
+        : cloud_download(g_cloud_cmd.path, g_cloud_cmd.file_sink, msg, sizeof(msg));
 
-    g_cloud_cmd.mgr->asyncComplete(ret);
+    if (g_cloud_cmd.done) g_cloud_cmd.done(g_cloud_cmd.done_ctx, ret, msg);
 }
 
 static void handle_reconnect_request(void) {
@@ -305,7 +355,6 @@ static void unpack_cloud_entry(const uint8_t* src, void* outPtr) {
     r->size = (uint32_t)src[33] | ((uint32_t)src[34] << 8) | ((uint32_t)src[35] << 16) | ((uint32_t)src[36] << 24);
 }
 
-#define CLOUD_DIR_ENTRY_SIZE (1 + 32 + 4)
 #define MAX_JSON_RESPONSE_SIZE 16384  // 16KB should be enough for directory listing
 
 // Context for accumulating HTTP response. Static: 16KB must not live on a
@@ -369,13 +418,18 @@ static err_t cloud_receive_fn(void *arg, struct altcp_pcb *conn, struct pbuf *p,
 }
 
 // Helper to create and add a directory entry
-static void add_dir_entry(PicoMgr *mgr, const char *name, size_t name_len, bool is_dir, uint32_t size) {
+static void mgr_sink_add(void *ctx, const char *name, size_t name_len, bool is_dir, uint32_t size) {
+    PicoMgr *mgr = static_cast<PicoMgr*>(ctx);
     CLOUD_DIR_ENTRY entry;
     entry.is_dir = is_dir ? 1 : 0;
     entry.size = size;
     memset(entry.filename, 0, sizeof(entry.filename));
     memcpy(entry.filename, name, name_len < 31 ? name_len : 31);
     mgr->addRecord(&entry);
+}
+
+static void add_dir_entry(CloudDirSink *sink, const char *name, size_t name_len, bool is_dir, uint32_t size) {
+    sink->add(sink->ctx, name, name_len, is_dir, size);
 }
 
 // Helper to check if a quote is followed by a colon (i.e., it's a JSON key)
@@ -385,7 +439,7 @@ static bool is_json_key(const char *after_quote) {
 }
 
 // Parse folders array from JSON
-static void parse_folders_array(const char *json, PicoMgr *mgr) {
+static void parse_folders_array(const char *json, CloudDirSink *mgr) {
     const char *folders_start = strstr(json, "\"folders\":[");
     if (!folders_start) return;
     
@@ -413,7 +467,7 @@ static void parse_folders_array(const char *json, PicoMgr *mgr) {
     }
 }
 // Parse a single file object from JSON
-static bool parse_file_object(const char *obj_start, const char *obj_end, PicoMgr *mgr) {
+static bool parse_file_object(const char *obj_start, const char *obj_end, CloudDirSink *mgr) {
     // Find "name" field
     const char *name_key = strstr(obj_start, "\"name\":\"");
     if (!name_key || name_key > obj_end) return false;
@@ -437,7 +491,7 @@ static bool parse_file_object(const char *obj_start, const char *obj_end, PicoMg
 }
 
 // Parse files array from JSON
-static void parse_files_array(const char *json, PicoMgr *mgr) {
+static void parse_files_array(const char *json, CloudDirSink *mgr) {
     const char *files_start = strstr(json, "\"files\":[");
     if (!files_start) return;
     
@@ -460,11 +514,8 @@ static void parse_files_array(const char *json, PicoMgr *mgr) {
 
 // Simple JSON parser for cloud directory listing
 // Parses: {"path":"...","folders":["..."],"files":[{"name":"...","size":123}]}
-static bool parse_cloud_directory_json(const char *json, const char *path, PicoMgr *mgr) {
+static bool parse_cloud_directory_json(const char *json, const char *path, CloudDirSink *mgr) {
     if (!json || !mgr) return false;
-    
-    mgr->setContent(CLOUD_DIR_ENTRY_SIZE, pack_cloud_entry, unpack_cloud_entry);
-    
     // Add ".." entry for non-root directories
     if (path && strcmp(path, "/") != 0) {
         add_dir_entry(mgr, "..", 2, true, 0);
@@ -545,43 +596,46 @@ static bool http_request_and_wait(const char *hostname, const char *url, void *c
     return true;
 }
 
-int cloud_read_directory(const char *path, PicoMgr *mgr) {
+static int cloud_list_dir(const char *path, CloudDirSink *sink, char *msg, size_t msg_len) {
     if (cloud_wifi_state() != CloudWifiState::CONNECTED) {
-        mgr->setString("Cloud WiFi not connected");
-        return 1;
+        snprintf(msg, msg_len, "Cloud WiFi not connected");
+        return CLOUD_ERR_NOT_CONNECTED;
     }
-    
-    // Normalize path
     char normalized_path[96];
     normalize_cloud_path(path, normalized_path, sizeof(normalized_path));
-    
-    // Prepare HTTP request
     char url[128];
     snprintf(url, sizeof(url), "/list?path=%s", normalized_path);
-    
+
     memset(&g_response_ctx, 0, sizeof(g_response_ctx));
     int result;
-
     if (!http_request_and_wait("api.mzpico.com", url, &g_response_ctx, cloud_receive_fn, 10000, &result)) {
-        mgr->setString("HTTP request timeout");
-        return 1;
+        snprintf(msg, msg_len, "HTTP request timeout");
+        return CLOUD_ERR_TIMEOUT;
     }
-
     if (result != 0) {
-        mgr->setString("HTTP request failed");
-        return 1;
+        snprintf(msg, msg_len, "HTTP request failed");
+        return CLOUD_ERR_FAILED;
     }
-
     if (g_response_ctx.overflow) {
-        mgr->setString("Response too large");
-        return 1;
+        snprintf(msg, msg_len, "Response too large");
+        return CLOUD_ERR_TOO_LARGE;
     }
-
-    if (!parse_cloud_directory_json(g_response_ctx.buffer, normalized_path, mgr)) {
-        return 1;
+    if (!parse_cloud_directory_json(g_response_ctx.buffer, normalized_path, sink)) {
+        snprintf(msg, msg_len, "Bad listing");
+        return CLOUD_ERR_INVALID;
     }
-    
     return 0;
+}
+
+// Synchronous PicoMgr entry (core 0 context only)
+int cloud_read_directory(const char *path, PicoMgr *mgr) {
+    g_mgr_cloud.dir.ctx = mgr;
+    g_mgr_cloud.dir.add = mgr_sink_add;
+    mgr->setContent(CLOUD_DIR_ENTRY_SIZE, pack_cloud_entry, unpack_cloud_entry);
+    char msg[64];
+    int ret = cloud_list_dir(path, &g_mgr_cloud.dir, msg, sizeof(msg));
+    if (ret) mgr->setString(msg);
+    return ret ? 1 : 0;
 }
 
 // Download file callback - parses chunked encoding and buffers data
@@ -674,70 +728,65 @@ static err_t cloud_download_fn(void *arg, struct altcp_pcb *conn, struct pbuf *p
     return ERR_OK;
 }
 
-// Validate the MZF downloaded into the manager payload and claim it. The
-// bytes are already in place (the download streamed directly into the
-// buffer), so this only checks sizes and sets the payload length.
-static int finalize_mzf_in_manager(const FILE_DOWNLOAD_CTX *download_ctx, PicoMgr *mgr) {
+// Download into the sink's buffer and validate it as an MZF (header plus
+// the body length the header announces). sink->length = bytes to serve.
+static int cloud_download(const char *path, CloudFileSink *sink, char *msg, size_t msg_len) {
+    if (cloud_wifi_state() != CloudWifiState::CONNECTED) {
+        snprintf(msg, msg_len, "Cloud WiFi not connected");
+        return CLOUD_ERR_NOT_CONNECTED;
+    }
+    char normalized_path[96];
+    normalize_cloud_path(path, normalized_path, sizeof(normalized_path));
+    char url[128];
+    snprintf(url, sizeof(url), "/download?path=%s", normalized_path);
+
+    memset(&g_download_ctx, 0, sizeof(g_download_ctx));
+    g_download_ctx.buffer = sink->buffer;
+    g_download_ctx.capacity = sink->capacity;
+
+    int result;
+    if (!http_request_and_wait("api.mzpico.com", url, &g_download_ctx, cloud_download_fn, 30000, &result)) {
+        snprintf(msg, msg_len, "Download timeout");
+        return CLOUD_ERR_TIMEOUT;
+    }
+    if (result != 0) {
+        snprintf(msg, msg_len, "Download failed, error code: %d", result);
+        return CLOUD_ERR_FAILED;
+    }
+    if (g_download_ctx.overflow) {
+        snprintf(msg, msg_len, "File too large");
+        return CLOUD_ERR_TOO_LARGE;
+    }
     const uint32_t MZF_HEADER_SIZE = 128;
     const uint32_t MZF_BODY_LEN_OFFSET = 18;
-
-    if (download_ctx->offset < MZF_HEADER_SIZE) {
-        mgr->setString("File too small (invalid MZF)");
-        return 2;
+    if (g_download_ctx.offset < MZF_HEADER_SIZE) {
+        snprintf(msg, msg_len, "File too small (invalid MZF)");
+        return CLOUD_ERR_INVALID;
     }
-
     uint16_t body_len;
-    memcpy(&body_len, download_ctx->buffer + MZF_BODY_LEN_OFFSET, sizeof(body_len));
-
+    memcpy(&body_len, g_download_ctx.buffer + MZF_BODY_LEN_OFFSET, sizeof(body_len));
     const uint32_t total = MZF_HEADER_SIZE + body_len;
-    if (download_ctx->offset < total) {
-        mgr->setString("File truncated (incomplete MZF)");
-        return 2;
+    if (g_download_ctx.offset < total) {
+        snprintf(msg, msg_len, "File truncated (incomplete MZF)");
+        return CLOUD_ERR_INVALID;
     }
-    if (total > mgr->payloadCapacity() ||
-        !mgr->allocateRaw(static_cast<uint16_t>(total))) {
+    sink->length = total;
+    return 0;
+}
+
+// Synchronous PicoMgr entry (core 0 context only)
+int cloud_mount_file(const char *path, PicoMgr *mgr) {
+    g_mgr_cloud.file.buffer = mgr->payloadBase();
+    g_mgr_cloud.file.capacity = mgr->payloadCapacity();
+    g_mgr_cloud.file.length = 0;
+    char msg[64];
+    int ret = cloud_download(path, &g_mgr_cloud.file, msg, sizeof(msg));
+    if (ret) { mgr->setString(msg); return 2; }
+    if (!mgr->allocateRaw(static_cast<uint16_t>(g_mgr_cloud.file.length))) {
         mgr->setString("File too large");
         return 2;
     }
     return 0;
-}
-
-int cloud_mount_file(const char *path, PicoMgr *mgr) {
-    if (cloud_wifi_state() != CloudWifiState::CONNECTED) {
-        mgr->setString("Cloud WiFi not connected");
-        return 2;
-    }
-    
-    // Normalize path and prepare download URL
-    char normalized_path[96];
-    normalize_cloud_path(path, normalized_path, sizeof(normalized_path));
-    
-    char url[128];
-    snprintf(url, sizeof(url), "/download?path=%s", normalized_path);
-    
-    // Download straight into the manager payload buffer
-    memset(&g_download_ctx, 0, sizeof(g_download_ctx));
-    g_download_ctx.buffer = mgr->payloadBase();
-    g_download_ctx.capacity = mgr->payloadCapacity();
-    int result;
-
-    if (!http_request_and_wait("api.mzpico.com", url, &g_download_ctx, cloud_download_fn, 30000, &result)) {
-        mgr->setString("Download timeout");
-        return 2;
-    }
-
-    if (result != 0) {
-        std::string msg = "Download failed, error code: " + std::to_string(result);
-        mgr->setString(msg.c_str());
-        return 2;
-    }
-
-    if (g_download_ctx.overflow) {
-        mgr->setString("File too large");
-        return 2;
-    }
-
-    return finalize_mzf_in_manager(&g_download_ctx, mgr);
 }
 
 #endif // USE_PICO_W

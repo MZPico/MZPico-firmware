@@ -7,11 +7,13 @@
 #include "file.hpp"
 #include "config.hpp"
 #include "sharpmz_ascii.h"
+#include "embedded_mzf.hpp"
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 #include <fstream>
+#include <algorithm>
 #include <sys/stat.h>
 
 FDCDevice* fdc = nullptr; QDDevice* qd = nullptr;
@@ -82,14 +84,15 @@ int main() {
     // --- 4. READDIR binary records
     cmd(uc::cmdREADDIR); wstr("sd:/games");
     { uint8_t s[4]; st4(s); CHECK(s[0] == 0x04 && s[1] == 0x41 && s[2] == 55, "READDIR first record status %02x %02x %02x", s[0], s[1], s[2]); }
-    int nrec = 0; bool sawLong = false, sawDsk = false;
+    int nrec = 0; bool sawLong = false, sawDsk = false, sawDotDot = false;
     for (;;) { cmd(uc::cmdSTSR); if (!(st() & 0x04)) break; uint8_t rec[55]; for (int i = 0; i < 55; i++) rec[i] = rd(); nrec++;
         std::string lfn((char*)rec + 23, rec[22]); std::string sfn((char*)rec + 9);
         if (lfn == "LongFileName.mzf") { sawLong = true; CHECK(rec[0] == 300 - 256 && rec[1] == 1, "size 300 LE"); CHECK(sfn == "LONGFI~1.MZF", "8.3 alias '%s'", sfn.c_str()); }
         if (lfn == "a.dsk") { sawDsk = true; CHECK(rec[8] == AM_ARC, "attrib"); }
+        if (lfn == "..") { sawDotDot = true; CHECK(rec[8] & AM_DIR, ".. is a dir"); }
     }
     cmd(uc::cmdSTSR);
-    CHECK(nrec == 2 && sawLong && sawDsk, "READDIR 2 records (got %d)", nrec);
+    CHECK(nrec == 3 && sawLong && sawDsk && sawDotDot, "READDIR .. + 2 records (got %d)", nrec);
     st_is(0x00, 0x41, 0x00, 0x00, "READDIR closed at end");
     // NEXT skips a record; root listing includes subdirs with AM_DIR
     cmd(uc::cmdREADDIR); wstr("sd:/"); int total = 0; while (st() & 0x04) { cmd(uc::cmdNEXT); total++; }
@@ -98,6 +101,7 @@ int main() {
 
     // --- 5. FILELIST text
     cmd(uc::cmdFILELIST); wstr("sd:/sub");
+    { std::string dd = rstr(), dds = rstr(); CHECK(dd == "../" && dds == "0", "FILELIST .. line '%s' '%s'", dd.c_str(), dds.c_str()); }
     { std::string name = rstr(), size = rstr(); CHECK(name == "deep/" && size == "0", "FILELIST dir line '%s' '%s'", name.c_str(), size.c_str()); }
     CHECK((st() & 0x04) == 0, "FILELIST ended");
 
@@ -147,11 +151,39 @@ int main() {
     cmd(uc::cmdCLOSE); cmd(uc::cmdGETCWD); { std::string c; for (int i = 0; i < 40; i++) { uint8_t b = rd(); if (b == 0x0D) break; c += (char)sharpmz_cnv_from(b); } CHECK(c == "sd:/", "GETCWD converted back '%s'", c.c_str()); }
     cmd(uc::cmdASCII);
 
-    // --- 10. embedded pseudo-file
+    // --- 10. embedded pseudo-file, read exactly the way the Z80 loader does:
+    //        128 header bytes, then the body length the header announces
     cmd(uc::cmdOPEN); wr(FA_READ); wstr("@menu"); st_is(0x08, 0x50, 0x00, 0x00, "OPEN @menu");
-    cmd(uc::cmdSIZE); rd(); rd(); rd(); rd(); CHECK(rd() == 0x01 && rd() == 'M', "@menu bytes");
-    cmd(uc::cmdSEEK); wr(1); wr(1); wr(0); wr(0); wr(0); CHECK(rd() == 0xCC, "@menu seek from end"); CHECK(st() & 0x20, "@menu EOF");
+    { uint8_t hdr[128]; for (int i = 0; i < 128; i++) hdr[i] = rd();
+      CHECK(hdr[0] == 0x01 && hdr[1] == 'M' && hdr[18] == 0x2c && hdr[19] == 0x01, "@menu header via loader sequence");
+      uint16_t body = hdr[18] | (hdr[19] << 8);
+      int got = 0; for (int i = 0; i < body; i++) { rd(); got++; }
+      CHECK(got == 300, "body streamed (%d)", got);
+      CHECK(st() & 0x20, "EOF after exactly header+body");
+      CHECK(rd() == 0x00, "read past end returns 0"); }
+    cmd(uc::cmdCLOSE);
+    cmd(uc::cmdOPEN); wr(FA_READ); wstr("@menu");
+    cmd(uc::cmdSIZE); { uint8_t a = rd(), b = rd(); rd(); rd(); CHECK((a | (b << 8)) == 428, "@menu SIZE 428"); }
+    CHECK(rd() == 0x01 && rd() == 'M', "@menu first bytes after SIZE");
+    cmd(uc::cmdSEEK); wr(1); wr(1); wr(0); wr(0); wr(0); rd(); CHECK(st() & 0x20, "@menu EOF after seek-from-end + read");
     cmd(uc::cmdOPEN); wr(FA_WRITE); wstr("@menu"); { uint8_t s[4]; st4(s); CHECK(s[0] & 0x80, "@menu not writable"); }
+    cmd(uc::cmdCLOSE);
+
+    // --- 10b. the full 42 KB @basic image, byte-exact through the loader sequence
+    cmd(uc::cmdOPEN); wr(FA_READ); wstr("@basic"); st_is(0x08, 0x50, 0x00, 0x00, "OPEN @basic");
+    { uint8_t hdr[128]; for (int i = 0; i < 128; i++) hdr[i] = rd();
+      uint32_t sz = hdr[18] | (hdr[19] << 8);
+      CHECK(sz == sizeof(mzf_basic) - 128, "@basic header size %u matches the image", (unsigned)sz);
+      bool ok = memcmp(hdr, mzf_basic, 128) == 0; size_t bad = 0;
+      for (uint32_t i = 0; i < sz; i++) { uint8_t b = rd(); if (b != mzf_basic[128 + i]) { if (!bad) bad = 128 + i + 1; ok = false; } }
+      CHECK(ok, "@basic body byte-exact (first mismatch at %zu)", bad);
+      CHECK(st() & 0x20, "@basic EOF after exactly header+body"); }
+    cmd(uc::cmdCLOSE); st_is(0x00, 0x54, 0x00, 0x00, "CLOSE @basic");
+    // SERVEDSUM: 16-bit sum of everything served since OPEN (loader verification)
+    cmd(uc::cmdOPEN); wr(FA_READ); wstr("@menu");
+    { uint16_t sum = 0; for (size_t i = 0; i < sizeof(mzf_menu); i++) sum += rd();
+      cmd(uc::cmdX_SERVEDSUM); uint8_t s[4]; st4(s); CHECK((s[0] & 0x02) && s[2] == 2, "SERVEDSUM output 2 bytes (%02x %02x)", s[0], s[2]);
+      uint16_t got = rd(); got |= rd() << 8; CHECK(got == sum, "SERVEDSUM %04x == %04x", got, sum); }
     cmd(uc::cmdCLOSE);
 
     // --- 11. FDDMOUNT drive 1 and eject, QD via id 5
@@ -166,6 +198,24 @@ int main() {
     cmd(uc::cmdX_GETCONFIG); wstr("menu"); { uint8_t s[4]; st4(s); CHECK(s[0] == 0x04 && s[2] == 80, "GETCONFIG record stream"); uint8_t rec[80]; for (int i = 0; i < 80; i++) rec[i] = rd(); CHECK(!strcmp((char*)rec, "key_b") && !strcmp((char*)rec + 16, "Basic|@basic"), "config record 1"); for (int i = 0; i < 80; i++) rd(); CHECK((st() & 0x04) == 0, "config stream ended"); }
     cmd(uc::cmdX_INFO); { uint8_t s[4]; st4(s); CHECK(s[2] == 16, "INFO 16 bytes"); for (int i = 0; i < 16; i++) rd(); }
     cmd(0x77); { uint8_t s[4]; st4(s); CHECK((s[0] & 0x80) && s[1] == 0x77 && s[2] == uc::errNOT_IMPLEMENTED, "unknown command"); }
+
+    // --- 12b. SETSORT: explorer listing = "..", dirs, then files sorted, non-launchable dropped
+    writefile(root + "/games/readme.txt", "no"); writefile(root + "/games/Zeta.mzf", "z"); writefile(root + "/games/beta.DSK", "b");
+    system(("mkdir -p " + root + "/games/sub2 " + root + "/games/Alpha").c_str());
+    cmd(uc::cmdX_SETSORT); wr(0x02); st_is(0x00, 0x96, 0x00, 0x00, "SETSORT (launchable filter)");
+    cmd(uc::cmdREADDIR); wstr("sd:/games");
+    { std::vector<std::string> names; for (;;) { cmd(uc::cmdSTSR); if (!(st() & 0x04)) break; uint8_t rec[55]; for (int i = 0; i < 55; i++) rec[i] = rd(); names.push_back(std::string((char*)rec + 23, rec[22])); }
+      std::sort(names.begin(), names.end());
+      std::vector<std::string> want = {"..", "Alpha", "LongFileName.mzf", "Zeta.mzf", "a.dsk", "beta.DSK", "sub2"};
+      std::sort(want.begin(), want.end());
+      CHECK(names == want, "filtered listing has %zu entries: %s", names.size(), [&]{ std::string o; for (auto& n : names) o += n + " "; return o; }().c_str()); }
+    cmd(uc::cmdREADDIR); wstr("sd:/"); { int n = 0; bool dotdot = false; for (;;) { cmd(uc::cmdSTSR); if (!(st() & 0x04)) break; uint8_t rec[55]; for (int i = 0; i < 55; i++) rec[i] = rd(); if (std::string((char*)rec + 23, rec[22]) == "..") dotdot = true; n++; } CHECK(!dotdot && n == 2, "root listing has no .. and is filtered (n=%d)", n); }
+    cmd(uc::cmdX_SETSORT); wr(0x00);
+    cmd(uc::cmdREADDIR); wstr("sd:/games"); { int n = 0; for (;;) { cmd(uc::cmdSTSR); if (!(st() & 0x04)) break; cmd(uc::cmdNEXT); n++; } CHECK(n == 8, "unfiltered listing has .. + 7 (n=%d)", n); }
+
+    // --- 12c. cloud paths without WiFi support: invalid drive, no state change
+    cmd(uc::cmdREADDIR); wstr("cloud:/"); { uint8_t s[4]; st4(s); CHECK((s[0] & 0x80) && s[3] == FR_INVALID_DRIVE && !(s[0] & 0x40), "cloud READDIR without W"); }
+    cmd(uc::cmdOPEN); wr(FA_READ); wstr("cloud:/x.mzf"); { uint8_t s[4]; st4(s); CHECK((s[0] & 0x80) && s[3] == FR_INVALID_DRIVE, "cloud OPEN without W"); }
 
     // --- 13. RESET closes everything and returns to the root
     cmd(uc::cmdCHDIR); wstr("games"); cmd(uc::cmdOPEN); wr(FA_READ); wstr("a.dsk"); cmd(uc::cmdRESET);

@@ -98,6 +98,10 @@ endif()
 
 add_dependencies(mzpico generate_mzf_headers)
 target_compile_definitions(mzpico PRIVATE MZPICO_VERSION="${VERSION_TAG}")
+option(UNICARD_TRACE "Diagnostic: trace the unicard protocol to sd:/unicard.log" OFF)
+if(UNICARD_TRACE)
+    target_compile_definitions(mzpico PRIVATE UNICARD_TRACE=1)
+endif()
 
 string(TOLOWER ${BOARD} BOARD_L)
 string(TOLOWER ${FLASH_SIZE} FLASH_L)

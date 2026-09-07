@@ -15,7 +15,24 @@ All notable changes to the MZPico firmware.
   detects it as a repository; UNIBOOT and the Unicard manager can load through
   it. First step of the manager migration (docs/unicard-migration-plan.md).
 - `tests/unicard_sim`: host-side protocol harness for the device.
+- SETSORT extension (0x96): sorted, launchable-filtered directory streams for
+  the explorer, with `..` on non-root paths.
+- Cloud (Pico W) through the `unicard` device: `cloud:/` listings and file
+  loads run on core 0 with status bit 6 signalling progress.
+- SERVEDSUM extension (0x97): 16-bit sum of the bytes served from the open
+  file, for loaders that want to verify a transfer.
+
+### Changed
+
+- The menu and explorer (`external/manager`) talk to the firmware through the
+  Unicard protocol on 0x50/0x51 instead of `pico_mgr` on 0x40. Same features;
+  programs stream from an open file (no size cap, no 48 KB transfer buffer),
+  listings stream one record at a time and are sorted on the Z80 (the 34 KB
+  server-side sort array is gone). `[unicard]` is now required by the menu and
+  explorer;
+  `[pico_mgr]` is no longer used by them and will be removed in v0.4.0.
 - FDC: `ejectDrive()` (used by FDDMOUNT with an empty path).
+
 ## v0.3.2 — 2026-09-07
 
 Bug-fix release for the v0.3.1 Deluxe bus change. No configuration changes,

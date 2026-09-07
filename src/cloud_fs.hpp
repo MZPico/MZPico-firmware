@@ -18,6 +18,27 @@ enum class CloudWifiState : uint8_t {
 // Query current WiFi state
 CloudWifiState cloud_wifi_state(void);
 
+#include <cstddef>
+// Generic (PicoMgr-independent) cloud access, used by the unicard device.
+// Sinks and contexts must outlive the request and must not be stack locals
+// (core 0 fills them). Completion runs on core 0: `result` 0 = OK, else a
+// CLOUD_ERR_* code; `msg` is a short text.
+enum {
+    CLOUD_ERR_NOT_CONNECTED = 1, CLOUD_ERR_TIMEOUT = 2, CLOUD_ERR_FAILED = 3,
+    CLOUD_ERR_TOO_LARGE = 4, CLOUD_ERR_BUSY = 5, CLOUD_ERR_NO_MEMORY = 6,
+    CLOUD_ERR_INVALID = 7
+};
+struct CloudDirSink {
+    void *ctx;
+    void (*add)(void *ctx, const char *name, size_t name_len, bool is_dir, uint32_t size);
+};
+struct CloudFileSink {
+    uint8_t *buffer;
+    uint32_t capacity;
+    uint32_t length; // filled on completion
+};
+typedef void (*CloudCompleteFn)(void *ctx, int result, const char *msg);
+
 #ifdef USE_PICO_W
 
 // Configuration for WiFi; may be extended with static IP, cert pinning, etc.
@@ -52,5 +73,8 @@ int cloud_mount_file(const char *path, PicoMgr *mgr);
 // /WAIT across the HTTP exchange. Returns false while a command or an
 // abandoned HTTP request is still in flight.
 bool cloud_submit_command(PicoMgr *mgr, bool list_dir, const char *path);
+
+bool cloud_submit_dir(const char *path, CloudDirSink *sink, CloudCompleteFn done, void *done_ctx);
+bool cloud_submit_file(const char *path, CloudFileSink *sink, CloudCompleteFn done, void *done_ctx);
 
 #endif // USE_PICO_W

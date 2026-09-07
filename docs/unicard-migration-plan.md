@@ -1,6 +1,6 @@
 # Migrating the manager interface to the Unicard protocol
 
-Status: phase 1 complete (device + host harness, hardware-validated with MZIX on 2026-09-07). Phase 2 (manager migration) next. Target release: v0.4.0.
+Status: phase 1 complete (hardware-validated with MZIX, 2026-09-07); phase 2 implemented (manager on the Unicard protocol, cloud through the device), awaiting hardware validation. Phase 3 (remove pico_mgr) next. Target release: v0.4.0.
 
 ## Decision
 
@@ -157,6 +157,22 @@ reverts — documented difference).
 
 `explorer.c` keeps `DIR_ENTRY entries[930]`; only the fill routine changes.
 Menu and explorer binaries are rebuilt into `mzf_*.hpp` as today.
+
+## Phase 2 notes (as implemented)
+
+- `external/manager` branch `unicard-protocol`: `mz-comm.{c,h}` is a Unicard
+  client with the same public API, so `explorer.c`/`menu.c`/`manager.c` are
+  unchanged. Listings use SETSORT (sort + launchable filter on the Pico, `..`
+  for non-root), config uses GETCONFIG records, volumes LISTVOL, mounts
+  FDDMOUNT (drive 1 / QD id 5), loading OPEN + streamed INIR then `jp 0xECFC`.
+- Cloud: `cloud_fs.cpp` now exposes PicoMgr-independent sinks
+  (`cloud_submit_dir`/`cloud_submit_file`); the device allocates a transfer
+  buffer per cloud OPEN (48 KB, freed on CLOSE) and the listing array per
+  cloud READDIR, reports status bit 6 while core 0 works, and finalises on
+  the next port access. The temp-file variant in the design above was dropped:
+  core 0 must not touch the SD (single-context storage).
+- `pico_mgr` still builds and works (its cloud calls go through wrappers);
+  both devices can be in the ini during validation.
 
 ## Phases and exit criteria
 

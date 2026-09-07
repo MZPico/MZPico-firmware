@@ -29,6 +29,48 @@
 
 REGISTER_MZ_DEVICE(UnicardDevice)
 
+#ifdef UNICARD_TRACE
+// Diagnostic protocol trace: every port access is appended to sd:/unicard.log
+// as "<kind> <A15-A8> <byte>": C=command write, W=data write, R=data read,
+// S=status read; the high address byte is the Z80's A (OUT (n),A / IN A,(n))
+// or B (INIR/OTIR), so a genuine OUT (n),A entry always has hi == byte and a
+// bus-level phantom capture shows up as one that does not. The ring is
+// flushed whenever it fills (from any handler, under EXWAIT) and at Z80
+// reset, so nothing is dropped; each flush costs one SD append.
+static constexpr uint16_t TRACE_N = 1024;
+static uint32_t g_trace[TRACE_N];
+static uint16_t g_trace_pos = 0;
+static bool g_trace_started = false;
+static FIL g_trace_fil;
+static char g_trace_line[64 * 8 + 8];
+static void trace_flush(void) {
+    if (g_trace_pos == 0) return;
+    BYTE mode = g_trace_started ? (FA_WRITE | FA_OPEN_APPEND) : (FA_WRITE | FA_CREATE_ALWAYS);
+    if (f_open(&g_trace_fil, "sd:/unicard.log", mode) != FR_OK) { g_trace_pos = 0; return; }
+    g_trace_started = true;
+    for (uint16_t i = 0; i < g_trace_pos; i += 64) {
+        int n = 0;
+        uint16_t end = static_cast<uint16_t>(i + 64 < g_trace_pos ? i + 64 : g_trace_pos);
+        for (uint16_t k = i; k < end; k++) {
+            uint32_t e = g_trace[k];
+            n += snprintf(g_trace_line + n, sizeof(g_trace_line) - n, "%c %02X %02X\n",
+                          static_cast<char>(e >> 16), (e >> 8) & 0xff, e & 0xff);
+        }
+        UINT bw;
+        f_write(&g_trace_fil, g_trace_line, n, &bw);
+    }
+    f_close(&g_trace_fil);
+    g_trace_pos = 0;
+}
+static inline void trace(char kind, uint8_t hi, uint8_t v) {
+    g_trace[g_trace_pos++] = (static_cast<uint32_t>(kind) << 16) | (hi << 8) | v;
+    if (g_trace_pos >= TRACE_N) trace_flush();
+}
+#define TRACE(k, hi, v) trace(k, hi, v)
+#else
+#define TRACE(k, hi, v) do {} while (0)
+#endif
+
 UnicardDevice::UnicardDevice() {
     readMappings[0].fn = UnicardDevice::readStatus;
     readMappings[1].fn = UnicardDevice::readData;
@@ -78,12 +120,20 @@ int UnicardDevice::flush() {
 // Z80 reset = cmdRESET: the Unicard closes everything and forgets the
 // session (its manager re-selects the charset it wants)
 void UnicardDevice::softReset() {
-    closeFile();
-    closeDir();
+    // An in-flight cloud transfer still owns its buffers on core 0: keep
+    // it (the fresh session sees "busy" until it completes)
+    if (phase_ != Phase::ASYNC) {
+        closeFile();
+        closeDir();
+    }
     cnv_ = false;
+    sort_flags_ = 0;
     cmd_ = uc::cmdRESET;
-    phase_ = Phase::DONE;
+    if (phase_ != Phase::ASYNC) phase_ = Phase::DONE;
     sts_pos_ = 0;
+#ifdef UNICARD_TRACE
+    trace_flush(); // Z80 reset: flush whatever is pending
+#endif
     ff_res_ = FR_OK;
     setOk();
     if (device_count) {
@@ -98,13 +148,21 @@ void UnicardDevice::softReset() {
 
 void UnicardDevice::closeFile() {
     if (file_open_) { f_close(&fil_); file_open_ = false; }
+    if (cloud_buf_) { free(cloud_buf_); cloud_buf_ = nullptr; }
     mem_ = nullptr; mem_size_ = mem_pos_ = 0;
     file_mode_ = 0;
 }
 
 void UnicardDevice::closeDir() {
     if (stream_ == Stream::DIR_BIN || stream_ == Stream::DIR_TXT) f_closedir(&dir_);
+    freeSorted();
     streamStop();
+}
+
+void UnicardDevice::freeSorted() {
+    free(sorted_);
+    sorted_ = nullptr;
+    sorted_n_ = sorted_i_ = 0;
 }
 
 void UnicardDevice::streamStop() {
@@ -222,6 +280,7 @@ void UnicardDevice::onParamsComplete() {
     case uc::cmdRTCSETD:  cmdRtcSet(true); break;
     case uc::cmdRTCSETT:  cmdRtcSet(false); break;
     case uc::cmdX_GETCONFIG: cmdGetConfig(); break;
+    case uc::cmdX_SETSORT:   sort_flags_ = buf_[0]; setOk(); break;
     default:
         setError(uc::errNOT_IMPLEMENTED);
     }
@@ -231,6 +290,10 @@ void UnicardDevice::onParamsComplete() {
 
 void UnicardDevice::doCommand(uint8_t cmd) {
     if (cmd == uc::cmdSTSR) return; // rewinds the status pointer only (done by caller)
+    if (phase_ == Phase::ASYNC) {   // core 0 owns the buffers until it completes
+        sts_err_ = true; err_code_ = uc::errBUSY;
+        return;
+    }
     cmd_ = cmd;
     sts_err_ = true; err_code_ = uc::errNONE;
     phase_ = Phase::DONE;
@@ -303,6 +366,10 @@ void UnicardDevice::doCommand(uint8_t cmd) {
     case uc::cmdX_GETCONFIG:  beginParams("S"); break;
     case uc::cmdX_WIFISTATUS: { uint8_t s = static_cast<uint8_t>(cloud_wifi_state()); setOutput(&s, 1, false); break; }
     case uc::cmdX_INFO:       cmdInfo(); break;
+    // Sum of every data byte served from the open file since OPEN: lets a
+    // loader verify what the Z80 actually received against what was sent
+    case uc::cmdX_SERVEDSUM:  { uint8_t s[2] = {static_cast<uint8_t>(served_sum_), static_cast<uint8_t>(served_sum_ >> 8)}; setOutput(s, 2, false); break; }
+    case uc::cmdX_SETSORT:    beginParams("B"); break;
     default:
         setError(uc::errNOT_IMPLEMENTED);
     }
@@ -431,12 +498,41 @@ void UnicardDevice::cmdStat() {
     setOutput(buf_, FILINFO_RECORD_SIZE, false);
 }
 
+struct UnicardDevice_SortRecCmp { uint32_t size; uint8_t attrib; char name[32]; };
+
+static bool launchable(const char* name) {
+    const char* dot = strrchr(name, '.');
+    if (!dot) return false;
+    return !strcasecmp(dot + 1, "MZF") || !strcasecmp(dot + 1, "M12") ||
+           !strcasecmp(dot + 1, "DSK") || !strcasecmp(dot + 1, "MZQ");
+}
+
+static int sortrec_compare(const void* a, const void* b) {
+    const UnicardDevice_SortRecCmp* x = static_cast<const UnicardDevice_SortRecCmp*>(a);
+    const UnicardDevice_SortRecCmp* y = static_cast<const UnicardDevice_SortRecCmp*>(b);
+    bool dx = x->attrib & AM_DIR, dy = y->attrib & AM_DIR;
+    if (dx != dy) return dx ? -1 : 1;
+    if (!strcmp(x->name, "..")) return -1;
+    if (!strcmp(y->name, "..")) return 1;
+    return strcasecmp(x->name, y->name);
+}
+
 void UnicardDevice::cmdReaddir(bool txt) {
+    // SETSORT bit1 = launchable-only filter and a synthesized ".." for
+    // non-root paths (both cheap, streamed). Sorting is done by the client
+    // (SETSORT bit0 is accepted but the ordering is the client's job now) -
+    // collecting every record into a firmware heap array cost tens of KB and
+    // starved FatFS's per-readdir LFN allocation on the W heap.
+    if (isCloudPath(reinterpret_cast<char*>(buf_))) { startCloudDir(reinterpret_cast<char*>(buf_)); return; }
     FRESULT r = f_opendir(&dir_, reinterpret_cast<char*>(buf_));
     if (r != FR_OK) { ffDone(r); return; }
     ff_res_ = FR_OK;
     stream_ = txt ? Stream::DIR_TXT : Stream::DIR_BIN;
     cmd_ = txt ? uc::cmdFILELIST : uc::cmdREADDIR;
+    // ".." for a non-root path (path is "vol:...", root = "vol:" or "vol:/")
+    const char* pp = strchr(reinterpret_cast<char*>(buf_), ':');
+    pp = pp ? pp + 1 : reinterpret_cast<char*>(buf_);
+    dir_dotdot_pending_ = !(pp[0] == 0 || (pp[0] == '/' && pp[1] == 0));
     streamNext();
 }
 
@@ -448,9 +544,33 @@ void UnicardDevice::streamNext() {
     switch (stream_) {
     case Stream::DIR_BIN:
     case Stream::DIR_TXT: {
-        FRESULT r = f_readdir(&dir_, &fno_);
-        if (r != FR_OK) { closeDir(); ffDone(r); return; }
-        if (fno_.fname[0] == 0) { closeDir(); ff_res_ = FR_OK; setOk(); return; } // end of directory
+        // Synthesize ".." for a non-root path first (FatFS f_readdir does not
+        // return it), so the explorer's Back entry is present.
+        if (dir_dotdot_pending_) {
+            dir_dotdot_pending_ = false;
+            if (stream_ == Stream::DIR_BIN) {
+                memset(&fno_, 0, sizeof(fno_));
+                fno_.fattrib = AM_DIR;
+                fno_.fname[0] = fno_.fname[1] = '.';
+                packFilinfo(fno_, rec_);
+                rec_count_ = FILINFO_RECORD_SIZE;
+            } else {
+                int n = snprintf(reinterpret_cast<char*>(rec_), sizeof(rec_), "../\r0\r");
+                rec_count_ = static_cast<uint8_t>(n);
+            }
+            ff_res_ = FR_OK; setOk();
+            return;
+        }
+        FRESULT r;
+        for (;;) {
+            r = f_readdir(&dir_, &fno_);
+            if (r != FR_OK) { closeDir(); ffDone(r); return; }
+            if (fno_.fname[0] == 0) { closeDir(); ff_res_ = FR_OK; setOk(); return; } // end
+            if (fno_.fattrib & (AM_HID | AM_SYS)) continue;
+            // SETSORT bit1: keep directories and launchable files only
+            if ((sort_flags_ & 0x02) && !(fno_.fattrib & AM_DIR) && !launchable(fno_.fname)) continue;
+            break;
+        }
         if (stream_ == Stream::DIR_BIN) {
             packFilinfo(fno_, rec_);
             rec_count_ = FILINFO_RECORD_SIZE;
@@ -465,6 +585,20 @@ void UnicardDevice::streamNext() {
             rec_count_ = static_cast<uint8_t>(n);
         }
         ff_res_ = FR_OK;
+        setOk();
+        return;
+    }
+    case Stream::DIR_SORTED: {
+        if (sorted_i_ >= sorted_n_) { freeSorted(); streamStop(); ff_res_ = FR_OK; setOk(); return; }
+        const SortRec& d = sorted_[sorted_i_++];
+        memset(rec_, 0, FILINFO_RECORD_SIZE);
+        put_u32(rec_, d.size);
+        rec_[8] = d.attrib;
+        size_t ln = strlen(d.name);
+        if (ln > UC_MAX_LFN - 1) ln = UC_MAX_LFN - 1;
+        rec_[22] = static_cast<uint8_t>(ln);
+        memcpy(rec_ + 23, d.name, ln);
+        rec_count_ = FILINFO_RECORD_SIZE;
         setOk();
         return;
     }
@@ -505,7 +639,9 @@ void UnicardDevice::mountEmbedded(const std::string& path, bool& handled) {
 
 void UnicardDevice::cmdOpen() {
     file_mode_ = buf_[0];
+    served_sum_ = 0;
     const char* path = reinterpret_cast<char*>(buf_ + 1);
+    if (isCloudPath(path)) { startCloudFile(path); return; }
     if (path[0] == '@') {
         bool handled;
         mountEmbedded(path, handled);
@@ -592,18 +728,127 @@ void UnicardDevice::cmdRtcSet(bool date) {
     phase_ = Phase::DONE;
 }
 
+// -------------------- cloud (core 0 async) --------------------
+
+bool UnicardDevice::isCloudPath(const char* p) {
+    return (p[0] == 'c' || p[0] == 'C') && !strncasecmp(p, "cloud:", 6);
+}
+
+void UnicardDevice::cloudSinkAdd(void* ctx, const char* name, size_t len, bool is_dir, uint32_t size) {
+    auto* d = static_cast<UnicardDevice*>(ctx);
+    if (!d->sorted_ || d->sorted_n_ >= SORT_MAX) return;
+    SortRec& r = d->sorted_[d->sorted_n_];
+    r.size = size;
+    r.attrib = is_dir ? AM_DIR : AM_ARC;
+    if (len > sizeof(r.name) - 1) len = sizeof(r.name) - 1;
+    memcpy(r.name, name, len); r.name[len] = 0;
+    if ((d->sort_flags_ & 0x02) && !is_dir && !launchable(r.name)) return; // filtered
+    d->sorted_n_++;
+}
+
+void UnicardDevice::cloudDone(void* ctx, int result, const char*) {
+    auto* d = static_cast<UnicardDevice*>(ctx);
+    d->async_result_ = result;
+    __asm volatile("" ::: "memory");
+    d->async_done_ = true;
+}
+
+void UnicardDevice::startCloudDir(const char* path) {
+#ifdef USE_PICO_W
+    closeFile();
+    closeDir();
+    sorted_ = static_cast<SortRec*>(malloc(sizeof(SortRec) * SORT_MAX));
+    if (!sorted_) { ff_res_ = static_cast<FRESULT>(CLOUD_ERR_NO_MEMORY); setError(uc::errCLOUD); return; }
+    sorted_n_ = sorted_i_ = 0;
+    dir_sink_.ctx = this;
+    dir_sink_.add = cloudSinkAdd;
+    async_done_ = false;
+    async_kind_ = AsyncKind::DIR;
+    if (!cloud_submit_dir(path, &dir_sink_, cloudDone, this)) {
+        freeSorted();
+        ff_res_ = static_cast<FRESULT>(CLOUD_ERR_BUSY); setError(uc::errCLOUD);
+        return;
+    }
+    cmd_ = uc::cmdREADDIR;
+    setOk();
+    phase_ = Phase::ASYNC;
+#else
+    (void)path;
+    ffDone(FR_INVALID_DRIVE);
+#endif
+}
+
+void UnicardDevice::startCloudFile(const char* path) {
+#ifdef USE_PICO_W
+    if (file_mode_ & FA_WRITE) { ffDone(FR_WRITE_PROTECTED); return; }
+    cloud_buf_ = static_cast<uint8_t*>(malloc(CLOUD_FILE_MAX));
+    if (!cloud_buf_) { ff_res_ = static_cast<FRESULT>(CLOUD_ERR_NO_MEMORY); setError(uc::errCLOUD); return; }
+    file_sink_.buffer = cloud_buf_;
+    file_sink_.capacity = CLOUD_FILE_MAX;
+    file_sink_.length = 0;
+    async_done_ = false;
+    async_kind_ = AsyncKind::FILE;
+    if (!cloud_submit_file(path, &file_sink_, cloudDone, this)) {
+        free(cloud_buf_); cloud_buf_ = nullptr;
+        ff_res_ = static_cast<FRESULT>(CLOUD_ERR_BUSY); setError(uc::errCLOUD);
+        return;
+    }
+    setOk();
+    phase_ = Phase::ASYNC;
+#else
+    (void)path;
+    ffDone(FR_INVALID_DRIVE);
+#endif
+}
+
+// Core 1, on the first port access after core 0 reported completion
+void UnicardDevice::finishAsync() {
+    if (phase_ != Phase::ASYNC || !async_done_) return;
+    __asm volatile("" ::: "memory");
+    int result = async_result_;
+    phase_ = Phase::DONE;
+    if (result) {
+        if (async_kind_ == AsyncKind::DIR) freeSorted();
+        else if (cloud_buf_) { free(cloud_buf_); cloud_buf_ = nullptr; }
+        async_kind_ = AsyncKind::NONE;
+        ff_res_ = static_cast<FRESULT>(result);
+        setError(uc::errCLOUD);
+        return;
+    }
+    if (async_kind_ == AsyncKind::DIR) {
+        if (sort_flags_ & 0x01) qsort(sorted_, sorted_n_, sizeof(SortRec), sortrec_compare);
+        sorted_i_ = 0;
+        stream_ = Stream::DIR_SORTED;
+        ff_res_ = FR_OK;
+        streamNext();
+    } else {
+        mem_ = cloud_buf_;
+        mem_size_ = file_sink_.length;
+        mem_pos_ = 0;
+        file_mode_ = (file_mode_ & uc::FA_UNIMGR_ASCII_CNV) | FA_READ;
+        ff_res_ = FR_OK;
+        setOk();
+    }
+    async_kind_ = AsyncKind::NONE;
+}
+
 // -------------------- port handlers (core 1, EXWAIT) --------------------
 
-RAM_FUNC int UnicardDevice::writeCmd(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
+RAM_FUNC int UnicardDevice::writeCmd(MZDevice* self, uint8_t, uint8_t dt, uint8_t hi) {
     auto* d = static_cast<UnicardDevice*>(self);
+    TRACE('C', hi, dt);
     d->sts_pos_ = 0;
+    d->finishAsync();
     d->doCommand(dt);
     return 0;
 }
 
-RAM_FUNC int UnicardDevice::writeData(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
+RAM_FUNC int UnicardDevice::writeData(MZDevice* self, uint8_t, uint8_t dt, uint8_t hi) {
     auto* d = static_cast<UnicardDevice*>(self);
+    TRACE('W', hi, dt);
     d->sts_pos_ = 0;
+    d->finishAsync();
+    if (d->phase_ == Phase::ASYNC) { d->sts_err_ = true; d->err_code_ = uc::errBUSY; return 0; }
     d->sts_err_ = true; d->err_code_ = uc::errNONE;
     if (d->phase_ == Phase::PARAMRQ) { d->onParamByte(dt); return 0; }
     // putc into the open file
@@ -617,11 +862,13 @@ RAM_FUNC int UnicardDevice::writeData(MZDevice* self, uint8_t, uint8_t dt, uint8
     return 0;
 }
 
-RAM_FUNC int UnicardDevice::readData(MZDevice* self, uint8_t, uint8_t* dt, uint8_t) {
+RAM_FUNC int UnicardDevice::readData(MZDevice* self, uint8_t, uint8_t* dt, uint8_t hi) {
     auto* d = static_cast<UnicardDevice*>(self);
     d->sts_pos_ = 0;
-    d->sts_err_ = true; d->err_code_ = uc::errNONE;
+    d->finishAsync();
     uint8_t ret = 0x00;
+    if (d->phase_ == Phase::ASYNC) { d->sts_err_ = true; d->err_code_ = uc::errBUSY; *dt = 0; return 0; }
+    d->sts_err_ = true; d->err_code_ = uc::errNONE;
 
     if (d->phase_ == Phase::DOUTRQ) {
         ret = *d->bufp_++;
@@ -644,6 +891,7 @@ RAM_FUNC int UnicardDevice::readData(MZDevice* self, uint8_t, uint8_t* dt, uint8
             ret = d->mem_[d->mem_pos_++];
             if (d->file_mode_ & uc::FA_UNIMGR_ASCII_CNV) ret = sharpmz_cnv_to(ret);
         }
+        d->served_sum_ += ret;
         d->setOk();
     } else if (d->file_open_) {
         d->cmd_ = uc::cmdINTGETC;
@@ -652,21 +900,25 @@ RAM_FUNC int UnicardDevice::readData(MZDevice* self, uint8_t, uint8_t* dt, uint8
         d->ff_res_ = f_read(&d->fil_, &v, 1, &br);
         if (d->ff_res_ != FR_OK) { d->err_code_ = uc::errFATFS; *dt = 0; return 0; }
         if (br == 1) ret = (d->file_mode_ & uc::FA_UNIMGR_ASCII_CNV) ? sharpmz_cnv_to(v) : v;
+        d->served_sum_ += ret;
         d->setOk();
     } else {
         d->err_code_ = uc::errBAD_PARAM; // unexpected data-port read
     }
+    TRACE('R', hi, ret);
     *dt = ret;
     return 0;
 }
 
-RAM_FUNC int UnicardDevice::readStatus(MZDevice* self, uint8_t, uint8_t* dt, uint8_t) {
+RAM_FUNC int UnicardDevice::readStatus(MZDevice* self, uint8_t, uint8_t* dt, uint8_t hi) {
     auto* d = static_cast<UnicardDevice*>(self);
     uint8_t ret = 0;
+    if (d->sts_pos_ == 0) d->finishAsync();
     switch (d->sts_pos_) {
     case 0:
         if (d->phase_ == Phase::PARAMRQ) ret |= 0x01;
         if (d->phase_ == Phase::DOUTRQ)  ret |= 0x02;
+        if (d->phase_ == Phase::ASYNC)   ret |= 0x40;
         if (d->stream_ != Stream::NONE)  ret |= 0x04;
         if (d->fileOpen()) {
             if (d->file_mode_ & FA_READ)  ret |= 0x08;
@@ -691,6 +943,7 @@ RAM_FUNC int UnicardDevice::readStatus(MZDevice* self, uint8_t, uint8_t* dt, uin
         ret = 0x00; // parked
     }
     if (d->sts_pos_ < 4) d->sts_pos_++;
+    TRACE('S', hi, ret);
     *dt = ret;
     return 0;
 }

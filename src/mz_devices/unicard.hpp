@@ -12,6 +12,7 @@
 #include "mz_devices.hpp"
 #include "common.hpp"
 #include "ff.h"
+#include "cloud_fs.hpp"
 
 constexpr uint8_t UNICARD_DEFAULT_BASE_PORT = 0x50;
 constexpr const char UNICARD_ID[] = "unicard";
@@ -33,7 +34,7 @@ enum : uint8_t {
     cmdRTCSETD = 0x60, cmdRTCSETT = 0x61, cmdRTCGETD = 0x62, cmdRTCGETT = 0x63,
     // MZPico extensions (docs/unicard-migration-plan.md)
     cmdX_LISTVOL = 0x90, cmdX_GETCONFIG = 0x92, cmdX_WIFISTATUS = 0x93,
-    cmdX_INFO = 0x95,
+    cmdX_INFO = 0x95, cmdX_SETSORT = 0x96, cmdX_SERVEDSUM = 0x97,
     // Internal: reported in status byte 1 while streaming a file
     cmdINTGETC = 0xF0, cmdINTPUTC = 0xF1
 };
@@ -41,7 +42,8 @@ enum : uint8_t {
 // Status byte 2 when ERROR is set (MZPico extension; the Unicard returns 0)
 enum : uint8_t {
     errNONE = 0, errNOT_IMPLEMENTED = 1, errBAD_PARAM = 2, errOVERFLOW = 3,
-    errNO_FILE = 4, errBUSY = 5, errFATFS = 6 // see status byte 3
+    errNO_FILE = 4, errBUSY = 5, errFATFS = 6, // see status byte 3
+    errCLOUD = 7 // status byte 3 = CLOUD_ERR_*
 };
 
 constexpr uint8_t FA_UNIMGR_ASCII_CNV = 0x20; // OPEN mode bit: SharpASCII file
@@ -68,8 +70,8 @@ public:
     RAM_FUNC static int readData(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr);
 
 private:
-    enum class Phase : uint8_t { DONE, PARAMRQ, DOUTRQ };
-    enum class Stream : uint8_t { NONE, DIR_BIN, DIR_TXT, CONFIG };
+    enum class Phase : uint8_t { DONE, PARAMRQ, DOUTRQ, ASYNC };
+    enum class Stream : uint8_t { NONE, DIR_BIN, DIR_TXT, DIR_SORTED, CONFIG };
 
     static constexpr uint16_t PARAM_BUFFER_SIZE = 255;
     static constexpr uint16_t REC_BUFFER_SIZE = 96;   // FILINFO 55, config record 80
@@ -103,6 +105,7 @@ private:
     void cmdChdir();
     void cmdStat();
     void cmdReaddir(bool txt);
+    void freeSorted();
     void cmdFddMount();
     void cmdRtcGet(bool date);
     void cmdRtcSet(bool date);
@@ -112,6 +115,13 @@ private:
     void cmdGetConfig();
     void cmdInfo();
     void mountEmbedded(const std::string& path, bool& handled);
+    // cloud:/ paths run on core 0 (WiFi/HTTP); status bit 6 = in progress
+    static bool isCloudPath(const char* p);
+    void startCloudDir(const char* path);
+    void startCloudFile(const char* path);
+    void finishAsync();
+    static void cloudSinkAdd(void* ctx, const char* name, size_t len, bool is_dir, uint32_t size);
+    static void cloudDone(void* ctx, int result, const char* msg);
 
     // --- state
     uint8_t cmd_ = uc::cmdRESET;
@@ -135,6 +145,16 @@ private:
     DIR dir_{};
     FILINFO fno_{};                    // member: FF_MAX_LFN makes it too big for the core-1 stack
     uint16_t cfg_idx_ = 0;
+    bool dir_dotdot_pending_ = false;
+    // SETSORT extension (explorer listings): sort directories first, names
+    // case-insensitively, optionally keep only launchable files. Records are
+    // collected into a temporary heap array for the scan; freed when the
+    // stream ends. Falls back to the unsorted stream when the heap is short.
+    struct SortRec { uint32_t size; uint8_t attrib; char name[32]; };
+    static constexpr uint16_t SORT_MAX = 256; // cloud listings only (local streams)
+    uint8_t sort_flags_ = 0;
+    SortRec* sorted_ = nullptr;
+    uint16_t sorted_n_ = 0, sorted_i_ = 0;
     std::string cfg_section_;
 
     FIL fil_{};
@@ -142,6 +162,16 @@ private:
     uint8_t file_mode_ = 0;
     const uint8_t* mem_ = nullptr;     // embedded pseudo-file (@menu etc.)
     uint32_t mem_size_ = 0, mem_pos_ = 0;
+    uint16_t served_sum_ = 0;          // 16-bit sum of file bytes served since OPEN (SERVEDSUM)
+
+    enum class AsyncKind : uint8_t { NONE, DIR, FILE };
+    AsyncKind async_kind_ = AsyncKind::NONE;
+    volatile bool async_done_ = false;
+    volatile int async_result_ = 0;
+    uint8_t* cloud_buf_ = nullptr;     // download target, allocated per transfer
+    static constexpr uint32_t CLOUD_FILE_MAX = 0xBE00 + 128 + 256;
+    CloudDirSink dir_sink_{};
+    CloudFileSink file_sink_{};
 
     uint8_t rtc_day_ = 1, rtc_month_ = 1, rtc_year_ = 0, rtc_h_ = 0, rtc_m_ = 0, rtc_s_ = 0;
 };
