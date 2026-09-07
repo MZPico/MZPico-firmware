@@ -59,7 +59,7 @@ changes.
 
 ## Tranche B — v0.4.1
 
-### B1. Faster directory sort
+### B1. Faster directory sort — done (Shell sort, option a)
 - **Problem**: `dir_sort()` is an insertion sort on 37-byte records, O(n²) on
   the Z80 — seconds for a few hundred entries. The device streams FAT order
   (FatFS has no sorted readdir) and the 34 KB server-side array was removed
