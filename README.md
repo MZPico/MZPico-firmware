@@ -120,6 +120,7 @@ This file defines which virtual devices are enabled, their I/O base ports, and w
 | `fdc` (Floppy Disk Controller) | `0xd8` |
 | `pico_rd` (MZPico-type PicoRD RAM-disk) | `0x45` |
 | `pico_mgr` (MZPico management/control device) | `0x40` |
+| `unicard` (Unicard-compatible repository) | `0x50` |
 | `psg` (SN76489 PSG) | `0xf2` |
 | `ramdisk` (paged RAM disk) | `0xe9` (reset port fixed at `0xf8`) |
 | `ctc` (8253 beeper) | fixed system ports (`base_port` not applicable) |
@@ -130,7 +131,7 @@ Default `enabled=true` for all devices.
 
 | Device | Frugal | Deluxe |
 |--------|--------|--------|
-| `sramdisk`, `qd`, `fdc`, `pico_rd`, `pico_mgr` | ✓ | ✓ |
+| `sramdisk`, `qd`, `fdc`, `pico_rd`, `pico_mgr`, `unicard` | ✓ | ✓ |
 | `ramdisk`, `psg`, `ctc` | — | ✓ |
 
 `psg` and `ctc` need the Deluxe board's I2S sound output (`ctc` additionally its memory-write snooping). `ramdisk` needs the Deluxe bus capture for its 16-bit random-access positioning — what real MZ-1R18 software uses — so it is Deluxe-only (use `pico_rd` for a RAM disk on Frugal).
@@ -415,6 +416,21 @@ image=flash:/pico_rd.img
 
 The `[pico_mgr]` section provides MZPico's management/control interface (default `base_port=0x40`). The boot menu and the file explorer communicate with the firmware through it — **without this section they cannot start**. It has no options of its own, but note its fixed RAM cost (see *RAM budget*).
 
+### Unicard repository
+
+The `[unicard]` section provides a **Unicard-compatible repository interface**
+on ports `0x50` (command/status) and `0x51` (data): the file API that
+Unicard-aware software uses — MZIX (uMZix) detects it at boot and exposes it as
+`/dev/uc0`/`uc1` for its `uc` tool, and UNIBOOT / the Unicard manager can load
+programs through it. Any file on `sd:/` or `flash:/` can be opened, read,
+written, listed, renamed or deleted; `FDDMOUNT` mounts a DSK image or a
+directory into floppy drives 1–4 (device ids 0–3) and an MZQ image into the
+Quick Disk (device id 5), as a session mount that a Z80 reset reverts.
+The card identifies itself through `REVD` with subtype `'M'`; MZPico-specific
+commands live at `0x90`–`0x9F` (volume list, config query, WiFi status,
+capabilities). Protocol reference and the extension list:
+`docs/unicard-migration-plan.md`. No options; `base_port` moves the pair.
+
 ---
 
 ## WiFi and Cloud Support
@@ -484,6 +500,10 @@ size=65536
 ; Management device - required by the menu and explorer
 [pico_mgr]
 ;base_port=0x40
+
+; Unicard-compatible repository (MZIX, UNIBOOT, Unicard manager)
+[unicard]
+;base_port=0x50
 
 ; Floppy controller: 4 drives, DSK images and directory mounts mix freely
 [fdc]

@@ -97,6 +97,7 @@ else()
 endif()
 
 add_dependencies(mzpico generate_mzf_headers)
+target_compile_definitions(mzpico PRIVATE MZPICO_VERSION="${VERSION_TAG}")
 
 string(TOLOWER ${BOARD} BOARD_L)
 string(TOLOWER ${FLASH_SIZE} FLASH_L)
@@ -141,6 +142,7 @@ target_sources(mzpico PUBLIC
     ${SRC_ROOT}/mz_devices.cpp
     ${SRC_ROOT}/mz_devices/qd.cpp
     ${SRC_ROOT}/mz_devices/pico_mgr.cpp
+    ${SRC_ROOT}/mz_devices/unicard.cpp
     ${SRC_ROOT}/mz_devices/fdc.cpp
     ${SRC_ROOT}/mz_devices/sramdisk.cpp
     ${SRC_ROOT}/mz_devices/ramdisk.cpp
@@ -173,6 +175,7 @@ target_include_directories(mzpico PUBLIC
 # Link with required libraries
 target_link_libraries(mzpico
     pico_stdlib
+    hardware_rtc
     hardware_pio
     hardware_irq
     hardware_flash

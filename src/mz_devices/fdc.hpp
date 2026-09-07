@@ -45,6 +45,7 @@ public:
     int flush() override;
     static ALWAYS_INLINE std::string getDevType() { return FDC_ID; }
     int setDriveContent(uint8_t drive_id, const char* file_path);
+    void ejectDrive(uint8_t drive_id); // leave the drive empty (session state)
 
 private:
     static int ReadThunk(MZDevice* dev, uint8_t port, uint8_t* dt, uint8_t high_addr);

@@ -2,6 +2,21 @@
 
 All notable changes to the MZPico firmware.
 
+## Unreleased
+
+### Added
+
+- `unicard` device: a Unicard-compatible repository on ports 0x50/0x51 —
+  the documented Unicard "MZFREPO" protocol (streamed parameters, 4-byte
+  status record, READDIR/FILELIST, OPEN/SEEK/TELL/SIZE with getc/putc data
+  streaming, STAT/UNLINK/RENAME/MKDIR, GETFREE, CHDIR/GETCWD, RTC, FDDMOUNT
+  into floppy drives 1-4 and the Quick Disk) plus MZPico extensions at
+  0x90-0x9F (volume list, config query, WiFi status, capabilities). MZIX
+  detects it as a repository; UNIBOOT and the Unicard manager can load through
+  it. First step of the manager migration (docs/unicard-migration-plan.md).
+- `tests/unicard_sim`: host-side protocol harness for the device.
+- FDC: `ejectDrive()` (used by FDDMOUNT with an empty path).
+
 ## v0.3.1 — 2026-09-06
 
 Bug-fix release: two regressions/defects found booting MZIX (uMZix) and running

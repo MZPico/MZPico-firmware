@@ -1,0 +1,5 @@
+#pragma once
+#include <cstdint>
+static const uint8_t mzf_menu[] = {0x01, 'M', 'E', 'N', 'U', 0x0d, 0x00, 0x10, 0x00, 0x12, 0x00, 0x12, 0x99, 0xAA, 0xBB, 0xCC};
+static const uint8_t mzf_explorer[] = {0x01, 'E', 'X', 'P'};
+static const uint8_t mzf_basic[] = {0x01, 'B', 'A', 'S'};

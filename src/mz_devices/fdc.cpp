@@ -249,6 +249,18 @@ int FDCDevice::WriteThunk(MZDevice* dev, uint8_t port, uint8_t dt, uint8_t high_
 
 // -------------------- Private helpers (ported) --------------------
 
+void FDCDevice::ejectDrive(uint8_t drive_id) {
+    if (drive_id >= FDC_NUM_DRIVES) return;
+    auto& d = drive[drive_id];
+    if (d.dirsrc) d.dirsrc->sessionAbort();
+    d.bs.reset(); // flushes and closes the image
+    d.dirsrc = nullptr;
+    d.TRACK = d.SECTOR = d.SIDE = 0;
+    d.track_offset = 0;
+    d.sector_size = 0;
+    cur_image[drive_id].clear();
+}
+
 int32_t FDCDevice::getTrackOffset(uint8_t drive_id, uint8_t track, uint8_t side) {
     // Based on FDC_GetTrackOffset(): seek to 0x34, sum table bytes for (track*2+side),
     // if (drive_id >= FDC_NUM_DRIVES || !drive[drive_id].fh.obj.fs) return 0;
