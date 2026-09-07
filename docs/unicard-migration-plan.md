@@ -1,6 +1,6 @@
 # Migrating the manager interface to the Unicard protocol
 
-Status: phase 1 complete (hardware-validated with MZIX, 2026-09-07); phase 2 implemented (manager on the Unicard protocol, cloud through the device), awaiting hardware validation. Phase 3 (remove pico_mgr) next. Target release: v0.4.0.
+Status: phase 1 complete (hardware-validated with MZIX, 2026-09-07); phase 2 complete (manager on the Unicard protocol, cloud through the device; hardware-validated on Deluxe W on top of the v0.3.2 bus); phase 3 (pico_mgr removed) implemented. Target release: v0.4.0.
 
 ## Decision
 

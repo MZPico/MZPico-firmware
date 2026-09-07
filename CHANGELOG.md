@@ -33,6 +33,13 @@ All notable changes to the MZPico firmware.
   `[pico_mgr]` is no longer used by them and will be removed in v0.4.0.
 - FDC: `ejectDrive()` (used by FDDMOUNT with an empty path).
 
+### Removed
+
+- `pico_mgr` (ports 0x40/0x41/0x44) and its 49 KB transfer buffer. A
+  `[pico_mgr]` section in an existing `mzpico.ini` is skipped at boot with
+  a log line; `[unicard]` is what the menu and explorer need now. The Pico W
+  builds gain that RAM back for devices.
+
 ## v0.3.2 — 2026-09-07
 
 Bug-fix release for the v0.3.1 Deluxe bus change. No configuration changes,

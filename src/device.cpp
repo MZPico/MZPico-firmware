@@ -419,10 +419,10 @@ void device_main1(void) {
 
             MZDevice* dev = MZDeviceManager::createDevice(devName, sectionName);
             if (!dev) {
-                // Unknown type OR the device object allocation failed
-                // (e.g. pico_mgr's 49KB buffer on a tight W heap). Keep
-                // booting, but leave a trace: a silently missing pico_mgr
-                // presents as a dead menu with no clue otherwise.
+                // Unknown type OR the device object allocation failed on a
+                // tight heap. Keep booting, but leave a trace: a silently
+                // missing device (say, unicard) presents as a dead menu with
+                // no clue otherwise.
                 printf("%s: not created (unknown type or out of RAM)\n",
                        sectionName.c_str());
                 continue;

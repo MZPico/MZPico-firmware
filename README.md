@@ -119,7 +119,6 @@ This file defines which virtual devices are enabled, their I/O base ports, and w
 | `qd` (QuickDisk) | `0xf4` |
 | `fdc` (Floppy Disk Controller) | `0xd8` |
 | `pico_rd` (MZPico-type PicoRD RAM-disk) | `0x45` |
-| `pico_mgr` (MZPico management/control device) | `0x40` |
 | `unicard` (Unicard-compatible repository) | `0x50` |
 | `psg` (SN76489 PSG) | `0xf2` |
 | `ramdisk` (paged RAM disk) | `0xe9` (reset port fixed at `0xf8`) |
@@ -131,7 +130,7 @@ Default `enabled=true` for all devices.
 
 | Device | Frugal | Deluxe |
 |--------|--------|--------|
-| `sramdisk`, `qd`, `fdc`, `pico_rd`, `pico_mgr`, `unicard` | ✓ | ✓ |
+| `sramdisk`, `qd`, `fdc`, `pico_rd`, `unicard` | ✓ | ✓ |
 | `ramdisk`, `psg`, `ctc` | — | ✓ |
 
 `psg` and `ctc` need the Deluxe board's I2S sound output (`ctc` additionally its memory-write snooping). `ramdisk` needs the Deluxe bus capture for its 16-bit random-access positioning — what real MZ-1R18 software uses — so it is Deluxe-only (use `pico_rd` for a RAM disk on Frugal).
@@ -412,13 +411,9 @@ image=flash:/pico_rd.img
 
 ---
 
-### Management device
-
-The `[pico_mgr]` section provides MZPico's management/control interface (default `base_port=0x40`). The boot menu and the file explorer communicate with the firmware through it — **without this section they cannot start**. It has no options of its own, but note its fixed RAM cost (see *RAM budget*).
-
 ### Unicard repository
 
-The `[unicard]` section provides a **Unicard-compatible repository interface**
+The `[unicard]` section is **required by the boot menu and the file explorer** (they talk to the firmware through it) and provides a **Unicard-compatible repository interface**
 on ports `0x50` (command/status) and `0x51` (data): the file API that
 Unicard-aware software uses — MZIX (uMZix) detects it at boot and exposes it as
 `/dev/uc0`/`uc1` for its `uc` tool, and UNIBOOT / the Unicard manager can load
@@ -497,11 +492,8 @@ image=flash:/pico_rd.img ; file-backed: persistent, costs almost no RAM
 size=65536
 ;read_only=false
 
-; Management device - required by the menu and explorer
-[pico_mgr]
-;base_port=0x40
-
-; Unicard-compatible repository (MZIX, UNIBOOT, Unicard manager)
+; Unicard-compatible repository - required by the menu and explorer
+; (also the file API for MZIX, UNIBOOT, Unicard manager)
 [unicard]
 ;base_port=0x50
 
@@ -568,8 +560,7 @@ configured devices, and RAM-backed device images are the dominant
 consumers. The 16 MB flash build and the Pico W WiFi stack each claim a
 substantial extra share of RAM, leaving less room for devices.
 
-What costs RAM: `pico_mgr` needs a large fixed transfer buffer (and is
-always required by the menu/explorer); `pico_rd` without an image file
+What costs RAM: `pico_rd` without an image file
 and `[ramdisk]` allocate their entire `size` in RAM (ramdisk page
 switching needs at least two pages); `sramdisk` costs almost nothing
 unless `in_ram=true`; the sound devices are cheap but not free (`ctc`
@@ -577,8 +568,8 @@ unless `in_ram=true`; the sound devices are cheap but not free (`ctc`
 RAM regardless of their size — this is why the default `mzpico.ini`
 ships `pico_rd` file-backed (`image=flash:/pico_rd.img`): a RAM-backed
 64 KB pico_rd plus the full default device set does not fit the Pico W
-builds' heap, and the device that then fails to allocate can be
-`pico_mgr` itself, which presents as a dead menu.
+builds' heap, and the device that then fails to allocate may be one the
+menu depends on, which presents as a dead menu.
 
 If a device's buffers do not fit, **boot continues without that device**
 — it will simply be missing from the explorer's device list. Free RAM by

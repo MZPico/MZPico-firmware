@@ -62,15 +62,8 @@ static struct {
     char path[160];
 } g_cloud_cmd;
 
-// PicoMgr adapters: the manager device keeps its record/blob buffer API;
-// the generic sinks below feed it
 static int cloud_list_dir(const char *path, CloudDirSink *sink, char *msg, size_t msg_len);
 static int cloud_download(const char *path, CloudFileSink *sink, char *msg, size_t msg_len);
-static void mgr_sink_add(void *ctx, const char *name, size_t name_len, bool is_dir, uint32_t size);
-static void pack_cloud_entry(const void* recPtr, uint8_t* dst);
-static void unpack_cloud_entry(const uint8_t* src, void* outPtr);
-#define CLOUD_DIR_ENTRY_SIZE (1 + 32 + 4)
-static struct { PicoMgr *mgr; CloudDirSink dir; CloudFileSink file; } g_mgr_cloud;
 
 // Internal helpers
 static inline void set_state(CloudWifiState s, int err = 0) {
@@ -253,30 +246,6 @@ bool cloud_submit_file(const char *path, CloudFileSink *sink, CloudCompleteFn do
     return cloud_submit(path, false, nullptr, sink, done, done_ctx);
 }
 
-// PicoMgr completion: error text into the blob, a download is claimed as
-// the payload, then the status flips for the polling Z80
-static void mgr_cloud_done(void *ctx, int result, const char *msg) {
-    PicoMgr *mgr = static_cast<PicoMgr*>(ctx);
-    if (result) mgr->setString(msg);
-    else if (!g_cloud_cmd.list_dir &&
-             !mgr->allocateRaw(static_cast<uint16_t>(g_mgr_cloud.file.length))) {
-        mgr->setString("File too large");
-        result = 2;
-    }
-    mgr->asyncComplete(result);
-}
-
-bool cloud_submit_command(PicoMgr *mgr, bool list_dir, const char *path) {
-    g_mgr_cloud.mgr = mgr;
-    g_mgr_cloud.dir.ctx = mgr;
-    g_mgr_cloud.dir.add = mgr_sink_add;
-    g_mgr_cloud.file.buffer = mgr->payloadBase();
-    g_mgr_cloud.file.capacity = mgr->payloadCapacity();
-    g_mgr_cloud.file.length = 0;
-    if (list_dir) mgr->setContent(CLOUD_DIR_ENTRY_SIZE, pack_cloud_entry, unpack_cloud_entry);
-    return cloud_submit(path, list_dir, &g_mgr_cloud.dir, &g_mgr_cloud.file, mgr_cloud_done, mgr);
-}
-
 static void handle_cloud_command(void) {
     if (!g_cloud_cmd.pending) return;
     g_cloud_cmd.pending = false;
@@ -329,32 +298,6 @@ int cloud_init(void) {
     return 0;
 }
 
-// Directory entry skeleton (mirrors layout used in file.cpp for DIR_ENTRY)
-typedef struct {
-    char     is_dir;
-    char     filename[32];
-    uint32_t size;
-} CLOUD_DIR_ENTRY;
-
-static void pack_cloud_entry(const void* recPtr, uint8_t* dst) {
-    const CLOUD_DIR_ENTRY* r = (const CLOUD_DIR_ENTRY*)recPtr;
-    dst[0] = r->is_dir;
-    memcpy(dst + 1, r->filename, 32);
-    // size little-endian
-    uint32_t v = r->size;
-    dst[33] = (uint8_t)(v & 0xFF);
-    dst[34] = (uint8_t)((v >> 8) & 0xFF);
-    dst[35] = (uint8_t)((v >> 16) & 0xFF);
-    dst[36] = (uint8_t)((v >> 24) & 0xFF);
-}
-
-static void unpack_cloud_entry(const uint8_t* src, void* outPtr) {
-    CLOUD_DIR_ENTRY* r = (CLOUD_DIR_ENTRY*)outPtr;
-    r->is_dir = src[0];
-    memcpy(r->filename, src + 1, 32);
-    r->size = (uint32_t)src[33] | ((uint32_t)src[34] << 8) | ((uint32_t)src[35] << 16) | ((uint32_t)src[36] << 24);
-}
-
 #define MAX_JSON_RESPONSE_SIZE 16384  // 16KB should be enough for directory listing
 
 // Context for accumulating HTTP response. Static: 16KB must not live on a
@@ -368,7 +311,7 @@ typedef struct {
 
 static HTTP_RESPONSE_CTX g_response_ctx;
 
-// Context for a file download, streamed directly into the PicoMgr payload
+// Context for a file download, streamed directly into the sink buffer
 // buffer (no intermediate copy)
 enum ChunkState {
     CHUNK_SIZE,
@@ -415,17 +358,6 @@ static err_t cloud_receive_fn(void *arg, struct altcp_pcb *conn, struct pbuf *p,
     
     pbuf_free(p);
     return ERR_OK;
-}
-
-// Helper to create and add a directory entry
-static void mgr_sink_add(void *ctx, const char *name, size_t name_len, bool is_dir, uint32_t size) {
-    PicoMgr *mgr = static_cast<PicoMgr*>(ctx);
-    CLOUD_DIR_ENTRY entry;
-    entry.is_dir = is_dir ? 1 : 0;
-    entry.size = size;
-    memset(entry.filename, 0, sizeof(entry.filename));
-    memcpy(entry.filename, name, name_len < 31 ? name_len : 31);
-    mgr->addRecord(&entry);
 }
 
 static void add_dir_entry(CloudDirSink *sink, const char *name, size_t name_len, bool is_dir, uint32_t size) {
@@ -627,17 +559,6 @@ static int cloud_list_dir(const char *path, CloudDirSink *sink, char *msg, size_
     return 0;
 }
 
-// Synchronous PicoMgr entry (core 0 context only)
-int cloud_read_directory(const char *path, PicoMgr *mgr) {
-    g_mgr_cloud.dir.ctx = mgr;
-    g_mgr_cloud.dir.add = mgr_sink_add;
-    mgr->setContent(CLOUD_DIR_ENTRY_SIZE, pack_cloud_entry, unpack_cloud_entry);
-    char msg[64];
-    int ret = cloud_list_dir(path, &g_mgr_cloud.dir, msg, sizeof(msg));
-    if (ret) mgr->setString(msg);
-    return ret ? 1 : 0;
-}
-
 // Download file callback - parses chunked encoding and buffers data
 static err_t cloud_download_fn(void *arg, struct altcp_pcb *conn, struct pbuf *p, err_t err) {
     if (err != ERR_OK || !p) {
@@ -771,21 +692,6 @@ static int cloud_download(const char *path, CloudFileSink *sink, char *msg, size
         return CLOUD_ERR_INVALID;
     }
     sink->length = total;
-    return 0;
-}
-
-// Synchronous PicoMgr entry (core 0 context only)
-int cloud_mount_file(const char *path, PicoMgr *mgr) {
-    g_mgr_cloud.file.buffer = mgr->payloadBase();
-    g_mgr_cloud.file.capacity = mgr->payloadCapacity();
-    g_mgr_cloud.file.length = 0;
-    char msg[64];
-    int ret = cloud_download(path, &g_mgr_cloud.file, msg, sizeof(msg));
-    if (ret) { mgr->setString(msg); return 2; }
-    if (!mgr->allocateRaw(static_cast<uint16_t>(g_mgr_cloud.file.length))) {
-        mgr->setString("File too large");
-        return 2;
-    }
     return 0;
 }
 

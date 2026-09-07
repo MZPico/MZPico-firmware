@@ -44,7 +44,6 @@
 #define REPO_CMD_GET_CONFIG     0x0b
 #define REPO_CMD_GET_WIFI_STATUS 0x0c
 
-#define PICO_MGR_BUFF_SIZE (0xd000 - 0x1200 + 128 + 2 + 4)
 
 #define DATA_BUS_MASK    (((1u << DATA_BUS_COUNT) - 1) << DATA_BUS_BASE)
 #define READ_PINS(pins, base, count) (((pins) >> (base)) & ((1u << (count)) - 1))

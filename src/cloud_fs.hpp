@@ -1,7 +1,6 @@
 //#pragma once (kept minimal header style)
 #pragma once
 #include <stdint.h>
-#include "pico_mgr.hpp"
 
 
 // WiFi connection lifecycle state
@@ -19,7 +18,7 @@ enum class CloudWifiState : uint8_t {
 CloudWifiState cloud_wifi_state(void);
 
 #include <cstddef>
-// Generic (PicoMgr-independent) cloud access, used by the unicard device.
+// Generic cloud access (sinks), used by the unicard device.
 // Sinks and contexts must outlive the request and must not be stack locals
 // (core 0 fills them). Completion runs on core 0: `result` 0 = OK, else a
 // CLOUD_ERR_* code; `msg` is a short text.
@@ -61,18 +60,6 @@ void cloud_wifi_request_reconnect(void);
 
 // Initialize WiFi and start poll loop on core1 (idempotent)
 int cloud_init(void);
-
-// Read a directory from cloud:/ path. Returns 0 on success.
-int cloud_read_directory(const char *path, PicoMgr *mgr);
-
-// Mount (fetch) a file from cloud:/ path.
-int cloud_mount_file(const char *path, PicoMgr *mgr);
-
-// Queue a cloud command for asynchronous execution on core 0; the Z80
-// polls the manager status (IN_PROGRESS) meanwhile, so it never sits in
-// /WAIT across the HTTP exchange. Returns false while a command or an
-// abandoned HTTP request is still in flight.
-bool cloud_submit_command(PicoMgr *mgr, bool list_dir, const char *path);
 
 bool cloud_submit_dir(const char *path, CloudDirSink *sink, CloudCompleteFn done, void *done_ctx);
 bool cloud_submit_file(const char *path, CloudFileSink *sink, CloudCompleteFn done, void *done_ctx);

@@ -145,7 +145,6 @@ target_sources(mzpico PUBLIC
     ${SRC_ROOT}/i2s_audio.cpp
     ${SRC_ROOT}/mz_devices.cpp
     ${SRC_ROOT}/mz_devices/qd.cpp
-    ${SRC_ROOT}/mz_devices/pico_mgr.cpp
     ${SRC_ROOT}/mz_devices/unicard.cpp
     ${SRC_ROOT}/mz_devices/fdc.cpp
     ${SRC_ROOT}/mz_devices/sramdisk.cpp
