@@ -10,3 +10,4 @@
 
 using SectionConfig = std::vector<std::pair<std::string, std::string>>;
 extern std::vector<std::pair<std::string, SectionConfig>> picoConfig;
+extern std::string picoConfigPath;   // the mzpico.ini that was loaded (sd:/ or flash:/)

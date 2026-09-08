@@ -19,6 +19,7 @@
 FDCDevice* fdc = nullptr; QDDevice* qd = nullptr;
 DEV_ENTRY devices[MAX_DEVICES]; uint8_t device_count = 0;
 std::vector<std::pair<std::string, SectionConfig>> picoConfig;
+std::string picoConfigPath;
 
 static UnicardDevice* dev;
 static int fails = 0, checks = 0;
@@ -194,6 +195,21 @@ int main() {
     cmd(uc::cmdFDDMOUNT); wr(2); wstr("sd:/games/a.dsk");
     cmd(uc::cmdX_MOUNTS); { std::string m; for (int i = 0; i < 5; i++) { m += rstr(); m += "|"; } CHECK(m == "1:|2:|3:sd:/games/a.dsk|4:|Q:sd:/x.mzq|", "MOUNTS text '%s'", m.c_str()); }
     cmd(uc::cmdFDDMOUNT); wr(2); wr(0x0D);
+
+    // --- SETCONFIG: in-memory config and the loaded ini rewritten in place
+    picoConfigPath = "sd:/mzpico.ini";
+    writefile(root + "/mzpico.ini", "; header\r\n[menu]\r\nkey_b=Basic|@basic\r\n\r\n[fdc]\r\nimage_disk1=x\r\n");
+    auto slurp = [&]() { std::ifstream f(root + "/mzpico.ini", std::ios::binary); return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()); };
+    cmd(uc::cmdX_SETCONFIG); wstr("menu"); wstr("key_x"); wstr("Test|sd:/t.mzf"); st_is(0x00, 0x99, 0x00, 0x00, "SETCONFIG add");
+    CHECK(slurp() == "; header\r\n[menu]\r\nkey_b=Basic|@basic\r\nkey_x=Test|sd:/t.mzf\r\n\r\n[fdc]\r\nimage_disk1=x\r\n", "ini after add: '%s'", slurp().c_str());
+    cmd(uc::cmdX_GETCONFIG); wstr("menu"); { int n = 0; while (st() & 0x04) { for (int i = 0; i < 80; i++) rd(); n++; } CHECK(n == 3, "GETCONFIG sees 3 menu keys (%d)", n); }
+    cmd(uc::cmdX_SETCONFIG); wstr("menu"); wstr("key_b"); wstr("Basic2|@basic"); st_is(0x00, 0x99, 0x00, 0x00, "SETCONFIG replace");
+    CHECK(slurp().find("key_b=Basic2|@basic\r\nkey_x=") != std::string::npos, "ini after replace: '%s'", slurp().c_str());
+    cmd(uc::cmdX_SETCONFIG); wstr("menu"); wstr("key_x"); wr(0x0D); st_is(0x00, 0x99, 0x00, 0x00, "SETCONFIG delete");
+    CHECK(slurp() == "; header\r\n[menu]\r\nkey_b=Basic2|@basic\r\n\r\n[fdc]\r\nimage_disk1=x\r\n", "ini after delete: '%s'", slurp().c_str());
+    cmd(uc::cmdX_SETCONFIG); wstr("explorer"); wstr("start"); wstr("sd:/games"); st_is(0x00, 0x99, 0x00, 0x00, "SETCONFIG new section");
+    CHECK(slurp().find("[explorer]\r\nstart=sd:/games\r\n") != std::string::npos, "ini new section: '%s'", slurp().c_str());
+    cmd(uc::cmdX_SETCONFIG); wstr("menu"); wstr("key_b"); wstr("Basic|@basic");   // restore for the tests below
     cmd(uc::cmdFDDMOUNT); wr(9); wstr("x"); { uint8_t s[4]; st4(s); CHECK((s[0] & 0x80) && s[2] == uc::errBAD_PARAM, "bad device id"); }
 
     // --- 12. extensions

@@ -15,6 +15,7 @@
 #include "embedded_mzf.hpp"
 #include "sharpmz_ascii.h"
 #include <cstring>
+#include <strings.h>
 #include <cstdio>
 #include <cstdlib>
 #ifndef UNICARD_HOST_SIM
@@ -281,6 +282,7 @@ void UnicardDevice::onParamsComplete() {
     case uc::cmdRTCSETT:  cmdRtcSet(false); break;
     case uc::cmdX_GETCONFIG: cmdGetConfig(); break;
     case uc::cmdX_SETSORT:   sort_flags_ = buf_[0]; setOk(); break;
+    case uc::cmdX_SETCONFIG: cmdSetConfig(); break;
     default:
         setError(uc::errNOT_IMPLEMENTED);
     }
@@ -382,6 +384,7 @@ void UnicardDevice::doCommand(uint8_t cmd) {
         break;
     }
     case uc::cmdX_SETSORT:    beginParams("B"); break;
+    case uc::cmdX_SETCONFIG:  beginParams("SSS"); break;
     default:
         setError(uc::errNOT_IMPLEMENTED);
     }
@@ -630,6 +633,109 @@ void UnicardDevice::streamNext() {
         streamStop();
         setOk();
     }
+}
+
+// Rewrite the ini in place: inside [sec] replace the first "key=..." line
+// (or drop it when val is empty), else append "key=val" at the end of the
+// section; a missing section is appended. Everything else is copied
+// verbatim (comments, order, other sections). Written to path.tmp and
+// swapped in, so a torn write cannot lose the file. Heap buffers only
+// (core-1 stack is ~2 KB); files above 16 KB are refused.
+static FRESULT rewrite_ini(FIL& f, const char* path, const char* sec, const char* key, const char* val) {
+    FILINFO fno;
+    FRESULT r = f_stat(path, &fno);
+    if (r != FR_OK) return r;
+    if (fno.fsize > 16384) return FR_DENIED;
+    size_t sz = static_cast<size_t>(fno.fsize);
+    char* in = static_cast<char*>(malloc(sz + 1));
+    if (!in) return FR_NOT_ENOUGH_CORE;
+    r = f_open(&f, path, FA_READ);
+    if (r != FR_OK) { free(in); return r; }
+    UINT br = 0;
+    r = f_read(&f, in, sz, &br);
+    f_close(&f);
+    if (r != FR_OK || br != sz) { free(in); return r != FR_OK ? r : FR_DISK_ERR; }
+    in[sz] = 0;
+    size_t seclen = strlen(sec), keylen = strlen(key), vallen = strlen(val);
+    size_t cap = sz + seclen + keylen + vallen + 24;
+    char* out = static_cast<char*>(malloc(cap));
+    if (!out) { free(in); return FR_NOT_ENOUGH_CORE; }
+    size_t o = 0;
+    unsigned blanks = 0;                                 // blank lines held back inside the section
+    bool ovf = false, in_sec = false, done = false, seen = false;
+    auto emit = [&](const char* p, size_t n) { if (o + n <= cap) { memcpy(out + o, p, n); o += n; } else ovf = true; };
+    auto flush_blanks = [&]() { while (blanks) { emit("\r\n", 2); blanks--; } };
+    auto emit_kv = [&]() {
+        if (vallen) { emit(key, keylen); emit("=", 1); emit(val, vallen); emit("\r\n", 2); }
+        done = true;
+    };
+    for (char* p = in; *p; ) {
+        char* nl = strchr(p, '\n');
+        size_t len = nl ? static_cast<size_t>(nl - p + 1) : strlen(p);
+        const char* t = p;
+        while (*t == ' ' || *t == '\t') t++;
+        if (*t == '[') {
+            if (in_sec && !done) emit_kv();             // new key goes before the section's trailing blank lines
+            flush_blanks();
+            const char* close = strchr(t, ']');
+            in_sec = close && static_cast<size_t>(close - t - 1) == seclen && strncasecmp(t + 1, sec, seclen) == 0;
+            if (in_sec) seen = true;
+            emit(p, len);
+        } else if (in_sec && (*t == '\r' || *t == '\n' || *t == 0)) {
+            blanks++;
+        } else if (in_sec && !done && strncasecmp(t, key, keylen) == 0 &&
+                   (t[keylen] == '=' || t[keylen] == ' ' || t[keylen] == '\t')) {
+            flush_blanks();
+            emit_kv();                                  // replace (or drop) the existing line
+        } else {
+            flush_blanks();
+            emit(p, len);
+        }
+        p += len;
+    }
+    if (in_sec && !done) emit_kv();
+    flush_blanks();
+    if (!seen && vallen) {
+        if (o && out[o - 1] != '\n') emit("\r\n", 2);
+        emit("[", 1); emit(sec, seclen); emit("]\r\n", 3);
+        emit_kv();
+    }
+    free(in);
+    if (ovf) { free(out); return FR_DENIED; }
+    char tmp[48];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    r = f_open(&f, tmp, FA_WRITE | FA_CREATE_ALWAYS);
+    if (r != FR_OK) { free(out); return r; }
+    UINT bw = 0;
+    r = f_write(&f, out, o, &bw);
+    FRESULT rc = f_close(&f);
+    free(out);
+    if (r != FR_OK || bw != o) { f_unlink(tmp); return r != FR_OK ? r : FR_DISK_ERR; }
+    if (rc != FR_OK) { f_unlink(tmp); return rc; }
+    r = f_unlink(path);
+    if (r != FR_OK && r != FR_NO_FILE) { f_unlink(tmp); return r; }
+    return f_rename(tmp, path);
+}
+
+// SETCONFIG section key value: value empty = delete the key. Updates the
+// in-memory config GETCONFIG serves (the menu sees it at its next start)
+// and the ini file that was loaded at boot (sd:/ or flash:/), in place.
+void UnicardDevice::cmdSetConfig() {
+    const char* sec = reinterpret_cast<char*>(buf_);
+    const char* key = sec + strlen(sec) + 1;
+    const char* val = key + strlen(key) + 1;
+    if (!*sec || !*key || strchr(sec, ']') || strchr(key, '=')) { setError(uc::errBAD_PARAM); return; }
+    if (file_open_) { setError(uc::errBUSY); return; }   // fil_ is reused for the rewrite
+    if (picoConfigPath.empty()) { ffDone(FR_NO_FILE); return; }
+    auto it = picoConfig.begin();
+    for (; it != picoConfig.end(); ++it) if (it->first == sec) break;
+    if (it == picoConfig.end()) { picoConfig.emplace_back(sec, SectionConfig()); it = picoConfig.end() - 1; }
+    auto& kv = it->second;
+    size_t k = 0;
+    for (; k < kv.size(); ++k) if (kv[k].first == key) break;
+    if (*val) { if (k < kv.size()) kv[k].second = val; else kv.emplace_back(key, val); }
+    else if (k < kv.size()) kv.erase(kv.begin() + k);
+    ffDone(rewrite_ini(fil_, picoConfigPath.c_str(), sec, key, val));
 }
 
 void UnicardDevice::cmdGetConfig() {

@@ -372,9 +372,11 @@ void device_main1(void) {
     FILINFO fno;
     if (f_stat("sd:/mzpico.ini", &fno) == FR_OK) {
         ini = iniparser_load("sd:/mzpico.ini");
+        if (ini) picoConfigPath = "sd:/mzpico.ini";
     }
     if (!ini) {
         ini = iniparser_load("flash:/mzpico.ini");
+        if (ini) picoConfigPath = "flash:/mzpico.ini";
     }
     if (!ini) {
         halt();
