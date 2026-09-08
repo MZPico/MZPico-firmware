@@ -34,7 +34,7 @@ enum : uint8_t {
     cmdRTCSETD = 0x60, cmdRTCSETT = 0x61, cmdRTCGETD = 0x62, cmdRTCGETT = 0x63,
     // MZPico extensions (docs/unicard-migration-plan.md)
     cmdX_LISTVOL = 0x90, cmdX_GETCONFIG = 0x92, cmdX_WIFISTATUS = 0x93,
-    cmdX_INFO = 0x95, cmdX_SETSORT = 0x96, cmdX_SERVEDSUM = 0x97, cmdX_MOUNTS = 0x98, cmdX_SETCONFIG = 0x99,
+    cmdX_INFO = 0x95, cmdX_SETSORT = 0x96, cmdX_SERVEDSUM = 0x97, cmdX_MOUNTS = 0x98, cmdX_SETCONFIG = 0x99, cmdX_COPY = 0x9A,
     // Internal: reported in status byte 1 while streaming a file
     cmdINTGETC = 0xF0, cmdINTPUTC = 0xF1
 };
@@ -115,6 +115,8 @@ private:
     void cmdGetConfig();
     void cmdInfo();
     void cmdSetConfig();
+    void cmdCopy();
+    FRESULT writeBuffer(const char* path, const uint8_t* data, uint32_t len);
     void mountEmbedded(const std::string& path, bool& handled);
     // cloud:/ paths run on core 0 (WiFi/HTTP); status bit 6 = in progress
     static bool isCloudPath(const char* p);
@@ -173,6 +175,7 @@ private:
     static constexpr uint32_t CLOUD_FILE_MAX = 0xBE00 + 128 + 256;
     CloudDirSink dir_sink_{};
     CloudFileSink file_sink_{};
+    std::string copy_dst_;             // COPY from cloud: written when the download lands
 
     uint8_t rtc_day_ = 1, rtc_month_ = 1, rtc_year_ = 0, rtc_h_ = 0, rtc_m_ = 0, rtc_s_ = 0;
 };

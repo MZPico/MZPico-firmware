@@ -283,6 +283,7 @@ void UnicardDevice::onParamsComplete() {
     case uc::cmdX_GETCONFIG: cmdGetConfig(); break;
     case uc::cmdX_SETSORT:   sort_flags_ = buf_[0]; setOk(); break;
     case uc::cmdX_SETCONFIG: cmdSetConfig(); break;
+    case uc::cmdX_COPY:      cmdCopy(); break;
     default:
         setError(uc::errNOT_IMPLEMENTED);
     }
@@ -385,6 +386,7 @@ void UnicardDevice::doCommand(uint8_t cmd) {
     }
     case uc::cmdX_SETSORT:    beginParams("B"); break;
     case uc::cmdX_SETCONFIG:  beginParams("SSS"); break;
+    case uc::cmdX_COPY:       beginParams("SS"); break;
     default:
         setError(uc::errNOT_IMPLEMENTED);
     }
@@ -939,6 +941,12 @@ void UnicardDevice::finishAsync() {
         stream_ = Stream::DIR_SORTED;
         ff_res_ = FR_OK;
         streamNext();
+    } else if (!copy_dst_.empty()) {
+        // COPY from the cloud: the download is written out here, under
+        // EXWAIT of the status read that observed completion
+        ffDone(writeBuffer(copy_dst_.c_str(), cloud_buf_, file_sink_.length));
+        free(cloud_buf_); cloud_buf_ = nullptr;
+        copy_dst_.clear();
     } else {
         mem_ = cloud_buf_;
         mem_size_ = file_sink_.length;
@@ -949,6 +957,58 @@ void UnicardDevice::finishAsync() {
     }
     async_kind_ = AsyncKind::NONE;
 }
+
+FRESULT UnicardDevice::writeBuffer(const char* path, const uint8_t* data, uint32_t len) {
+    FRESULT r = f_open(&fil_, path, FA_WRITE | FA_CREATE_ALWAYS);
+    if (r != FR_OK) return r;
+    UINT bw = 0;
+    r = f_write(&fil_, data, len, &bw);
+    FRESULT rc = f_close(&fil_);
+    if (r != FR_OK) return r;
+    if (bw != len) return FR_DISK_ERR;
+    return rc;
+}
+
+// COPY src dst: a cloud source downloads asynchronously (status bit 6, the
+// Z80 polls) and is written to dst when it lands; a local source is copied
+// synchronously in 2 KB chunks (heap). Refused while a file is open (fil_).
+void UnicardDevice::cmdCopy() {
+    const char* src = reinterpret_cast<char*>(buf_);
+    const char* dst = src + strlen(src) + 1;
+    if (!*src || !*dst) { setError(uc::errBAD_PARAM); return; }
+    if (file_open_ || mem_) { setError(uc::errBUSY); return; }
+    if (isCloudPath(dst)) { ffDone(FR_WRITE_PROTECTED); return; }
+    if (isCloudPath(src)) {
+        copy_dst_ = dst;
+        file_mode_ = FA_READ;
+        startCloudFile(src);
+        if (phase_ != Phase::ASYNC) copy_dst_.clear();   // refused / not a W build
+        return;
+    }
+    FIL* in = static_cast<FIL*>(malloc(sizeof(FIL)));
+    uint8_t* chunk = static_cast<uint8_t*>(malloc(2048));
+    if (!in || !chunk) { free(in); free(chunk); ffDone(FR_NOT_ENOUGH_CORE); return; }
+    FRESULT r = f_open(in, src, FA_READ);
+    if (r == FR_OK) {
+        r = f_open(&fil_, dst, FA_WRITE | FA_CREATE_ALWAYS);
+        if (r == FR_OK) {
+            for (;;) {
+                UINT br = 0, bw = 0;
+                r = f_read(in, chunk, 2048, &br);
+                if (r != FR_OK || br == 0) break;
+                r = f_write(&fil_, chunk, br, &bw);
+                if (r != FR_OK) break;
+                if (bw != br) { r = FR_DISK_ERR; break; }
+            }
+            FRESULT rc = f_close(&fil_);
+            if (r == FR_OK) r = rc;
+        }
+        f_close(in);
+    }
+    free(in); free(chunk);
+    ffDone(r);
+}
+
 
 // -------------------- port handlers (core 1, EXWAIT) --------------------
 

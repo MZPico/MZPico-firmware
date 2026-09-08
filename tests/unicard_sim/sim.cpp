@@ -210,6 +210,13 @@ int main() {
     cmd(uc::cmdX_SETCONFIG); wstr("explorer"); wstr("start"); wstr("sd:/games"); st_is(0x00, 0x99, 0x00, 0x00, "SETCONFIG new section");
     CHECK(slurp().find("[explorer]\r\nstart=sd:/games\r\n") != std::string::npos, "ini new section: '%s'", slurp().c_str());
     cmd(uc::cmdX_SETCONFIG); wstr("menu"); wstr("key_b"); wstr("Basic|@basic");   // restore for the tests below
+
+    // --- COPY: local synchronous copy; cloud source refused without WiFi
+    cmd(uc::cmdX_COPY); wstr("sd:/hello.txt"); wstr("flash:/hello2.txt"); st_is(0x00, 0x9A, 0x00, 0x00, "COPY local");
+    { std::ifstream f(fl + "/hello2.txt", std::ios::binary); std::string c((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()); CHECK(c == "Hello, MZ-800!\n", "copied content '%s'", c.c_str()); }
+    cmd(uc::cmdX_COPY); wstr("sd:/nope.txt"); wstr("flash:/x"); { uint8_t s[4]; st4(s); CHECK((s[0] & 0x80) && s[3] == FR_NO_FILE, "COPY missing source"); }
+    cmd(uc::cmdX_COPY); wstr("cloud:/a.mzf"); wstr("sd:/a.mzf"); { uint8_t s[4]; st4(s); CHECK(s[0] & 0x80, "COPY from cloud refused without WiFi"); }
+    cmd(uc::cmdCHDIR); wstr("sd:/");   // clears the lingering FatFS code in status byte 3
     cmd(uc::cmdFDDMOUNT); wr(9); wstr("x"); { uint8_t s[4]; st4(s); CHECK((s[0] & 0x80) && s[2] == uc::errBAD_PARAM, "bad device id"); }
 
     // --- 12. extensions
