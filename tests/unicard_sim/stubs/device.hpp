@@ -8,6 +8,6 @@ struct FDCDevice {
     void ejectDrive(uint8_t d) { if (d <= 3) mounted[d].clear(); }
     const std::string& currentImage(uint8_t d) const { return mounted[d]; }
 };
-struct QDDevice { std::string path; void setDriveContent(const std::string& p) { path = p; } const std::string& currentImage() const { return path; } };
+struct QDDevice { std::string path; void setDriveContent(const std::string& p) { path = p; } const std::string& currentImage() const { return path; } bool hasDisk() const { return !path.empty(); } };
 extern FDCDevice* fdc;
 extern QDDevice* qd;

@@ -815,7 +815,9 @@ void UnicardDevice::cmdFddMount() {
     if (dev == 5) {
         if (!qd) { setError(uc::errNOT_IMPLEMENTED); return; }
         qd->setDriveContent(path);
-        ffDone(FR_OK);
+        // an eject (empty path) leaves no disk by design; a mount that did
+        // not end with a disk in the drive is an error, not a silent success
+        ffDone(path[0] == 0 || qd->hasDisk() ? FR_OK : FR_NO_FILE);
         return;
     }
     setError(uc::errBAD_PARAM);

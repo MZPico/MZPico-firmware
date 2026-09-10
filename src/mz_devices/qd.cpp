@@ -137,6 +137,10 @@ void QDDevice::open(void) {
     }
 
     close(); // flush the previous image while status still says READY
+    bs.reset(); // release its FIL: FatFS file locks (FF_FS_LOCK) refuse a
+                // second open of the same image while the first is held -
+                // remounting the image already in the drive ended "no disk"
+    dirsrc = nullptr;
     driveReset();
     status = QDSTS_NO_DISC;
 

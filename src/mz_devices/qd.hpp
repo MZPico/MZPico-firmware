@@ -90,6 +90,7 @@ public:
     void setDriveContent(const std::string& path);
     const std::string& getStdImagePath() const { return stdPath; }
     const std::string& currentImage() const { return stdPath; }
+    bool hasDisk() const { return (status & QDSTS_IMG_READY) != 0; }
     static int readByte(MZDevice* self_, uint8_t port, uint8_t *dt, uint8_t /*high_addr*/);
     static int writeByte(MZDevice* self_, uint8_t port, uint8_t dt, uint8_t /*high_addr*/);
 
