@@ -1,5 +1,7 @@
 # Migrating the manager interface to the Unicard protocol
 
+Note (2026-09-10): the ini section keeps the historical `[pico_mgr]` name; no `[unicard]` section exists, only the protocol changed.
+
 Status: phase 1 complete (hardware-validated with MZIX, 2026-09-07); phase 2 complete (manager on the Unicard protocol, cloud through the device; hardware-validated on Deluxe W on top of the v0.3.2 bus); phase 3 (pico_mgr removed) implemented. Target release: v0.4.0.
 
 ## Decision

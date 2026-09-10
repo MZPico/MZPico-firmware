@@ -119,7 +119,7 @@ This file defines which virtual devices are enabled, their I/O base ports, and w
 | `qd` (QuickDisk) | `0xf4` |
 | `fdc` (Floppy Disk Controller) | `0xd8` |
 | `pico_rd` (MZPico-type PicoRD RAM-disk) | `0x45` |
-| `unicard` (Unicard-compatible repository) | `0x50` |
+| `pico_mgr` (MZPico management device, Unicard-compatible protocol) | `0x50` |
 | `psg` (SN76489 PSG) | `0xf2` |
 | `ramdisk` (paged RAM disk) | `0xe9` (reset port fixed at `0xf8`) |
 | `ctc` (8253 beeper) | fixed system ports (`base_port` not applicable) |
@@ -130,7 +130,7 @@ Default `enabled=true` for all devices.
 
 | Device | Frugal | Deluxe |
 |--------|--------|--------|
-| `sramdisk`, `qd`, `fdc`, `pico_rd`, `unicard` | ✓ | ✓ |
+| `sramdisk`, `qd`, `fdc`, `pico_rd`, `pico_mgr` | ✓ | ✓ |
 | `ramdisk`, `psg`, `ctc` | — | ✓ |
 
 `psg` and `ctc` need the Deluxe board's I2S sound output (`ctc` additionally its memory-write snooping). `ramdisk` needs the Deluxe bus capture for its 16-bit random-access positioning — what real MZ-1R18 software uses — so it is Deluxe-only (use `pico_rd` for a RAM disk on Frugal).
@@ -411,9 +411,9 @@ image=flash:/pico_rd.img
 
 ---
 
-### Unicard repository
+### Management device (Unicard-compatible)
 
-The `[unicard]` section is **required by the boot menu and the file explorer** (they talk to the firmware through it) and provides a **Unicard-compatible repository interface**
+The `[pico_mgr]` section is **required by the boot menu and the file explorer** (they talk to the firmware through it). Since v0.4.0 it speaks the **Unicard repository protocol**
 on ports `0x50` (command/status) and `0x51` (data): the file API that
 Unicard-aware software uses — MZIX (uMZix) detects it at boot and exposes it as
 `/dev/uc0`/`uc1` for its `uc` tool, and UNIBOOT / the Unicard manager can load
@@ -492,9 +492,9 @@ image=flash:/pico_rd.img ; file-backed: persistent, costs almost no RAM
 size=65536
 ;read_only=false
 
-; Unicard-compatible repository - required by the menu and explorer
-; (also the file API for MZIX, UNIBOOT, Unicard manager)
-[unicard]
+; Management device - required by the menu and explorer
+; (Unicard-compatible file API for MZIX, UNIBOOT, Unicard manager)
+[pico_mgr]
 ;base_port=0x50
 
 ; Floppy controller: 4 drives, DSK images and directory mounts mix freely

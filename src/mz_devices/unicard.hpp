@@ -15,7 +15,9 @@
 #include "cloud_fs.hpp"
 
 constexpr uint8_t UNICARD_DEFAULT_BASE_PORT = 0x50;
-constexpr const char UNICARD_ID[] = "unicard";
+// ini section name: the management device keeps its historical [pico_mgr]
+// name, only the protocol behind it changed (Unicard on 0x50/0x51 since v0.4.0)
+constexpr const char UNICARD_ID[] = "pico_mgr";
 constexpr bool UNICARD_EXWAIT = true;
 
 // Command codes (unimgr_commands.h). Names keep the Unicard spelling.

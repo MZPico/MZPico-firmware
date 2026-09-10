@@ -6,7 +6,7 @@ All notable changes to the MZPico firmware.
 
 ### Added
 
-- `unicard` device: a Unicard-compatible repository on ports 0x50/0x51 —
+- `pico_mgr` reimplemented as a Unicard-compatible repository on ports 0x50/0x51 —
   the documented Unicard "MZFREPO" protocol (streamed parameters, 4-byte
   status record, READDIR/FILELIST, OPEN/SEEK/TELL/SIZE with getc/putc data
   streaming, STAT/UNLINK/RENAME/MKDIR, GETFREE, CHDIR/GETCWD, RTC, FDDMOUNT
@@ -17,7 +17,7 @@ All notable changes to the MZPico firmware.
 - `tests/unicard_sim`: host-side protocol harness for the device.
 - SETSORT extension (0x96): sorted, launchable-filtered directory streams for
   the explorer, with `..` on non-root paths.
-- Cloud (Pico W) through the `unicard` device: `cloud:/` listings and file
+- Cloud (Pico W) through the management device: `cloud:/` listings and file
   loads run on core 0 with status bit 6 signalling progress.
 - SERVEDSUM extension (0x97): 16-bit sum of the bytes served from the open
   file, for loaders that want to verify a transfer.
@@ -28,16 +28,16 @@ All notable changes to the MZPico firmware.
   Unicard protocol on 0x50/0x51 instead of `pico_mgr` on 0x40. Same features;
   programs stream from an open file (no size cap, no 48 KB transfer buffer),
   listings stream one record at a time and are sorted on the Z80 (the 34 KB
-  server-side sort array is gone). `[unicard]` is now required by the menu and
-  explorer;
+  server-side sort array is gone). The ini section keeps its `[pico_mgr]`
+  name (default `base_port` is now 0x50, the Unicard ports);
   `[pico_mgr]` is no longer used by them and will be removed in v0.4.0.
 - FDC: `ejectDrive()` (used by FDDMOUNT with an empty path).
 
 ### Removed
 
-- `pico_mgr` (ports 0x40/0x41/0x44) and its 49 KB transfer buffer. A
-  `[pico_mgr]` section in an existing `mzpico.ini` is skipped at boot with
-  a log line; `[unicard]` is what the menu and explorer need now. The Pico W
+- The old `pico_mgr` protocol (ports 0x40/0x41/0x44) and its 49 KB transfer
+  buffer. The `[pico_mgr]` section stays; the device behind it is the
+  Unicard-protocol one. The Pico W
   builds gain that RAM back for devices.
 
 ## v0.3.2 — 2026-09-07
