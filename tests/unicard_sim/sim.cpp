@@ -195,6 +195,11 @@ int main() {
     cmd(uc::cmdFDDMOUNT); wr(2); wstr("sd:/games/a.dsk");
     cmd(uc::cmdX_MOUNTS); { std::string m; for (int i = 0; i < 5; i++) { m += rstr(); m += "|"; } CHECK(m == "1:|2:|3:sd:/games/a.dsk|4:|Q:sd:/x.mzq|", "MOUNTS text '%s'", m.c_str()); }
     cmd(uc::cmdFDDMOUNT); wr(2); wr(0x0D);
+    // no [fdc] / [qd] configured: FDDMOUNT answers NOT_IMPLEMENTED (code 1)
+    { FDCDevice* f0 = fdc; QDDevice* q0 = qd; fdc = nullptr; qd = nullptr;
+      cmd(uc::cmdFDDMOUNT); wr(0); wstr("sd:/games/a.dsk"); { uint8_t s[4]; st4(s); CHECK((s[0] & 0x80) && s[2] == uc::errNOT_IMPLEMENTED, "FDDMOUNT without fdc -> NOT_IMPLEMENTED"); }
+      cmd(uc::cmdFDDMOUNT); wr(5); wstr("sd:/x.mzq"); { uint8_t s[4]; st4(s); CHECK((s[0] & 0x80) && s[2] == uc::errNOT_IMPLEMENTED, "FDDMOUNT without qd -> NOT_IMPLEMENTED"); }
+      fdc = f0; qd = q0; }
 
     // --- SETCONFIG: in-memory config and the loaded ini rewritten in place
     picoConfigPath = "sd:/mzpico.ini";
