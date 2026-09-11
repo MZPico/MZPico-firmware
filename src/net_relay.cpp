@@ -7,6 +7,7 @@
 
 #ifdef USE_PICO_W
 #include "pico/cyw43_arch.h"
+#include "pico/time.h"
 #include "lwip/tcp.h"
 #include "lwip/dns.h"
 #include "cloud_fs.hpp"
@@ -83,8 +84,13 @@ enum class Ws : uint8_t { IDLE, RESOLVING, CONNECTING, HANDSHAKE, OPEN, CLOSING 
 static Ws g_ws = Ws::IDLE;
 static struct tcp_pcb* g_pcb = nullptr;
 static ip_addr_t g_addr;
-static uint8_t g_rx[NET_LINE_MAX + 16];   // frame/handshake assembly
-static uint16_t g_rx_len = 0;
+// Handshake reply: only the status line and the blank-line terminator matter
+// (Cloudflare's reply is ~600 bytes of headers, so it is not buffered)
+static char g_hs_line[16];                  // first bytes of the status line
+static uint8_t g_hs_len = 0;
+static uint32_t g_hs_tail = 0;              // last four bytes received
+static uint32_t g_started_ms = 0;           // for the connect/handshake timeout
+constexpr uint32_t NET_CONNECT_TIMEOUT_MS = 15000;
 static char g_frame[NET_LINE_MAX];        // payload of the frame being read
 static uint32_t g_frame_len = 0, g_frame_need = 0;
 static uint8_t g_frame_op = 0, g_frame_hdr = 0;   // 0 = expecting a header
@@ -101,7 +107,7 @@ static void ws_reset(bool notify) {
     bool was_open = g_socket_open;
     g_socket_open = false;
     g_ws = Ws::IDLE;
-    g_rx_len = 0; g_frame_hdr = 0; g_frame_len = g_frame_need = 0;
+    g_hs_len = 0; g_hs_tail = 0; g_frame_hdr = 0; g_frame_len = g_frame_need = 0;
     if (notify && was_open) g_in.push("{\"op\":\"link\",\"linked\":0}");
 }
 
@@ -173,13 +179,12 @@ static err_t ws_recv(void* arg, struct tcp_pcb* pcb, struct pbuf* p, err_t err) 
         const uint8_t* d = static_cast<const uint8_t*>(q->payload);
         for (uint16_t i = 0; i < q->len; i++) {
             if (g_ws == Ws::HANDSHAKE) {
-                if (g_rx_len < sizeof(g_rx) - 1) g_rx[g_rx_len++] = d[i];
-                g_rx[g_rx_len] = 0;
-                if (g_rx_len >= 4 && memcmp(g_rx + g_rx_len - 4, "\r\n\r\n", 4) == 0) {
-                    if (strncmp(reinterpret_cast<char*>(g_rx), "HTTP/1.1 101", 12) == 0) {
+                if (g_hs_len < sizeof(g_hs_line) - 1) g_hs_line[g_hs_len++] = (char)d[i];
+                g_hs_tail = (g_hs_tail << 8) | d[i];
+                if (g_hs_tail == 0x0d0a0d0a) {            // "\r\n\r\n": end of the headers
+                    if (g_hs_len >= 12 && strncmp(g_hs_line, "HTTP/1.1 101", 12) == 0) {
                         g_ws = Ws::OPEN;
                         g_socket_open = true;
-                        g_rx_len = 0;
                         ws_flush_out();
                     } else {
                         g_in.push("{\"op\":\"error\",\"code\":9,\"text\":\"relay refused\"}");
@@ -226,7 +231,7 @@ static err_t ws_connected(void* arg, struct tcp_pcb* pcb, err_t err) {
                      "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nUser-Agent: MZPico\r\n\r\n",
                      g_path, g_host, key);
     g_ws = Ws::HANDSHAKE;
-    g_rx_len = 0;
+    g_hs_len = 0; g_hs_tail = 0;
     if (tcp_write(pcb, req, (u16_t)n, TCP_WRITE_FLAG_COPY) != ERR_OK) { ws_err(nullptr, ERR_MEM); return ERR_OK; }
     tcp_output(pcb);
     return ERR_OK;
@@ -255,6 +260,7 @@ static void ws_start() {
     g_in.clear();
     ip_addr_t addr;
     g_ws = Ws::RESOLVING;
+    g_started_ms = to_ms_since_boot(get_absolute_time());
     cyw43_arch_lwip_begin();
     err_t r = dns_gethostbyname(g_host, &addr, ws_dns_found, nullptr);
     if (r == ERR_OK) ws_connect_to(&addr);
@@ -273,6 +279,13 @@ void net_relay_poll() {
         if (g_ws == Ws::OPEN) ws_send_frame(0x8, "", 0);
         ws_reset(false);
         cyw43_arch_lwip_end();
+    }
+    if ((g_ws == Ws::RESOLVING || g_ws == Ws::CONNECTING || g_ws == Ws::HANDSHAKE) &&
+        to_ms_since_boot(get_absolute_time()) - g_started_ms > NET_CONNECT_TIMEOUT_MS) {
+        cyw43_arch_lwip_begin();
+        ws_reset(false);
+        cyw43_arch_lwip_end();
+        g_in.push("{\"op\":\"error\",\"code\":9,\"text\":\"relay timeout\"}");
     }
     if (g_ws == Ws::OPEN && g_out.head != g_out.tail) {
         cyw43_arch_lwip_begin();
