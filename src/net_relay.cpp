@@ -244,6 +244,7 @@ static void ws_connect_to(const ip_addr_t* addr) {
     tcp_arg(g_pcb, nullptr);
     tcp_recv(g_pcb, ws_recv);
     tcp_err(g_pcb, ws_err);
+    tcp_nagle_disable(g_pcb);   // one small frame per game step: never wait for the relay's ACK
     g_ws = Ws::CONNECTING;
     if (tcp_connect(g_pcb, &g_addr, g_port, ws_connected) != ERR_OK) ws_err(nullptr, ERR_CONN);
 }
