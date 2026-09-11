@@ -123,6 +123,8 @@ int UnicardDevice::flush() {
 void UnicardDevice::softReset() {
     // An in-flight cloud transfer still owns its buffers on core 0: keep
     // it (the fresh session sees "busy" until it completes)
+    net_.reset();
+    if (phase_ == Phase::ASYNC && async_kind_ == AsyncKind::NET) { phase_ = Phase::DONE; async_kind_ = AsyncKind::NONE; }
     if (phase_ != Phase::ASYNC) {
         closeFile();
         closeDir();
@@ -285,6 +287,7 @@ void UnicardDevice::onParamsComplete() {
     case uc::cmdX_SETCONFIG: cmdSetConfig(); break;
     case uc::cmdX_COPY:      cmdCopy(); break;
     default:
+        if (UnicardNet::isCmd(cmd_)) { netExec(); break; }
         setError(uc::errNOT_IMPLEMENTED);
     }
 }
@@ -388,8 +391,40 @@ void UnicardDevice::doCommand(uint8_t cmd) {
     case uc::cmdX_SETCONFIG:  beginParams("SSS"); break;
     case uc::cmdX_COPY:       beginParams("SS"); break;
     default:
+        if (UnicardNet::isCmd(cmd)) {
+#ifdef USE_PICO_W
+            const char* fmt = UnicardNet::paramFormat(cmd);
+            if (fmt[0]) beginParams(fmt); else netExec();
+#else
+            setError(uc::errNOT_IMPLEMENTED);
+#endif
+            break;
+        }
         setError(uc::errNOT_IMPLEMENTED);
     }
+}
+
+// -------------------- MZPico NET (multiplayer relay) --------------------
+
+void UnicardDevice::netFinish(int r, int len) {
+    phase_ = Phase::DONE;
+    async_kind_ = AsyncKind::NONE;
+    if (r) { setError(static_cast<uint8_t>(r)); return; }
+    if (len) setOutput(net_out_, static_cast<uint16_t>(len), false);
+    else setOk();
+}
+
+void UnicardDevice::netExec() {
+    int len = 0;
+    int r = net_.exec(cmd_, buf_, net_out_, &len);
+    if (r == -1) {                    // CREATE / JOIN: the relay answers on core 0
+        phase_ = Phase::ASYNC;
+        async_kind_ = AsyncKind::NET;
+        setOk();
+        phase_ = Phase::ASYNC;
+        return;
+    }
+    netFinish(r, len);
 }
 
 static void version_numbers(uint8_t& major, uint8_t& minor) {
@@ -448,6 +483,7 @@ void UnicardDevice::cmdInfo() {
     f |= 0x04; // directory-mounted floppies
 #ifdef USE_PICO_W
     f |= 0x01; // wifi/cloud
+    f |= ucnet::INFO_FEATURE_NET; // NET vendor commands 0xA0..0xA9 (multiplayer relay)
 #endif
     o[3] = f;
 #ifndef UNICARD_HOST_SIM
@@ -925,6 +961,13 @@ void UnicardDevice::startCloudFile(const char* path) {
 
 // Core 1, on the first port access after core 0 reported completion
 void UnicardDevice::finishAsync() {
+    if (phase_ == Phase::ASYNC && async_kind_ == AsyncKind::NET) {
+        int len = 0;
+        int r = net_.asyncPoll(net_out_, &len);
+        if (r == 0) return;           // still waiting for the relay
+        netFinish(r == 1 ? 0 : r, len);
+        return;
+    }
     if (phase_ != Phase::ASYNC || !async_done_) return;
     __asm volatile("" ::: "memory");
     int result = async_result_;

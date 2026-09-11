@@ -140,12 +140,14 @@ target_sources(mzpico PUBLIC
     ${SRC_ROOT}/file.cpp
     ${SRC_ROOT}/cloud_fs.cpp
     ${SRC_ROOT}/rest_api.cpp
+    ${SRC_ROOT}/net_relay.cpp
     ${SRC_ROOT}/http_utils.c
     ${SRC_ROOT}/config.cpp
     ${SRC_ROOT}/i2s_audio.cpp
     ${SRC_ROOT}/mz_devices.cpp
     ${SRC_ROOT}/mz_devices/qd.cpp
     ${SRC_ROOT}/mz_devices/unicard.cpp
+    ${SRC_ROOT}/mz_devices/unicard_net.cpp
     ${SRC_ROOT}/mz_devices/fdc.cpp
     ${SRC_ROOT}/mz_devices/sramdisk.cpp
     ${SRC_ROOT}/mz_devices/ramdisk.cpp

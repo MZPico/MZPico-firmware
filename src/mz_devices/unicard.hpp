@@ -13,6 +13,7 @@
 #include "common.hpp"
 #include "ff.h"
 #include "cloud_fs.hpp"
+#include "unicard_net.hpp"
 
 constexpr uint8_t UNICARD_DEFAULT_BASE_PORT = 0x50;
 // ini section name: the management device keeps its historical [pico_mgr]
@@ -169,7 +170,12 @@ private:
     uint32_t mem_size_ = 0, mem_pos_ = 0;
     uint16_t served_sum_ = 0;          // 16-bit sum of file bytes served since OPEN (SERVEDSUM)
 
-    enum class AsyncKind : uint8_t { NONE, DIR, FILE };
+    enum class AsyncKind : uint8_t { NONE, DIR, FILE, NET };
+    // MZPico NET extension (unicard_net.hpp): rooms and lockstep input vectors
+    UnicardNet net_;
+    void netExec();
+    void netFinish(int r, int len);
+    uint8_t net_out_[64];
     AsyncKind async_kind_ = AsyncKind::NONE;
     volatile bool async_done_ = false;
     volatile int async_result_ = 0;

@@ -36,6 +36,7 @@
 #include "embedded_mzf.hpp"
 #ifdef USE_PICO_W
 #include "cloud_fs.hpp"
+#include "net_relay.hpp"
 #include "pico/cyw43_arch.h"
 #endif
 
@@ -510,6 +511,9 @@ void device_main1(void) {
         CloudWifiConfig wifi_cfg{ssid, pass, CYW43_AUTH_WPA2_AES_PSK, 5};
         cloud_wifi_set_config(wifi_cfg);
     }
+    // Multiplayer relay (ws://<host>:<port>/net, plain HTTP: the MZPico speaks no TLS)
+    net_relay_set_config(iniparser_getstring(ini, "cloud:net_relay", "api.mzpico.com"),
+                         static_cast<uint16_t>(iniparser_getint(ini, "cloud:net_port", 80)));
     #endif
 
     iniparser_freedict(ini);

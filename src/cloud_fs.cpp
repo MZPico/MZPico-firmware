@@ -1,4 +1,5 @@
 #include "cloud_fs.hpp"
+#include "net_relay.hpp"
 
 static volatile CloudWifiState g_state = CloudWifiState::INIT;
 CloudWifiState cloud_wifi_state(void) {
@@ -282,6 +283,7 @@ static void core0_poll_loop(void) {
         } else if (g_state == CloudWifiState::CONNECTED) {
             if (!shutting_down) {
                 cyw43_arch_poll();
+                net_relay_poll();   // multiplayer relay socket (net_relay.cpp)
             }
             handle_reconnect_request();
         }
