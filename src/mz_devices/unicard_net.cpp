@@ -114,7 +114,7 @@ void UnicardNet::handleLine(const char* l) {
         if (json_str(l, "settings", hex, sizeof(hex))) settings_len_ = (uint8_t)hex_decode(hex, settings_, SETTINGS_LEN);
         if (json_bool(l, "spectator") || slot < 0) { slot_ = 0xff; state_ = stSPECTATOR; }
         else { slot_ = (uint8_t)slot; state_ = stINROOM; }
-        members_ = 1; ready_mask_ = 0; started_ = false;
+        members_ = 1; ready_mask_ = 0; started_ = false; full_mask_ = 0;
         framesClear();
         if (pending_cmd_ == cmdCREATE) {
             memcpy(pending_out_, code_, 4);
@@ -135,6 +135,7 @@ void UnicardNet::handleLine(const char* l) {
         seed_ = (uint16_t)json_int(l, "seed", 0);
         start_frame_ = (uint16_t)json_int(l, "frame", 0);
         started_ = true;
+        full_mask_ = (uint8_t)json_int(l, "mask", (1 << slots_) - 1);   // slots taking part
         if (state_ != stSPECTATOR) state_ = stRUNNING;
         framesClear();
         base_ = start_frame_;
@@ -175,7 +176,7 @@ void UnicardNet::pump() {
 
 // highest frame such that every frame from base_ up to it is complete
 uint32_t UnicardNet::availFrame() {
-    uint8_t full = (uint8_t)((1 << slots_) - 1);
+    uint8_t full = full_mask_ ? full_mask_ : (uint8_t)((1 << slots_) - 1);
     while (base_ < 0xffff && (have_[base_ % FRAMES] & full) == full) {
         uint32_t next = base_ + 1;
         have_[(next + FRAMES - 1) % FRAMES] = 0;   // the slot that enters the window is fresh
@@ -231,7 +232,7 @@ int UnicardNet::exec(uint8_t cmd, const uint8_t* p, uint8_t* out, int* outLen) {
             if (state_ < stINROOM) return errNOROOM;
             send("{\"op\":\"leave\"}");
             net_relay_close();
-            state_ = linked() ? stREADY : stNOLINK; started_ = false; members_ = 0; ready_mask_ = 0;
+            state_ = linked() ? stREADY : stNOLINK; started_ = false; members_ = 0; ready_mask_ = 0; full_mask_ = 0;
             return 0;
         case cmdREADY:
             if (state_ != stINROOM && state_ != stRUNNING) return errNOROOM;

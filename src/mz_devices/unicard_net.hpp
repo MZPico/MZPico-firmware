@@ -47,6 +47,7 @@ private:
 
     uint8_t state_ = 0, slot_ = 0, members_ = 0, ready_mask_ = 0, last_error_ = 0;
     uint8_t slots_ = ucnet::MAX_SLOTS, nbytes_ = 1;
+    uint8_t full_mask_ = 0;          // slots taking part (start message), 0 = all slots
     uint8_t settings_[ucnet::SETTINGS_LEN] = {};
     uint8_t settings_len_ = 0;
     uint16_t seed_ = 0, start_frame_ = 0;
