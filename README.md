@@ -43,6 +43,12 @@ Related hardware:
   - **File explorer** supporting multiple storage devices, directory trees, and fast search  
     ![MZPico File Explorer](resources/MZPico-explorer.png)
 
+    Keys: cursor up/down (left/right = page), `A`-`Z`/`0`-`9` incremental search, `CR` run,
+    `F1` file info, `F2` next volume, `F3` mount manager (drives 1–4 and the Quick Disk),
+    `F4` recent launches, `F5` back to the menu; with SHIFT: `F1` delete, `F2` rename,
+    `F3` new folder, `F4` show all files, `F5` add the selected file to the boot menu.
+    `ESC` closes any overlay. The explorer reopens where it was after a reset.
+
 - **Fast system boot via SRAM emulation**
   Allows instant startup on the MZ-800:
   - Boot via port `0xF8` on cold start or reset
@@ -154,6 +160,8 @@ Supported extensions: `.MZF`, `.DSK`, `.MZQ`
 ### Menu section
 
 The `[menu]` section configures quick-access programs on the boot menu.
+Entries can also be added from the explorer (SHIFT+F5 on a file), which
+writes them into the `mzpico.ini` that was loaded (`sd:/` or `flash:/`).
 
 Format:
 
@@ -424,7 +432,7 @@ Quick Disk (device id 5), as a session mount that a Z80 reset reverts.
 The card identifies itself through `REVD` with subtype `'M'`; MZPico-specific
 commands live at `0x90`–`0x9F` (volume list, config query, WiFi status,
 capabilities). Protocol reference and the extension list:
-`docs/unicard-migration-plan.md`. No options; `base_port` moves the pair.
+`docs/unicard-migration-plan.md`. No options; `base_port` moves the pair (default 0x50; the pre-0.4.0 protocol on 0x40 is gone).
 
 ---
 
@@ -637,7 +645,8 @@ After build completion, the generated `.uf2` firmware file will appear in the `b
 ## Limitations
 
 - Only extended-CPC-style `.DSK` floppy images are supported; the standard (non-extended) DSK variant is not. Copy-protected disks relying on low-level quirks (deleted data marks, index timing) are not modeled.
-- The explorer mounts DSK images into drive 1 only, and cannot mount directories (use `mzpico.ini` for those).
+- Quick Disk boot from the menu/explorer needs the 9Z-504M ROM (JSS and Willy's ROMs have no QD driver); DSK/MZQ boots still go through the ROM's own routines.
+- Software written for the pre-0.4.0 `pico_mgr` protocol on port 0x40 no longer works; the Unicard protocol on 0x50/0x51 replaces it.
 - Directory-mounted floppies are not bootable, and BASIC BRD random-access files are not supported on them.
 - Sound emulation (PSG + 8253 beeper) requires the Deluxe board's I2S sound card.
 - The power-on beep right after reset is heard only from the machine's internal speaker (it plays before MZPico's audio pipeline has started).

@@ -2,43 +2,70 @@
 
 All notable changes to the MZPico firmware.
 
-## Unreleased
+## v0.4.0 — 2026-09-15
+
+The management protocol between the MZ-800 and MZPico is now the Unicard
+"MZFREPO" protocol; the boot menu and the file explorer were rewritten on
+top of it and gained a set of features. No ini changes are needed for an
+existing configuration (the `[pico_mgr]` section keeps its name).
 
 ### Added
 
-- `pico_mgr` reimplemented as a Unicard-compatible repository on ports 0x50/0x51 —
-  the documented Unicard "MZFREPO" protocol (streamed parameters, 4-byte
+- **Unicard-compatible repository**: the `pico_mgr` device speaks the
+  documented Unicard protocol on ports 0x50/0x51 (streamed parameters, 4-byte
   status record, READDIR/FILELIST, OPEN/SEEK/TELL/SIZE with getc/putc data
   streaming, STAT/UNLINK/RENAME/MKDIR, GETFREE, CHDIR/GETCWD, RTC, FDDMOUNT
-  into floppy drives 1-4 and the Quick Disk) plus MZPico extensions at
-  0x90-0x9F (volume list, config query, WiFi status, capabilities). MZIX
-  detects it as a repository; UNIBOOT and the Unicard manager can load through
-  it. First step of the manager migration (docs/unicard-migration-plan.md).
-- `tests/unicard_sim`: host-side protocol harness for the device.
-- SETSORT extension (0x96): sorted, launchable-filtered directory streams for
-  the explorer, with `..` on non-root paths.
-- Cloud (Pico W) through the management device: `cloud:/` listings and file
-  loads run on core 0 with status bit 6 signalling progress.
-- SERVEDSUM extension (0x97): 16-bit sum of the bytes served from the open
-  file, for loaders that want to verify a transfer.
+  into floppy drives 1-4 and the Quick Disk). MZIX (uMZix) detects it as a
+  repository; UNIBOOT and the Unicard manager can load through it.
+  MZPico extensions at 0x90-0x9F: LISTVOL, GETCONFIG, WIFISTATUS, INFO,
+  SETSORT (launchable filter), SERVEDSUM (transfer verification), MOUNTS,
+  SETCONFIG (edits the loaded `mzpico.ini` in place), COPY (device-side copy,
+  cloud downloads included).
+- **Explorer**: F1 file info (MZF header: Sharp name, attribute, load/exec,
+  body size; DSK geometry), F3 mount manager (what is in drives 1-4 and the
+  Quick Disk; mount a DSK, a directory or an MZQ into any of them, boot with
+  B), F4 recent launches (last 8, launched with 1-8), resume of the last
+  location and selection after a reset (`mzpico.sav` on `sd:/`, `flash:/`
+  as the fallback), SHIFT+F1 delete, SHIFT+F2 rename, SHIFT+F3 new folder,
+  SHIFT+F4 show all files, SHIFT+F5 add the selected file to the boot menu
+  (writes the `[menu]` entry into the loaded ini), a cloud activity spinner
+  with ESC to stop waiting, and `S` in the info panel to save a cloud file
+  to the card. Overlays close with ESC; error messages clear on the next key.
+- **Menu**: F/Q/C boots that fail in the ROM (no disk, wrong disk, tape
+  BREAK) now return to the MZPico menu with the ROM's message on the title
+  line instead of ending in the ROM's own IPL menu. Floppy and tape on every
+  known ROM (9Z-504M, JSS, Willy's), Quick Disk on 9Z-504M (the others have
+  no QD driver; the Q entry is hidden there).
+- `tests/unicard_sim`: host-side protocol harness for the device (108
+  checks), `trace_check.py` for the optional `UNICARD_TRACE` port log.
 
 ### Changed
 
-- The menu and explorer (`external/manager`) talk to the firmware through the
-  Unicard protocol on 0x50/0x51 instead of `pico_mgr` on 0x40. Same features;
-  programs stream from an open file (no size cap, no 48 KB transfer buffer),
-  listings stream one record at a time and are sorted on the Z80 (the 34 KB
-  server-side sort array is gone). The ini section keeps its `[pico_mgr]`
-  name (default `base_port` is now 0x50, the Unicard ports);
-  `[pico_mgr]` is no longer used by them and will be removed in v0.4.0.
-- FDC: `ejectDrive()` (used by FDDMOUNT with an empty path).
+- The menu and explorer talk to the firmware through the Unicard protocol.
+  Programs stream from an open file (no size cap, no 48 KB transfer buffer);
+  listings stream one record at a time and are sorted on the Z80 (Shell sort;
+  cloud listings keep the server's order); listing cap 600 entries.
+- Keyboard handling in the menu and explorer follows Sharp BASIC's GETL
+  routine: matrix scan with debounce, first repeat after ~0.55 s then ~20/s,
+  no more false double presses.
+- Both programs switch the machine to MZ-700 mode at start: with the mode
+  switch in the 800 position the ROM hands them over in MZ-800 mode, which
+  showed as a black screen and a dead keyboard (Frugal-Board issue #1).
+  Launched programs still get the mode the switch selects.
+- The boot menu's title is "Make ready MZPico", at the ROM's position.
+- Default `base_port` of `[pico_mgr]` is 0x50 (was 0x40).
+- FDC: `ejectDrive()` (used by FDDMOUNT with an empty path). QD: a remount
+  of the image already in the drive works (the previous image is released
+  first); a failed QD mount is reported instead of silently leaving the
+  drive empty.
 
 ### Removed
 
-- The old `pico_mgr` protocol (ports 0x40/0x41/0x44) and its 49 KB transfer
-  buffer. The `[pico_mgr]` section stays; the device behind it is the
-  Unicard-protocol one. The Pico W
-  builds gain that RAM back for devices.
+- The old `pico_mgr` protocol on ports 0x40/0x41/0x44 and its 49 KB transfer
+  buffer; the Pico W builds gain that RAM back for devices. Third-party
+  software written against the old protocol must move to the Unicard
+  commands. A `[unicard]` section left over from the v0.4.0 release
+  candidates is ignored; `[pico_mgr]` is what the menu needs.
 
 ## v0.3.2 — 2026-09-07
 
