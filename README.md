@@ -49,6 +49,12 @@ Related hardware:
     `F3` new folder, `F4` show all files, `F5` add the selected file to the boot menu.
     `ESC` closes any overlay. The explorer reopens where it was after a reset.
 
+    | File info (F1) | Mount manager (F3) |
+    |---|---|
+    | ![File info](resources/MZPico-explorer-info.png) | ![Mount manager](resources/MZPico-explorer-mounts.png) |
+    | **Recent launches (F4)** | **File operations (SHIFT)** |
+    | ![Recent launches](resources/MZPico-explorer-recent.png) | ![SHIFT footer](resources/MZPico-explorer-shift.png) |
+
 - **Fast system boot via SRAM emulation**
   Allows instant startup on the MZ-800:
   - Boot via port `0xF8` on cold start or reset
