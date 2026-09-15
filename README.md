@@ -43,17 +43,9 @@ Related hardware:
   - **File explorer** supporting multiple storage devices, directory trees, and fast search  
     ![MZPico File Explorer](resources/MZPico-explorer.png)
 
-    Keys: cursor up/down (left/right = page), `A`-`Z`/`0`-`9` incremental search, `CR` run,
-    `F1` file info, `F2` next volume, `F3` mount manager (drives 1–4 and the Quick Disk),
-    `F4` recent launches, `F5` back to the menu; with SHIFT: `F1` delete, `F2` rename,
-    `F3` new folder, `F4` show all files, `F5` add the selected file to the boot menu.
-    `ESC` closes any overlay. The explorer reopens where it was after a reset.
-
-    | File info (F1) | Mount manager (F3) |
-    |---|---|
-    | ![File info](resources/MZPico-explorer-info.png) | ![Mount manager](resources/MZPico-explorer-mounts.png) |
-    | **Recent launches (F4)** | **File operations (SHIFT)** |
-    | ![Recent launches](resources/MZPico-explorer-recent.png) | ![SHIFT footer](resources/MZPico-explorer-shift.png) |
+    Cursor keys and `A`–`Z` search select, `CR` runs; `F1`–`F5` and the SHIFT
+    combinations cover file info, mounting into any drive, recent launches,
+    file operations and adding a file to the boot menu (see the footer).
 
 - **Fast system boot via SRAM emulation**
   Allows instant startup on the MZ-800:
