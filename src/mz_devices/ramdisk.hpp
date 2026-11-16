@@ -50,6 +50,7 @@ public:
     // mode=cow: the store (state for REST), and flash_fs's page-move hook
     const CowStore& cowStore() const { return cow; }
     const CowImage& cowImageRef() const { return cowImage; }
+    bool persistDue() const { return persist_due_; }
     void cowRemap(uint16_t old_entry, uint16_t new_entry) { cowImage.onRemap(cow, old_entry, new_entry); }
     void cowTrim(uint32_t first, uint32_t count) { cowImage.onTrim(cow, first, count); }
 
@@ -75,6 +76,8 @@ private:
     CowImage cowImage;
     CowLearnPolicy learnPolicy_;
     bool active_ = false;   // the Z80 addressed the disk this session (learn's convergence)
+    bool persist_due_ = false;  // learn: trailer/map sync deferred from the reset
+    void cowPersist();
     uint8_t* data;
     bool readOnly;
     uint32_t size;

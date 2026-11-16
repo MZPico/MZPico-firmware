@@ -124,14 +124,30 @@ volatile uint32_t flash_fs_erases = 0;
 volatile uint32_t flash_fs_programmed = 0;
 volatile uint32_t flash_fs_copy_erases = 0;
 volatile uint32_t flash_fs_map_syncs = 0;
+// Core 1 is between the shutdown check and the end of a flash operation
+// (see flash_guard_enter and flash_fs_quiesce_core1)
+static volatile uint32_t core1_in_flash_op = 0;
 
 // Helpers to minimize repetition and keep flash critical sections consistent
 static inline bool flash_guard_enter(uint32_t *saved_ints) {
     // Core 1 yields at this (pre-lockout, safe) boundary during shutdown:
     // the whole chip reboots moments later via the reset flush on core 0.
     // IRQs stay enabled here so this core still services lockout requests.
+    // The flag is raised BEFORE shutting_down is checked, and core 0 sets
+    // shutting_down BEFORE it reads the flag (flash_fs_quiesce_core1): so
+    // either core 1 sees the shutdown and parks here, or core 0 sees core
+    // 1 inside an operation and waits it out - never both initiating a
+    // lockout at once (the two handshakes cross and both cores hang until
+    // the reset path's watchdog).
     if (get_core_num() == 1) {
-        while (shutting_down) { tight_loop_contents(); }
+        for (;;) {
+            core1_in_flash_op = 1;
+            __dmb();
+            if (!shutting_down) break;
+            core1_in_flash_op = 0;
+            __dmb();
+            while (shutting_down) { tight_loop_contents(); }
+        }
     }
     // Announce the operation before the other core is parked: a bus
     // handler that XIP-reads the storage region (RAM disk COW mode) spins
@@ -156,6 +172,24 @@ static inline void flash_guard_exit(uint32_t saved_ints, bool lockout_started) {
     }
     __dmb();
     flash_fs_op_active--;
+    if (get_core_num() == 1) {
+        __dmb();
+        core1_in_flash_op = 0;
+    }
+}
+
+bool flash_fs_quiesce_core1(uint32_t timeout_us)
+{
+    // Caller: core 0, shutting_down already set. Core 1's operation ends
+    // by itself (its lockout of this core is served even inside the reset
+    // IRQ, which runs below the lockout IRQ's priority).
+    __dmb();
+    const uint32_t t0 = time_us_32();
+    while (core1_in_flash_op) {
+        if (time_us_32() - t0 > timeout_us) return false;
+        tight_loop_contents();
+    }
+    return true;
 }
 
 void debug_print_in_use() {

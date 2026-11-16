@@ -46,7 +46,9 @@ bool cow_learn_end_session(CowTrailer& t, const CowLearnPolicy& p, bool active,
     t.wb_blocks += wb_blocks;
     t.wb_sectors += wb_sectors;
     t.erases += erases;
-    if (t.mode == COW_LEARN_FROZEN) return wb_blocks || erases;
+    // Erases only accumulate: they ride along with the next real change
+    // (the deferred persist's own erases land in the session after it)
+    if (t.mode == COW_LEARN_FROZEN) return wb_blocks != 0;
     if (wb_blocks || drops) {
         // Written back (or wanted to and could not): still learning
         t.clean = 0;
@@ -62,7 +64,7 @@ bool cow_learn_end_session(CowTrailer& t, const CowLearnPolicy& p, bool active,
         if (t.mode == COW_LEARN_LEARNING && t.clean >= p.converge) t.mode = COW_LEARN_OK;
     }
     // A clean session of a converged image changes nothing worth a flash write
-    return t.mode != mode0 || t.clean != clean0 || t.dirty != dirty0 || wb_blocks || erases;
+    return t.mode != mode0 || t.clean != clean0 || t.dirty != dirty0 || wb_blocks;
 }
 
 // ---- CowImage ----
@@ -370,32 +372,31 @@ bool CowImage::writeTrailer() {
     return ok;
 }
 
-bool CowImage::endSession(CowStore& store, const CowLearnPolicy& p, bool active) {
+void CowImage::endSession(CowStore& store, const CowLearnPolicy& p, bool active) {
     const uint32_t drops = store.learn.session_drops;
-    const uint32_t wb = store.endSession();            // syncs the map if written
-    if (mode_ == COW_LEARN_OFF || !has_trailer_) {
-        // learn without a trailer (it could not be added): RAM-only state
-        if (mode_ != COW_LEARN_OFF) {
-            cow_learn_end_session(tr_, p, active, wb, 0, drops, 0);
-            mode_ = tr_.mode;
-            store.setWriteBack(learning() && !gone_);
-        }
-        return wb != 0;
-    }
+    const uint32_t wb = store.endSession();
+    if (mode_ == COW_LEARN_OFF) return;
     const uint32_t secs = store.learn.sectors - session_sectors0_;
     session_sectors0_ = store.learn.sectors;
-    bool changed = cow_learn_end_session(tr_, p, active, wb, secs, drops, erases_ - session_erases0_);
+    const bool changed = cow_learn_end_session(tr_, p, active, wb, secs, drops,
+                                               erases_ - session_erases0_);
+    session_erases0_ = erases_;
     mode_ = tr_.mode;
     store.setWriteBack(learning() && !gone_);
-    if (!(changed || pending_write_)) {
-        session_erases0_ = erases_;
-        return wb != 0;
+    if (changed && has_trailer_) pending_write_ = true;
+}
+
+void CowImage::persist(CowStore& store) {
+    if (!persistPending(store)) return;
+    if (pending_write_) {
+        pending_write_ = false;
+        if (writeTrailer()) {
+            ioSync(this);             // the trailer and every write-back so far
+            store.syncNow();          // (nothing left for the store to sync)
+            return;
+        }
     }
-    pending_write_ = false;
-    const bool ok = writeTrailer();
-    ioSync(this);
-    session_erases0_ = erases_;
-    return ok || wb;
+    store.syncNow();
 }
 
 void CowImage::freeze(CowStore& store, bool frozen) {
@@ -426,9 +427,7 @@ bool CowImage::relearn(CowStore& store) {
     tr_.created = old.created + 1;
     tr_.relearns = (uint16_t)(old.relearns + 1);
     mode_ = tr_.mode;
-    writeTrailer();
-    ioSync(this);
-    pending_write_ = false;
+    pending_write_ = true;        // the trailer and the trims: persist()
     store.setWriteBack(true);
     return true;
 }

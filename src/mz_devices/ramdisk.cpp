@@ -27,6 +27,9 @@ static volatile bool g_cow_clear_requested = false;
 static volatile bool g_cow_relearn_req = false;
 static volatile bool g_cow_freeze_req = false;
 static volatile bool g_cow_unfreeze_req = false;
+// Reset diagnostics (/api/ramdisk learn): MZ-800 resets seen, the last
+// softReset's duration, the deferred persists and the last one's duration
+static uint32_t g_cow_resets = 0, g_cow_reset_us = 0, g_cow_persists = 0, g_cow_persist_us = 0;
 
 // "524288", "0x80000", "512K", "512k", "1M": bytes
 static uint32_t parse_size(const char* s) {
@@ -224,11 +227,14 @@ void RamDisk::softReset() {
     pos_ = 0;
     if (!cow_) return;
     // Z80 in reset, bus quiet: the one safe moment for REST-armed changes
-    // and the session's end. Flash work here (the trailer, a map sync, a
-    // relearn's sync: ~50-100 ms) holds EXWAIT so a short reset pulse
-    // cannot let the Z80 run into an unserved bus; the bus loop releases it.
+    // and the session's end - all of it RAM only, no flash operation and no
+    // EXWAIT here: a reset path that does flash work collides with the
+    // reset escape hatch (a second press makes core 0 flush and reboot) and
+    // freezes the machine. The flash part waits for the next RAM-disk
+    // access (cowPersist, from the address-port handlers).
     if (get_core_num() != 1) return;
-    set_exwait();
+    const uint32_t t0 = time_us_32();
+    g_cow_resets++;
     if (g_cow_freeze_req) { g_cow_freeze_req = false; cowImage.freeze(cow, true); }
     if (g_cow_unfreeze_req) { g_cow_unfreeze_req = false; cowImage.freeze(cow, false); }
     cowImage.endSession(cow, learnPolicy_, active_);
@@ -242,6 +248,16 @@ void RamDisk::softReset() {
         cow.clear();
         g_cow_clear_requested = false;
     }
+    persist_due_ = cowImage.persistPending(cow);
+    g_cow_reset_us = time_us_32() - t0;
+}
+
+void RamDisk::cowPersist() {
+    persist_due_ = false;
+    const uint32_t t0 = time_us_32();
+    cowImage.persist(cow);
+    g_cow_persist_us = time_us_32() - t0;
+    g_cow_persists++;
 }
 
 extern "C" void ramdisk_cow_request_clear(void) {
@@ -323,7 +339,8 @@ extern "C" int ramdisk_cow_json_full(char* buf, size_t len) {
         "\"tokens\":%lu,\"cap_drops\":%lu,\"session_blocks\":%lu,"
         "\"sessions\":%lu,\"clean_sessions\":%u,\"dirty_sessions\":%u,\"relearns\":%u,"
         "\"blocks_total\":%lu,\"erases_total\":%lu,\"wear_ppm\":%lu,"
-        "\"fs_erases\":%lu,\"fs_copy_erases\":%lu,\"fs_map_syncs\":%lu,\"pending\":\"%s\"}}",
+        "\"fs_erases\":%lu,\"fs_copy_erases\":%lu,\"fs_map_syncs\":%lu,\"pending\":\"%s\","
+        "\"resets\":%lu,\"reset_us\":%lu,\"persists\":%lu,\"persist_ms\":%lu,\"persist_due\":%s}}",
         cow_learn_state(im, cs), im.created() ? "true" : "false",
         (unsigned long)(im.createUs() / 1000), (unsigned long)cs.dirtyCount(),
         (unsigned long)L.batches, (unsigned long)L.blocks, (unsigned long)L.ahead,
@@ -335,7 +352,9 @@ extern "C" int ramdisk_cow_json_full(char* buf, size_t len) {
         (unsigned long)(t.wb_blocks + L.session_blocks), (unsigned long)erases_total, wear_ppm,
         (unsigned long)flash_fs_erases, (unsigned long)flash_fs_copy_erases,
         (unsigned long)flash_fs_map_syncs,
-        g_cow_relearn_req ? "relearn" : (g_cow_freeze_req ? "freeze" : (g_cow_unfreeze_req ? "unfreeze" : "")));
+        g_cow_relearn_req ? "relearn" : (g_cow_freeze_req ? "freeze" : (g_cow_unfreeze_req ? "unfreeze" : "")),
+        (unsigned long)g_cow_resets, (unsigned long)g_cow_reset_us, (unsigned long)g_cow_persists,
+        (unsigned long)(g_cow_persist_us / 1000), g_cow_disk->persistDue() ? "true" : "false");
     return n;
 }
 
@@ -375,6 +394,9 @@ RAM_FUNC int RamDisk::resetCounter(MZDevice* self, uint8_t port, uint8_t* dt, ui
 RAM_FUNC int RamDisk::writePageAddress(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr) {
     auto* disk = static_cast<RamDisk*>(self);
     disk->active_ = true;
+    // learn's deferred flash work (trailer, map sync) after a reset: here
+    // the Z80 is held by EXWAIT, as for a write-back
+    if (disk->cow_ && __builtin_expect(disk->persist_due_, 0)) disk->cowPersist();
 
     uint32_t pageAddr = (static_cast<uint32_t>(dt) << 16) % disk->size;
     disk->pos_ = (pageAddr & 0xFFFF0000) | (disk->pos_ & 0xffff);
@@ -403,6 +425,9 @@ RAM_FUNC int RamDisk::writeData(MZDevice* self, uint8_t port, uint8_t dt, uint8_
 RAM_FUNC int RamDisk::writeAddress(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr) {
     auto* disk = static_cast<RamDisk*>(self);
     disk->active_ = true;
+    // learn's deferred flash work (trailer, map sync) after a reset: here
+    // the Z80 is held by EXWAIT, as for a write-back
+    if (disk->cow_ && __builtin_expect(disk->persist_due_, 0)) disk->cowPersist();
     disk->pos_ = (disk->pos_ & 0xffff0000) | (static_cast<uint32_t>(high_addr) << 8) | static_cast<uint32_t>(dt);
     return 0;
 }
