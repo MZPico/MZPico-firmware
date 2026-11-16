@@ -10,7 +10,8 @@
 //   GET  /api/command?cmd=...
 //   POST /api/command   (body: raw or form-encoded cmd=...)
 //   GET  /api/last
-//   GET  /api/status
+//   GET  /api/status   (includes a "heap" object, see heap_diag.h)
+//   GET  /api/heap     (the heap object alone)
 
 // Initialize listener (idempotent). Returns 0 on success.
 int rest_api_init(void);

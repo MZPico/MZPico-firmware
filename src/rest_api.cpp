@@ -9,6 +9,7 @@
 
 #include "pico/stdlib.h"
 #include "lwip/tcp.h"
+#include "heap_diag.h"
 
 
 #ifndef REST_API_PORT
@@ -32,6 +33,9 @@ static struct tcp_pcb *g_listen_pcb = nullptr;
 static bool g_started = false;
 static char g_last_cmd[REST_MAX_CMD_SIZE] = {0};
 static RestApiCommandHandler g_cmd_handler = nullptr;
+// Response body for /api/status and /api/heap. Static, not on the 2 KB
+// core 0 stack the lwIP callbacks run on; tcp_write copies it out.
+static char g_json_buf[512];
 
 static const char *find_substr(const char *data, size_t len, const char *needle, size_t nlen) {
     if (!data || !needle || nlen == 0 || len < nlen) return nullptr;
@@ -170,10 +174,18 @@ static void rest_parse_and_handle(RestConn *conn) {
     }
 
     if (strcasecmp(method, "GET") == 0 && strncmp(uri, "/api/status", 11) == 0) {
-        char body_json[96];
+        char *body_json = g_json_buf;
         uint32_t ms = to_ms_since_boot(get_absolute_time());
-        snprintf(body_json, sizeof(body_json), "{\"status\":\"ok\",\"uptime_ms\":%lu}", (unsigned long)ms);
+        int n = snprintf(body_json, sizeof(g_json_buf), "{\"status\":\"ok\",\"uptime_ms\":%lu,\"heap\":", (unsigned long)ms);
+        n += heap_diag_json(body_json + n, sizeof(g_json_buf) - (size_t)n - 1);
+        if (n < (int)sizeof(g_json_buf) - 1) { body_json[n] = '}'; body_json[n + 1] = '\0'; }
         rest_send_response(conn, "200 OK", "application/json", body_json);
+        return;
+    }
+
+    if (strcasecmp(method, "GET") == 0 && strncmp(uri, "/api/heap", 9) == 0) {
+        heap_diag_json(g_json_buf, sizeof(g_json_buf));
+        rest_send_response(conn, "200 OK", "application/json", g_json_buf);
         return;
     }
 

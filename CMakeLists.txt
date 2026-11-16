@@ -141,6 +141,7 @@ target_sources(mzpico PUBLIC
     ${SRC_ROOT}/cloud_fs.cpp
     ${SRC_ROOT}/rest_api.cpp
     ${SRC_ROOT}/net_relay.cpp
+    ${SRC_ROOT}/heap_diag.c
     ${SRC_ROOT}/http_utils.c
     ${SRC_ROOT}/config.cpp
     ${SRC_ROOT}/i2s_audio.cpp

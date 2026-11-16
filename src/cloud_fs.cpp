@@ -29,6 +29,7 @@ CloudWifiState cloud_wifi_state(void) {
 #include "device.hpp"
 #include "file.hpp"
 #include "i2s_audio.hpp"
+#include "heap_diag.h"
 
 
 // ---- Default credentials (override via cloud_wifi_set_config before cloud_init) ----
@@ -147,6 +148,7 @@ static void wifi_poll_connection_status(void) {
         wifi_state.connect_pending = false;
         set_state(CloudWifiState::CONNECTED);
         cloud_add_device("cloud");
+        heap_diag_mark_wifi_up();
         if (!g_rest_started) {
             if (rest_api_init() == 0) {
                 g_rest_started = true;
@@ -277,6 +279,7 @@ static void core0_poll_loop(void) {
     while (!shutting_down) {
         // Process audio sources with minimal latency (must be on core0)
         i2s_audio_poll();
+        heap_diag_poll();   // low-water mark sample, every 100 ms
         
         if (is_wifi_connecting()) {
             wifi_state_machine();
