@@ -364,6 +364,8 @@ Options:
 - `image` — optional backing file; omitted = volatile RAM
 - `mode` — `file` (default: RAM, or the `image` file behind a 128-byte window) or `cow` (see below)
 - `cow_pool` — `mode=cow` only: the SRAM pool in KB (1 KB blocks), `1`–`255`, default `64`
+- `learn` — `mode=cow` only: the card builds and refreshes the image itself (see *learn* below). `true`, `false`, `frozen`; omitted = on for an image the card created, off for one prepared elsewhere
+- `learn_batch` (`4` blocks), `learn_cap` (`1024` blocks an hour), `learn_converge` (`2` sessions), `learn_sync` (`64` blocks), `learn_freeze_after` (`0` = never), `learn_reserve` (`0`) — learn tuning, see below
 - `read_only` — `true`/`false` (default `false`)
 
 Example:
@@ -394,9 +396,10 @@ size=512K
 
 - **The image**: a raw RAM-disk dump, page 0 first, 64 KB a page, on the
   `flash:` volume (copy it there over USB: power the MZPico from USB with
-  the MZ-800 off, and it appears as the `MZ800PICO` drive). It must be at
-  least `size` bytes. It is never written: the pool starts empty at every
-  card power-up, i.e. the disk then holds exactly the image.
+  the MZ-800 off, and it appears as the `MZ800PICO` drive), at least
+  `size` bytes — or none at all, see *learn*. Without learn it is never
+  written: the pool starts empty at every card power-up, i.e. the disk then
+  holds exactly the image.
 - **Writes** compare with the image first: a byte equal to what the block
   already holds changes nothing and costs no pool space (an MZ-800 program
   that copies its data onto the disk from floppy uses almost none).
@@ -404,28 +407,112 @@ size=512K
 - **The pool** lives like a real MZ-1R18's RAM: it survives MZ-800 resets
   and is lost at power-off (and at the double-reset reboot). A block that
   becomes equal to the image again is reclaimed when the pool fills up.
-  **If the pool is full and nothing is reclaimable, the write is lost**:
-  it is counted (`drops`, the address in `last_drop`) and the state reads
-  `pool_full` until the pool is cleared — raise `cow_pool` if that
-  happens. REST (Pico W): `GET /api/ramdisk` shows the pool (also inside
-  `GET /api/heap`); `GET /api/ramdisk/clear` empties it at the next
-  MZ-800 reset.
-- **RAM**: `cow_pool` KB plus about 5 bytes per KB of disk (2.5 KB for
+  **Without learn, if the pool is full and nothing is reclaimable, the
+  write is lost**: it is counted (`drops`, the address in `last_drop`) and
+  the state reads `pool_full` until the pool is cleared — raise `cow_pool`
+  (or use learn) if that happens. REST (Pico W): `GET /api/ramdisk` shows
+  the pool and learn (a short form inside `GET /api/heap`);
+  `GET /api/ramdisk/clear` empties it at the next MZ-800 reset.
+- **RAM**: `cow_pool` KB plus about 6 bytes per KB of disk (3 KB for
   512 KB), allocated at boot.
 - **Changing the image while it is in use**: the running disk is a
   snapshot of the image as it was at power-up. Flash writes never stop or
   disturb it (an access waits out a flash erase/program). When the file is
-  rewritten, replaced (delete + copy) or its freed clusters are reused by
-  another file, each 1 KB block whose flash sectors get written is first
-  copied into the pool from the old sectors and kept there (`preserved`;
-  such blocks are never reclaimed and survive a clear). Only if the pool
+  rewritten, replaced (delete + copy) or deleted, each 1 KB block whose
+  flash sectors get written or trimmed is first copied into the pool from
+  the old sectors and kept there (`preserved`, `pinned`; such blocks are
+  never reclaimed or written back and survive a clear). Only if the pool
   has no slot left for one is it lost: it then reads the new data, its
-  sectors are counted in `lost` and the state reads `image_changed` until the next
-  power-up — the disk never switches content silently. A new image takes
-  effect at the next power-up; replace it with the MZ-800 off (over USB)
-  to keep the pool free.
-- If the image is missing, too short, not on `flash:`, or has unwritten
-  sectors, the RAM disk is skipped at boot and `/api/ramdisk` says why.
+  sectors are counted in `lost` and the state reads `image_changed` until
+  the next power-up — the disk never switches content silently. A new
+  image takes effect at the next power-up; replace it with the MZ-800 off
+  (over USB) to keep the pool free.
+- If the image is not on `flash:`, too short (without learn), or the
+  disk does not fit in RAM, the RAM disk is skipped at boot and
+  `/api/ramdisk` says why.
+
+##### learn: a self-learning image
+
+With `learn` no prepared image is needed: the card makes one and fills it
+with what the software writes, so the next boot is served from flash.
+
+```ini
+[ramdisk]
+image=flash:/POP800RD.IMG
+mode=cow
+size=512K
+```
+
+- **A missing image is created blank**, before the Z80 can reach the
+  disk (EXWAIT held): the file's clusters are allocated and their flash
+  pages trimmed, so every sector reads as **0x00** (FatFS's own value for a
+  never-written sector; one shared zero page in the firmware serves them).
+  No data is written: about half a second (`learn.create_ms`), mostly map
+  syncs. Free clusters are trimmed first, so the pages of files deleted
+  over USB or by older firmware become usable. The file is `size` + 512
+  bytes: the last sector, the *trailer*, holds the learn state. A short
+  image is recreated only if it is a learn image (a larger `size=`) or
+  with `learn=true`; a short prepared image is an error, never thrown away.
+- **Write-back**: when the pool is full and nothing is reclaimable, the
+  least recently written dirty blocks (a clock over the slots) are written
+  into the image file — their content becomes the image's — and freed, so
+  no write is dropped. It happens inside the port write that needed the
+  slot, with the Z80 held in WAIT, in batches of `learn_batch` blocks
+  (4 KB: about one flash erase + 8 page programs, ~50 ms, at most ~100 ms
+  with a map sync). Only halves that differ are written. The flash map is
+  synced every `learn_sync` blocks and at each MZ-800 reset.
+- **Stalls and when they happen.** A flash write stalls XIP, so the Z80
+  must wait; core 1 does the work itself (it is the only flash user in
+  MZ-800 mode, and inside a port write no other device can be accessed).
+  Nothing is written from an interrupt, from core 0, or while the bus is
+  idle (a flash operation started there would leave the next I/O of any
+  device unanswered). A stall is therefore only ever a need: in practice the
+  first boot of a program, which fills the disk with data the image lacks.
+  Once the image has learned the boot, later boots match it and play's
+  working set stays in the pool. `learn_reserve=N` keeps N slots free
+  ahead of need during such a learning burst (off: it only added writes in
+  the Prince of Persia trace).
+- **Convergence**: a *session* runs from one MZ-800 reset to the next.
+  The state is `learning` until `learn_converge` consecutive sessions
+  with RAM-disk activity pass without a write-back, then `ok`. A new
+  version of the software writes data that differs from the image, its
+  first boot writes back again and the state returns to `learning` by
+  itself. `frozen` turns the write-back off (the pool then works as
+  without learn, writes beyond it are dropped): `learn=frozen`,
+  `POST /api/ramdisk/freeze`, or `learn_freeze_after=N` consecutive
+  sessions that still write back (software whose working set exceeds the
+  pool). `POST /api/ramdisk/unfreeze` resumes learning.
+- **Re-learning from scratch**: `POST /api/ramdisk/relearn` blanks the
+  image in place at the next MZ-800 reset (its sectors trimmed, the pool
+  emptied, state `learning`); or delete the file with the MZ-800 off.
+- **Wear cap**: at most `learn_cap` blocks are written back per hour
+  (a token bucket, full at power-up: 1024 blocks ≈ 1 MB ≈ 260 sector
+  erases). Beyond it the disk drops writes like plain cow, counts them
+  (`learn.cap_drops`) and reads `capped` until tokens refill. flash_fs
+  spreads erases over the whole volume, so even a program writing back
+  continuously wears a 100,000-cycle chip for decades; `learn.wear_ppm`
+  estimates the wear (all learn erases ever over the volume's sectors, in
+  millionths of the endurance).
+- **Power loss** during a write-back leaves the volume consistent (the
+  double-buffered map, pages quarantined until the next sync): the image
+  then holds, sector by sector, either the old or the new content, and the
+  next boot simply learns again what was lost. The pool's last dirty
+  blocks are never written at power-off (the disk is RAM, after all); the
+  boot rewrites them into the pool.
+- `GET /api/ramdisk` → `learn`: `state` (`learning`, `ok`, `frozen`,
+  `capped`, `flash_full`, `image_gone`, `off`), `writebacks` (stalls),
+  `blocks`, `sectors`, `flash_bytes`, `stall_ms`, `stall_max_ms`,
+  `erases`, `syncs`, `tokens`, `cap_drops`, `fails`, and from the trailer
+  `sessions`, `clean_sessions`, `dirty_sessions`, `relearns`,
+  `blocks_total`, `erases_total`, `wear_ppm`; `fs_erases`,
+  `fs_copy_erases`, `fs_map_syncs` count all flash_fs work since power-up.
+- **Prince of Persia** (host replay of a real RAM-disk trace, a blank
+  512 KB image, typical flash timings): the first session writes back
+  436 blocks (857 sectors, 428 KB, 113 erases) in 109 stalls of up to
+  ~100 ms, 5.8 s in all (5.2 s of them in the 18 s boot, the rest in the
+  title); play writes nothing back. The second boot, and every boot after
+  a power cycle, writes back nothing; the pool peaks at 64 of 64 with no
+  drop.
 
 ---
 
