@@ -507,6 +507,12 @@ static void test_positions() {
     CHECK(cow.read(0xFFFFFFFF) == model[0xFFFF]);
     CHECK(cow.stats.out_of_range == 3);
     CHECK(compare_all(cow, model) == 0);
+    // Sizes that are not whole 64 KB pages are refused (the stray-position
+    // wrap into page 0 relies on at least one full page)
+    CowStore small;
+    CHECK(!small.setup(1024, 4, g_flash.data(), &g_busy));
+    CHECK(!small.setup(64 * 1024 + 1024, 4, g_flash.data(), &g_busy));
+    CHECK(small.setup(64 * 1024, 4, g_flash.data(), &g_busy));
 }
 
 static void test_busy() {
