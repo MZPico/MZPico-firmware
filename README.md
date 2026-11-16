@@ -354,7 +354,7 @@ pan=50
 
 ### RAM disk (paged)
 
-The `[ramdisk]` section emulates a paged RAM disk: 64 KB pages selected via the page register, byte access with auto-increment, and full 16-bit intra-page addressing on writes. Backed by Pico RAM, or by a file for persistent content. **Deluxe board only** (the 16-bit positioning that real MZ-1R18 software uses needs the Deluxe bus capture) — on Frugal the section is skipped at boot; use `pico_rd` for a RAM disk there.
+The `[ramdisk]` section emulates a paged RAM disk: 64 KB pages selected via the page register, byte access with auto-increment (the address wraps inside its 64 KB page), and full 16-bit intra-page addressing on writes. Backed by Pico RAM, or by a file for persistent content. **Deluxe board only** (the 16-bit positioning that real MZ-1R18 software uses needs the Deluxe bus capture) — on Frugal the section is skipped at boot; use `pico_rd` for a RAM disk there.
 
 Config section name: `[ramdisk]`
 
@@ -412,11 +412,18 @@ size=512K
   MZ-800 reset.
 - **RAM**: `cow_pool` KB plus about 5 bytes per KB of disk (2.5 KB for
   512 KB), allocated at boot.
-- **Rewriting the image while it is in use**: flash writes never stop or
-  disturb the disk (an access waits out a flash erase/program). Bytes of
-  the file rewritten in place show through at once (blocks in the pool keep
-  their pool content); replacing the file (delete + copy) leaves the
-  running disk on the old file's sectors until the next power-up.
+- **Changing the image while it is in use**: the running disk is a
+  snapshot of the image as it was at power-up. Flash writes never stop or
+  disturb it (an access waits out a flash erase/program). When the file is
+  rewritten, replaced (delete + copy) or its freed clusters are reused by
+  another file, each 1 KB block whose flash sectors get written is first
+  copied into the pool from the old sectors and kept there (`preserved`;
+  such blocks are never reclaimed and survive a clear). Only if the pool
+  has no slot left for one is it lost: it then reads the new data, its
+  sectors are counted in `lost` and the state reads `image_changed` until the next
+  power-up — the disk never switches content silently. A new image takes
+  effect at the next power-up; replace it with the MZ-800 off (over USB)
+  to keep the pool free.
 - If the image is missing, too short, not on `flash:`, or has unwritten
   sectors, the RAM disk is skipped at boot and `/api/ramdisk` says why.
 
