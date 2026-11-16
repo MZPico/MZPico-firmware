@@ -460,7 +460,10 @@ size=512K
   slot, with the Z80 held in WAIT, in batches of `learn_batch` blocks
   (4 KB: about one flash erase + 8 page programs, ~50 ms, at most ~100 ms
   with a map sync). Only halves that differ are written. The flash map is
-  synced every `learn_sync` blocks and at each MZ-800 reset.
+  synced every `learn_sync` blocks, and the learn state (trailer) and the
+  map once more after an MZ-800 reset - not during it: a reset does no
+  flash work and never holds the Z80; that work (~50-150 ms) waits for the
+  next RAM-disk address write, like a write-back.
 - **Stalls and when they happen.** A flash write stalls XIP, so the Z80
   must wait; core 1 does the work itself (it is the only flash user in
   MZ-800 mode, and inside a port write no other device can be accessed).
@@ -505,7 +508,9 @@ size=512K
   `erases`, `syncs`, `tokens`, `cap_drops`, `fails`, and from the trailer
   `sessions`, `clean_sessions`, `dirty_sessions`, `relearns`,
   `blocks_total`, `erases_total`, `wear_ppm`; `fs_erases`,
-  `fs_copy_erases`, `fs_map_syncs` count all flash_fs work since power-up.
+  `fs_copy_erases`, `fs_map_syncs` count all flash_fs work since power-up;
+  `resets`, `reset_us` (the last reset's handling), `persists`,
+  `persist_ms`, `persist_due` show the deferred reset work.
 - **Prince of Persia** (host replay of a real RAM-disk trace, a blank
   512 KB image, typical flash timings): the first session writes back
   436 blocks (857 sectors, 428 KB, 113 erases) in 109 stalls of up to

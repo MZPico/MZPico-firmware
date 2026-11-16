@@ -131,6 +131,10 @@ RAM_FUNC static void reset_handler(void) {
         // Escape hatch: full reboot with the old immediate semantics
         shutting_down = true;
         watchdog_enable(8000, 1); // wedge backstop should the flush hang
+        // Core 1 may be inside a flash operation (a RAM-disk write-back, a
+        // FatFS write): let it finish - it parks at its next one - before
+        // this core starts flash work of its own (flash_fs.c)
+        flash_fs_quiesce_core1(500000);
         MZDeviceManager::flushAll();
         watchdog_reboot(0, 0, 0);
         return;
@@ -554,6 +558,10 @@ void device_main() {
 
     bus_reset_init(pio0, SM_RESET);
     irq_set_exclusive_handler(PIO0_IRQ_0, reset_handler);
+    // Below the multicore lockout IRQ (SIO, default priority): core 1's
+    // flash operations can park this core even while the reset handler
+    // runs - the escape hatch waits for them (flash_fs_quiesce_core1)
+    irq_set_priority(PIO0_IRQ_0, PICO_LOWEST_IRQ_PRIORITY);
     irq_set_enabled(PIO0_IRQ_0, true);
     pio_set_irq0_source_enabled(pio0, pis_interrupt0, true);
 

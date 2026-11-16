@@ -70,6 +70,12 @@ void flash_fs_trim_FAT_sectors(uint32_t first, uint32_t count);
 // Called first by flash_fs_trim_FAT_sectors (single context). NULL = none.
 extern void (*flash_fs_trim_hook)(uint32_t first_sector, uint32_t count);
 
+// Reset escape hatch (core 0, after setting shutting_down): wait until core
+// 1 is out of any flash operation - it then parks at its next one - so the
+// flush that follows never runs a second lockout initiator alongside core
+// 1's. Bounded; false on timeout.
+bool flash_fs_quiesce_core1(uint32_t timeout_us);
+
 // Counters since power-up (diagnostics, the COW RAM disk's wear figures):
 // sector erases, bytes programmed, erases of the erase-with-copy path,
 // map syncs (MZP1: one map-sector erase + program per dirty meg).

@@ -278,15 +278,19 @@ public:
     // blocks (clean ones are simply freed). Returns the slots freed.
     uint32_t writeBack(uint32_t max_blocks, bool ahead);
     // Session boundary (MZ-800 reset): returns the blocks written back in
-    // the session, persists the map if anything was written since the last
-    // sync, starts the next session's counters
+    // the session and starts the next session's counters. RAM only: the
+    // map sync it may call for is the owner's, later (syncPending/syncNow)
     uint32_t endSession() {
         const uint32_t n = learn.session_blocks;
-        if (since_sync_ && io_.sync) { io_.sync(io_.ctx); learn.syncs++; since_sync_ = 0; }
         learn.session_blocks = 0;
         learn.session_drops = 0;
         need_wb_seen_ = false;
         return n;
+    }
+    bool syncPending() const { return since_sync_ != 0; }
+    void syncNow() {
+        if (since_sync_ && io_.sync) { io_.sync(io_.ctx); learn.syncs++; }
+        since_sync_ = 0;
     }
     uint32_t dirtyCount() const {
         uint32_t d = 0;

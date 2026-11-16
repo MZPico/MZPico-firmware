@@ -140,7 +140,10 @@ struct LDisk {
         st.release();
     }
     ~LDisk() { if (cur == this) close(); }
-    void reset(bool active = true) { im.endSession(st, pol, active); }   // an MZ-800 reset
+    // An MZ-800 reset (RAM only), then - as the firmware does at the next
+    // RAM-disk address write - the deferred flash work
+    void reset(bool active = true) { resetOnly(active); im.persist(st); }
+    void resetOnly(bool active = true) { im.endSession(st, pol, active); }
 };
 LDisk* LDisk::cur = nullptr;
 
@@ -368,6 +371,7 @@ static void test_converge() {
     CHECK(d.im.mode() == COW_LEARN_LEARNING && d.st.writeBackOn());
     d.reset();
     CHECK(d.im.relearn(d.st));
+    d.im.persist(d.st);                      // the next RAM-disk access
     std::vector<uint8_t> zeros(SIZE, 0);
     CHECK(mismatches(d.st, zeros) == 0);
     CHECK(d.st.stats.used == 0 && d.im.trailer().relearns == 1 && d.im.mode() == COW_LEARN_LEARNING);
@@ -381,6 +385,58 @@ static void test_converge() {
     CHECK(d.im.mode() == COW_LEARN_FROZEN && d.im.trailer().frozen_auto == 1);
     d.close();
     for (const auto& o : OTHERS) CHECK(file_ok(o.path, o.n, o.seed));
+}
+
+// ---------------- 3b. the reset path does no flash work ----------------
+static void test_reset_path() {
+    printf("learn: an MZ-800 reset does no flash work\n");
+    real_volume();
+    const uint32_t SIZE = 512 * 1024;
+    std::vector<uint8_t> model(SIZE, 0);
+    LDisk d;
+    CHECK(d.open("flash:/RS.IMG", SIZE, 64, -1) == 0);
+    // A learning session that leaves the pool full of dirty blocks, the
+    // map unsynced (fewer than learn_sync blocks since the last sync)
+    boot_like(d, model, 300, 70);
+    CHECK(d.st.dirtyCount() == 64 && d.st.learn.blocks > 0 && d.st.syncPending());
+    const uint32_t ops0 = sim_ops, wb0 = d.st.learn.blocks;
+    d.resetOnly();
+    CHECK(sim_ops == ops0);                       // no erase, no program at the reset
+    CHECK(d.st.learn.blocks == wb0);              // the dirty pool is NOT written back
+    CHECK(d.st.dirtyCount() == 64);
+    CHECK(d.im.persistPending(d.st));
+    // A second reset before any RAM-disk access: still nothing on flash,
+    // the work stays pending once
+    d.resetOnly(false);
+    CHECK(sim_ops == ops0 && d.im.persistPending(d.st));
+    // REST relearn/freeze at a reset: RAM only too
+    d.im.freeze(d.st, true);
+    d.resetOnly();
+    CHECK(sim_ops == ops0);
+    d.im.freeze(d.st, false);
+    // The deferred work, at the next access: bounded
+    const uint64_t t0 = sim_flash_us;
+    const uint32_t e0 = sim_erases;
+    d.im.persist(d.st);
+    printf("  deferred persist: %lu flash ops, %lu erases, %.0f ms\n", (unsigned long)(sim_ops - ops0),
+           (unsigned long)(sim_erases - e0), (sim_flash_us - t0) / 1e3);
+    CHECK(sim_erases - e0 <= 3 && sim_flash_us - t0 < 200000);
+    CHECK(!d.im.persistPending(d.st));
+    d.close();
+    // ... and it reached flash: a power cycle sees the trailer's state
+    CHECK(remount());
+    CHECK(d.open("flash:/RS.IMG", SIZE, 64, -1) == 0);
+    CHECK(d.im.mode() == COW_LEARN_LEARNING && d.im.trailer().wb_blocks == wb0);
+    const uint32_t ops1 = sim_ops;
+    d.im.relearn(d.st);
+    CHECK(sim_ops == ops1);                       // the trims are map edits
+    d.im.persist(d.st);
+    d.close();
+    CHECK(remount());
+    CHECK(d.open("flash:/RS.IMG", SIZE, 64, -1) == 0);
+    std::vector<uint8_t> zeros(SIZE, 0);
+    CHECK(mismatches(d.st, zeros) == 0 && d.im.trailer().relearns == 1);
+    d.close();
 }
 
 // ---------------- 4. wear cap ----------------
@@ -705,6 +761,7 @@ void learn_tests(int argc, char** argv) {
     test_create();
     test_writeback();
     test_converge();
+    test_reset_path();
     test_cap();
     test_remap();
     test_powercut();

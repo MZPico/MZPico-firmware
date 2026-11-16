@@ -97,12 +97,23 @@ public:
     const CowRuns& runs() const { return runs_; }
 
     CowLearnIo io();                 // for CowStore::setLearn
-    // MZ-800 reset (core 1, Z80 in reset): session accounting, the
-    // trailer, the map sync. Returns true when flash was written.
-    bool endSession(CowStore& store, const CowLearnPolicy& p, bool active);
+    // MZ-800 reset (core 1, Z80 in reset): the session accounting, in RAM
+    // only - no flash operation and no EXWAIT at a reset (a reset path that
+    // waits on flash collides with the reset escape hatch). What must reach
+    // flash (the trailer, the map) waits for persist().
+    void endSession(CowStore& store, const CowLearnPolicy& p, bool active);
     void freeze(CowStore& store, bool frozen);
-    // Back to a blank image (trim the disk's sectors), learning, pool empty
+    // Back to a blank image (the disk's sectors trimmed: map edits only),
+    // learning, pool empty; persisted by persist()
     bool relearn(CowStore& store);
+    // Deferred flash work: true when persist() has something to write
+    bool persistPending(const CowStore& store) const {
+        return mode_ != COW_LEARN_OFF && !gone_ && (pending_write_ || store.syncPending());
+    }
+    // The trailer if it changed, then the map sync: one page program + one
+    // or two map syncs, ~50-150 ms. Called by the owner from a RAM-disk
+    // port access (core 1, the Z80 held by EXWAIT), like a write-back.
+    void persist(CowStore& store);
 
     // flash_fs hooks (installed by the owner, both modes): page moves, and
     // trims (FatFS CTRL_TRIM: the image deleted or truncated). An external
