@@ -17,10 +17,16 @@
 // Every pooled block keeps a count of its bytes that differ from the image
 // (diff_). A block whose count is back at 0 (e.g. the size probe's marker
 // bytes, written and then restored) is identical to flash and is reclaimed
-// when the pool runs out. When no slot is free and none is reclaimable, the
-// write is DROPPED: counted, the address remembered, the "pool full" state
-// latched until the pool is cleared - see CowStats (exposed via
-// /api/ramdisk and /api/heap).
+// when the pool runs out. When no slot is free and none is reclaimable:
+//  - write-back off (plain cow, or learn frozen): the write is DROPPED:
+//    counted, the address remembered, the "pool full" state latched until
+//    the pool is cleared - see CowStats (exposed via /api/ramdisk and
+//    /api/heap);
+//  - write-back on ([ramdisk] learn, cow_image.hpp): the least recently
+//    written dirty blocks (a clock over per-slot "written" bits) are written
+//    into the image file - their content becomes the image's - and freed, a
+//    batch at a time, inside the very port write that needed the slot (the
+//    Z80 held by EXWAIT). See writeBack() for the policy and the wear cap.
 //
 // The disk is a snapshot of the image at power-up. A write to the image
 // file while the disk runs moves the written sectors to new flash pages
@@ -29,9 +35,13 @@
 // from the old page and pinned there (never reclaimed, kept by clear()), so
 // the running disk never shows the new file, another file reusing the
 // freed clusters, or a recycled page. Deleting the file writes no data
-// sectors (flash_fs has no TRIM), so the pages stay valid. When no slot is
-// left to preserve a block, its sectors are counted as lost and the state reads
-// image_changed until power-up - never silently.
+// sectors, and its trim (FatFS CTRL_TRIM, flash_fs_trim_FAT_sectors) is told
+// to the owner before the pages are dropped: the same remap() to the zero
+// page preserves the blocks. When no slot is left to preserve a block, its
+// sectors are counted as lost and the state reads image_changed until
+// power-up - never silently. The learn write-back's own rewrites are the
+// exception: the block just written IS the image now, so the table follows
+// the new page and the slot is freed (nothing pinned).
 //
 // Positions are always < size (the MR1R18 counter wraps inside its 64 KB
 // page, see ramdisk_pos.hpp); read()/write() still wrap a stray position
@@ -39,7 +49,9 @@
 //
 // Everything on the bus path is header-inline (inlined into the RAM_FUNC
 // port handlers) or RAM_FUNC, and touches only SRAM tables and XIP: no
-// FatFS, no flash-resident code. While a flash program/erase is in progress
+// FatFS, no flash-resident code - except the learn write-back, which calls
+// flash_fs through CowLearnIo from the port handler (core 1, the only flash
+// user in MZ-800 mode; no flash operation is in progress then). While a flash program/erase is in progress
 // (*busy_ != 0) no XIP read is issued: the access spins, the Z80 held in
 // /WAIT by the bus loop's EXWAIT.
 //
@@ -67,6 +79,7 @@ constexpr uint32_t COW_SECT = 1u << COW_SECT_SHIFT;
 constexpr uint8_t  COW_NONE = 0xFF;
 constexpr uint32_t COW_MAX_SLOTS = 255;                  // slot index is a byte
 constexpr uint16_t COW_FREE = 0xFFFF;                    // owner_ of an empty slot
+constexpr uint32_t COW_NOBLK = 0xFFFFFFFFu;
 
 struct CowStats {
     uint32_t size;          // disk bytes
@@ -85,6 +98,40 @@ struct CowStats {
     uint32_t out_of_range;  // stray positions >= size, wrapped into page 0
     uint32_t flash_waits;   // accesses that waited for a flash program/erase
     uint32_t clears;        // pool clears (REST /api/ramdisk/clear at a Z80 reset)
+};
+
+// The flash side of the learn write-back (firmware: cow_image.cpp)
+struct CowLearnIo {
+    // Write the disk's 512 B sector `sector` into the image; returns its new
+    // page (a sect_ entry), 0 = failed (the image keeps the old content)
+    uint16_t (*write_sector)(void* ctx, uint32_t sector, const uint8_t* data);
+    void (*sync)(void* ctx);            // persist the flash map
+    uint32_t (*now_us)(void* ctx);      // free-running microseconds (wraps)
+    void* ctx;
+};
+
+struct CowLearnCfg {
+    uint32_t batch = 4;           // blocks per write-back (4 x 1 KB = one 4 KB flash sector)
+    uint32_t reserve = 0;         // learning burst: keep this many slots free ahead of need (0 = off)
+    uint32_t burst_ms = 3000;     // ...while the last need-driven write-back is this recent
+    uint32_t cap = 1024;          // wear cap: blocks per cap_period (token bucket); 0 = no write-back
+    uint32_t cap_period_s = 3600;
+    uint32_t sync_every = 64;     // blocks written back between map syncs
+};
+
+struct CowLearnStats {
+    uint32_t batches;       // write-back episodes (each one Z80 stall)
+    uint32_t blocks;        // blocks written back (freed)
+    uint32_t ahead;         // ... of them ahead of need (learning burst reserve)
+    uint32_t sectors;       // 512 B sectors written into the image
+    uint32_t fails;         // sector writes that failed (flash volume full)
+    uint32_t cap_drops;     // writes dropped while the wear cap was exhausted
+    uint32_t syncs;         // map syncs requested
+    uint64_t stall_us;      // Z80 held during write-back
+    uint32_t stall_max_us;  // longest single episode
+    uint32_t session_blocks;  // this session (MZ-800 reset to reset)
+    uint32_t session_drops;
+    bool     capped;        // the cap was hit since power-up (latched)
 };
 
 class CowStore {
@@ -114,16 +161,18 @@ public:
         slot_of_ = static_cast<uint8_t*>(malloc(nblk_));
         diff_  = static_cast<uint16_t*>(malloc(nslot_ * sizeof(uint16_t)));
         owner_ = static_cast<uint16_t*>(malloc(nslot_ * sizeof(uint16_t)));
-        pinned_ = static_cast<uint8_t*>(malloc(nslot_));
+        pinned_ = static_cast<uint8_t*>(malloc(nslot_ * 2));
         if (!pool_ || !sect_ || !slot_of_ || !diff_ || !owner_ || !pinned_) { release(); return false; }
+        ref_ = pinned_ + nslot_;
         memset(sect_, 0, nsect_ * sizeof(uint16_t));
         memset(slot_of_, COW_NONE, nblk_);
         for (uint32_t i = 0; i < nslot_; i++) owner_[i] = COW_FREE;
-        memset(pinned_, 0, nslot_);
+        memset(pinned_, 0, nslot_ * 2);
         size_ = size;
         xip_ = xip_base;
         busy_ = busy;
         memset(&stats, 0, sizeof(stats));
+        memset(&learn, 0, sizeof(learn));
         stats.size = size;
         stats.sectors = nsect_;
         stats.pool_blocks = nslot_;
@@ -135,26 +184,30 @@ public:
     void release() {
         free(pool_); free(sect_); free(slot_of_); free(diff_); free(owner_); free(pinned_);
         pool_ = nullptr; sect_ = nullptr; slot_of_ = nullptr; diff_ = nullptr; owner_ = nullptr;
-        pinned_ = nullptr;
+        pinned_ = ref_ = nullptr;
         nblk_ = nsect_ = nslot_ = used_ = size_ = 0;
+        wb_on_ = false;
     }
 
     bool ready() const { return pool_ != nullptr; }
     uint16_t* sectorTable() { return sect_; }
     uint32_t sectorCount() const { return nsect_; }
     // Bytes of heap held (pool + tables)
-    uint32_t ramBytes() const { return nslot_ * (COW_BLOCK + 5) + nsect_ * 2 + nblk_; }
+    uint32_t ramBytes() const { return nslot_ * (COW_BLOCK + 6) + nsect_ * 2 + nblk_; }
 
     // Back to the power-up image: every block the Z80 changed reads from
     // flash again. Pinned blocks (the power-up content of image sectors
     // rewritten since, see remap) stay: flash no longer holds it. Ends
-    // the pool_full state; drops stays a running total.
-    void clear() {
+    // the pool_full state; drops stays a running total. all: the pinned
+    // blocks too (learn relearn: the image is blanked on purpose).
+    void clear(bool all = false) {
         if (!slot_of_) return;
         used_ = 0;
         for (uint32_t s = 0; s < nslot_; s++) {
             if (owner_[s] == COW_FREE) continue;
-            if (pinned_[s]) { used_++; continue; }
+            if (pinned_[s] && !all) { used_++; continue; }
+            pinned_[s] = 0;
+            ref_[s] = 0;
             slot_of_[owner_[s]] = COW_NONE;
             owner_[s] = COW_FREE;
         }
@@ -185,6 +238,7 @@ public:
             uint8_t* p = &pool_[((uint32_t)s << COW_BLOCK_SHIFT) | (pos & (COW_BLOCK - 1))];
             diff_[s] = (uint16_t)(diff_[s] + (v != img) - (*p != img));
             *p = v;
+            ref_[s] = 1;                // the clock's "recently written"
             return;
         }
         if (v == img) return;           // write-compare: nothing changes
@@ -200,12 +254,60 @@ public:
     // path on core 1. Returns the sectors moved.
     uint32_t remap(uint16_t old_entry, uint16_t new_entry);
 
+    // ---- learn: write-back into the image (off until configured) ----
+    void setLearn(const CowLearnIo& io, const CowLearnCfg& cfg) {
+        io_ = io;
+        cfg_ = cfg;
+        has_io_ = io.write_sector != nullptr && io.now_us != nullptr;
+        tokens_ = cfg.cap;
+        per_token_us_ = cfg.cap ? (uint32_t)((uint64_t)cfg.cap_period_s * 1000000u / cfg.cap) : 0;
+        if (has_io_) refill_at_ = io_.now_us(io_.ctx);
+    }
+    void setWriteBack(bool on) { wb_on_ = on && has_io_ && cfg_.cap; }
+    bool writeBackOn() const { return wb_on_; }
+    uint32_t tokens() const { return tokens_; }
+    // Point sector i at entry without preserving anything (the owner's own
+    // trim of the image: relearn, a fresh blank image)
+    void setSector(uint32_t i, uint16_t entry) {
+        if (i >= nsect_) return;
+        sect_[i] = entry;
+        const uint8_t s = slot_of_[i >> (COW_BLOCK_SHIFT - COW_SECT_SHIFT)];
+        if (s != COW_NONE) diff_[s] = countDiff(s, i >> (COW_BLOCK_SHIFT - COW_SECT_SHIFT));
+    }
+    // Write back up to max_blocks of the least recently written dirty
+    // blocks (clean ones are simply freed). Returns the slots freed.
+    uint32_t writeBack(uint32_t max_blocks, bool ahead);
+    // Session boundary (MZ-800 reset): returns the blocks written back in
+    // the session, persists the map if anything was written since the last
+    // sync, starts the next session's counters
+    uint32_t endSession() {
+        const uint32_t n = learn.session_blocks;
+        if (since_sync_ && io_.sync) { io_.sync(io_.ctx); learn.syncs++; since_sync_ = 0; }
+        learn.session_blocks = 0;
+        learn.session_drops = 0;
+        need_wb_seen_ = false;
+        return n;
+    }
+    uint32_t dirtyCount() const {
+        uint32_t d = 0;
+        for (uint32_t s = 0; s < nslot_; s++)
+            d += (owner_[s] != COW_FREE && diff_[s] != 0 && !pinned_[s]);
+        return d;
+    }
+    uint32_t pinnedCount() const {
+        uint32_t d = 0;
+        for (uint32_t s = 0; s < nslot_; s++) d += (owner_[s] != COW_FREE && pinned_[s]);
+        return d;
+    }
+
     // Test/diagnostic access
     uint8_t slotOf(uint32_t pos) const { return slot_of_[pos >> COW_BLOCK_SHIFT]; }
     uint16_t diffOf(uint8_t slot) const { return diff_[slot]; }
     bool pinnedSlot(uint8_t slot) const { return pinned_[slot] != 0; }
+    uint16_t sectorEntry(uint32_t i) const { return sect_[i]; }
 
     CowStats stats{};
+    CowLearnStats learn{};
 
 private:
     // Out of line, RAM_FUNC (cow_store.cpp): the slow paths
@@ -214,6 +316,16 @@ private:
     RAM_FUNC int takeSlot();                                // a free or reclaimable slot, or -1
     RAM_FUNC void copyIn(uint32_t s, uint32_t blk);         // the block's 1 KB from flash
     RAM_FUNC void allocAndWrite(uint32_t pos, uint8_t v);   // a block's first differing byte
+    RAM_FUNC uint16_t countDiff(uint8_t s, uint32_t blk);
+    void freeSlot(uint32_t s) {
+        slot_of_[owner_[s]] = COW_NONE;
+        owner_[s] = COW_FREE;
+        diff_[s] = 0;
+        ref_[s] = 0;
+        used_--;
+    }
+    bool takeToken(uint32_t now);
+    bool writeBackSlot(uint32_t s);
 
     const uint8_t* xip_ = nullptr;
     CowBusy* busy_ = nullptr;
@@ -223,6 +335,18 @@ private:
     uint16_t* diff_ = nullptr;
     uint16_t* owner_ = nullptr;
     uint8_t*  pinned_ = nullptr;
+    uint8_t*  ref_ = nullptr;      // per slot: written since the clock hand passed (shares pinned_'s block)
     uint32_t size_ = 0;
-    uint32_t nblk_ = 0, nsect_ = 0, nslot_ = 0, used_ = 0, scan_ = 0;
+    uint32_t nblk_ = 0, nsect_ = 0, nslot_ = 0, used_ = 0, scan_ = 0, hand_ = 0;
+
+    // learn
+    CowLearnIo io_{};
+    CowLearnCfg cfg_{};
+    bool has_io_ = false;
+    bool wb_on_ = false;
+    uint32_t wb_blk_ = COW_NOBLK;     // the block being written back: remap follows, never pins
+    uint32_t tokens_ = 0, per_token_us_ = 0, refill_at_ = 0;
+    uint32_t since_sync_ = 0;
+    bool need_wb_seen_ = false;
+    uint32_t last_need_wb_us_ = 0;
 };

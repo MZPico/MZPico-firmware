@@ -5,7 +5,8 @@
 #include <stdlib.h>
 
 int cow_resolve_file(FIL* fp, uint32_t nsect, uint16_t (*map_entry)(uint32_t lba),
-                     uint32_t max_entry, uint16_t* out, char* err, size_t err_len) {
+                     uint32_t max_entry, uint32_t base, uint16_t hole_entry,
+                     uint16_t* out, CowRuns* runs, char* err, size_t err_len) {
     static_assert(FF_MAX_SS == 512 && FF_MIN_SS == 512, "the table assumes 512-byte FAT sectors");
     FATFS* fs = fp->obj.fs;
     if ((uint64_t)f_size(fp) < (uint64_t)nsect * 512) {
@@ -35,6 +36,26 @@ int cow_resolve_file(FIL* fp, uint32_t nsect, uint16_t (*map_entry)(uint32_t lba
     }
 
     const uint32_t csize = fs->csize;
+    if (runs) {
+        runs->release();
+        uint32_t k = 0;
+        for (const DWORD* p = clmt + 1; *p; p += 2) k++;
+        runs->run = static_cast<CowRun*>(malloc((k ? k : 1) * sizeof(CowRun)));
+        if (!runs->run) {
+            free(clmt);
+            snprintf(err, err_len, "no RAM for the run list");
+            return -1;
+        }
+        const uint32_t file_sect = (uint32_t)((f_size(fp) + 511) / 512);
+        for (const DWORD* p = clmt + 1; *p && runs->sectors < file_sect; p += 2) {
+            uint32_t c = p[0] * csize;
+            if (c > file_sect - runs->sectors) c = file_sect - runs->sectors;
+            runs->run[runs->n].lba = (uint32_t)(fs->database + (uint64_t)csize * (p[1] - 2));
+            runs->run[runs->n].count = c;
+            runs->n++;
+            runs->sectors += c;
+        }
+    }
     uint32_t done = 0;
     for (const DWORD* p = clmt + 1; *p && done < nsect; p += 2) {
         const uint32_t run = p[0], first = p[1];
@@ -43,18 +64,20 @@ int cow_resolve_file(FIL* fp, uint32_t nsect, uint16_t (*map_entry)(uint32_t lba
             for (uint32_t k = 0; k < csize && done < nsect; k++) {
                 const uint64_t sec = lba + k;
                 const uint16_t e = (sec >> 32) ? 0 : map_entry((uint32_t)sec);
-                if (e == 0 || e >= max_entry) {
+                if ((e == 0 && hole_entry == 0) || e >= max_entry || base + e > 0xFFFFu) {
                     free(clmt);
+                    if (runs) runs->release();
                     snprintf(err, err_len, "sector %lu (LBA %lu) %s", (unsigned long)done,
                              (unsigned long)sec, e ? "outside the flash region" : "has no flash page");
                     return -1;
                 }
-                out[done++] = e;
+                out[done++] = e ? (uint16_t)(base + e) : hole_entry;
             }
         }
     }
     free(clmt);
     if (done < nsect) {
+        if (runs) runs->release();
         snprintf(err, err_len, "cluster chain ends after %lu sectors", (unsigned long)done);
         return -1;
     }

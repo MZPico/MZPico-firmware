@@ -13,6 +13,8 @@
 // src/mz_devices/ramdisk.cpp
 extern "C" int ramdisk_cow_json(char *buf, size_t len);
 extern "C" void ramdisk_cow_request_clear(void);
+extern "C" int ramdisk_cow_json_full(char *buf, size_t len);
+extern "C" int ramdisk_cow_request(const char *what);
 
 
 #ifndef REST_API_PORT
@@ -38,7 +40,7 @@ static char g_last_cmd[REST_MAX_CMD_SIZE] = {0};
 static RestApiCommandHandler g_cmd_handler = nullptr;
 // Response body for /api/status and /api/heap. Static, not on the 2 KB
 // core 0 stack the lwIP callbacks run on; tcp_write copies it out.
-static char g_json_buf[1024];
+static char g_json_buf[1280];   // /api/ramdisk with learn: ~1 KB
 
 static const char *find_substr(const char *data, size_t len, const char *needle, size_t nlen) {
     if (!data || !needle || nlen == 0 || len < nlen) return nullptr;
@@ -200,8 +202,21 @@ static void rest_parse_and_handle(RestConn *conn) {
                            "{\"clear\":\"armed: the pool clears at the next MZ-800 reset\"}");
         return;
     }
+    // learn: relearn (blank image), freeze, unfreeze - at the next MZ-800 reset
+    if ((strcasecmp(method, "POST") == 0 || strcasecmp(method, "GET") == 0) &&
+        strncmp(uri, "/api/ramdisk/", 13) == 0 &&
+        (strcmp(uri + 13, "relearn") == 0 || strcmp(uri + 13, "freeze") == 0 ||
+         strcmp(uri + 13, "unfreeze") == 0)) {
+        if (ramdisk_cow_request(uri + 13) == 0)
+            rest_send_response(conn, "200 OK", "application/json",
+                               "{\"learn\":\"armed: applied at the next MZ-800 reset\"}");
+        else
+            rest_send_response(conn, "409 Conflict", "application/json",
+                               "{\"error\":\"no learn RAM disk\"}");
+        return;
+    }
     if (strcasecmp(method, "GET") == 0 && strncmp(uri, "/api/ramdisk", 12) == 0) {
-        ramdisk_cow_json(g_json_buf, sizeof(g_json_buf));
+        ramdisk_cow_json_full(g_json_buf, sizeof(g_json_buf));
         rest_send_response(conn, "200 OK", "application/json", g_json_buf);
         return;
     }

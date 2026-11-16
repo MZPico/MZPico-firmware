@@ -43,9 +43,10 @@
 #include "diskio.h"
 #include "cow_store.hpp"
 #include "cow_resolve.hpp"
+#include "flash_fs.h"
 #include "ramdisk_pos.hpp"
 
-static int g_fail = 0;
+int g_fail = 0;
 #define CHECK(c) do { if (!(c)) { printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); g_fail++; } } while (0)
 
 // ---------------- emulated flash_fs ----------------
@@ -70,11 +71,28 @@ static void flash_reset() {
 
 static uint16_t map_entry(uint32_t lba) { return lba < NUM_LBA ? g_map[lba] : 0; }
 
+// The learn tests (learn.cpp) run FatFS on the REAL src/flash_fs.c over an
+// emulated NOR chip (flash_sim.cpp) instead: g_real_flash switches the disk
+bool g_real_flash = false;
+bool g_real_no_trim = false;   // real mode: a delete as firmware before TRIM did it
+// Emulated TRIM (FatFS CTRL_TRIM, as the firmware does since learn): off
+// = the pages stay, as with the firmware before; on = the hook is told,
+// then the pages are poisoned and recycled
+static bool g_emu_trim = false;
+static void (*g_trim_hook)(uint32_t lba, uint16_t old_page) = nullptr;
+
 extern "C" {
 DSTATUS disk_status(BYTE) { return 0; }
 DSTATUS disk_initialize(BYTE) { return 0; }
 DRESULT disk_read(BYTE pdrv, BYTE* buff, LBA_t sector, UINT count) {
     if (pdrv != 0) return RES_PARERR;
+    if (g_real_flash) {
+        for (UINT i = 0; i < count; i++) {
+            if (sector + i >= flash_fs_num_fat_sectors()) return RES_PARERR;
+            flash_fs_read_FAT_sector((uint16_t)(sector + i), buff + i * 512);
+        }
+        return RES_OK;
+    }
     for (UINT i = 0; i < count; i++) {
         LBA_t s = sector + i;
         if (s >= NUM_LBA) return RES_PARERR;
@@ -85,6 +103,14 @@ DRESULT disk_read(BYTE pdrv, BYTE* buff, LBA_t sector, UINT count) {
 }
 DRESULT disk_write(BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count) {
     if (pdrv != 0) return RES_PARERR;
+    if (g_real_flash) {   // as src/fatfs_disk.c
+        for (UINT i = 0; i < count; i++) {
+            if (sector + i >= flash_fs_num_fat_sectors()) return RES_PARERR;
+            if (!flash_fs_write_FAT_sector((uint16_t)(sector + i), buff + i * 512)) return RES_ERROR;
+            if (!flash_fs_verify_FAT_sector((uint16_t)(sector + i), buff + i * 512)) return RES_ERROR;
+        }
+        return RES_OK;
+    }
     for (UINT i = 0; i < count; i++) {
         LBA_t s = sector + i;
         if (s >= NUM_LBA || g_free.empty()) return RES_ERROR;
@@ -105,6 +131,32 @@ DRESULT disk_write(BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count) {
     return RES_OK;
 }
 DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void* buff) {
+    if (g_real_flash) {   // as src/fatfs_glue.c
+        switch (cmd) {
+        case CTRL_SYNC: flash_fs_sync(); return RES_OK;
+        case GET_SECTOR_COUNT: *(LBA_t*)buff = flash_fs_num_fat_sectors(); return RES_OK;
+        case GET_SECTOR_SIZE: *(WORD*)buff = 512; return RES_OK;
+        case GET_BLOCK_SIZE: *(DWORD*)buff = 1; return RES_OK;
+        case CTRL_TRIM: {
+            const LBA_t* r = (const LBA_t*)buff;
+            if (r[1] >= r[0] && !g_real_no_trim) flash_fs_trim_FAT_sectors((uint32_t)r[0], (uint32_t)(r[1] - r[0] + 1));
+            return RES_OK;
+        }
+        default: return RES_PARERR;
+        }
+    }
+    if (cmd == CTRL_TRIM && g_emu_trim) {
+        const LBA_t* r = (const LBA_t*)buff;
+        for (LBA_t l = r[0]; l <= r[1] && l < NUM_LBA; l++) {
+            const uint16_t old = g_map[l];
+            if (!old) continue;
+            if (g_trim_hook) g_trim_hook((uint32_t)l, old);
+            g_map[l] = 0;
+            memset(&g_flash[old * 512u], 0xEE, 512);
+            g_free.push_back(old);
+        }
+        return RES_OK;
+    }
     switch (cmd) {
     case CTRL_SYNC: return RES_OK;
     case GET_SECTOR_COUNT: *(LBA_t*)buff = NUM_LBA; return RES_OK;
@@ -184,7 +236,7 @@ static void test_resolve(UINT au) {
     CHECK(frags >= 3);
     std::vector<uint16_t> tbl(NS);
     char err[96] = "";
-    int r = cow_resolve_file(&f, NS, map_entry, NUM_PAGES, tbl.data(), err, sizeof err);
+    int r = cow_resolve_file(&f, NS, map_entry, NUM_PAGES, 0, 0, tbl.data(), nullptr, err, sizeof err);
     if (r) printf("  error: %s\n", err);
     CHECK(r == 0);
     uint32_t bad = 0, jumps = 0;
@@ -200,13 +252,13 @@ static void test_resolve(UINT au) {
     CHECK(jumps > NS / 2);   // the scrambled allocator: the test is not trivially linear
 
     // A prefix is fine; longer than the file is refused
-    CHECK(cow_resolve_file(&f, NS / 2, map_entry, NUM_PAGES, tbl.data(), err, sizeof err) == 0);
+    CHECK(cow_resolve_file(&f, NS / 2, map_entry, NUM_PAGES, 0, 0, tbl.data(), nullptr, err, sizeof err) == 0);
     const uint32_t past = (uint32_t)((f_size(&f) + 511) / 512) + 1;
     tbl.resize(past);
-    CHECK(cow_resolve_file(&f, past, map_entry, NUM_PAGES, tbl.data(), err, sizeof err) != 0);
+    CHECK(cow_resolve_file(&f, past, map_entry, NUM_PAGES, 0, 0, tbl.data(), nullptr, err, sizeof err) != 0);
     printf("  longer than the file: %s\n", err);
     // Entries outside the region are refused
-    CHECK(cow_resolve_file(&f, NS, map_entry, RESERVED_PAGES + 1, tbl.data(), err, sizeof err) != 0);
+    CHECK(cow_resolve_file(&f, NS, map_entry, RESERVED_PAGES + 1, 0, 0, tbl.data(), nullptr, err, sizeof err) != 0);
     printf("  outside the region: %s\n", err);
     f_close(&f);
 
@@ -214,9 +266,20 @@ static void test_resolve(UINT au) {
     FIL h;
     CHECK(f_open(&h, "flash:/HOLE.BIN", FA_CREATE_ALWAYS | FA_WRITE) == FR_OK);
     CHECK(f_expand(&h, 64 * 1024, 1) == FR_OK);
-    r = cow_resolve_file(&h, 128, map_entry, NUM_PAGES, tbl.data(), err, sizeof err);
+    r = cow_resolve_file(&h, 128, map_entry, NUM_PAGES, 0, 0, tbl.data(), nullptr, err, sizeof err);
     CHECK(r != 0);
     printf("  hole: %s\n", err);
+    // ... unless a hole entry is given (learn's blank image): every
+    // sector then names it, and the run list covers the whole file
+    CowRuns runs;
+    r = cow_resolve_file(&h, 128, map_entry, NUM_PAGES, 100, 7, tbl.data(), &runs, err, sizeof err);
+    CHECK(r == 0);
+    bool all7 = true;
+    for (uint32_t i = 0; i < 128; i++) all7 = all7 && tbl[i] == 7;
+    CHECK(all7);
+    CHECK(runs.sectors == 128 && runs.n == 1);
+    CHECK(runs.index(runs.lba(77)) == 77);
+    runs.release();
     f_close(&h);
     f_mount(nullptr, "flash:", 0);
 }
@@ -234,7 +297,7 @@ static bool open_disk(CowStore& cow, uint32_t size, uint32_t pool, std::vector<u
     CHECK(f_open(&f, "flash:/IMG.BIN", FA_READ) == FR_OK);
     if (!cow.setup(size, pool, g_flash.data(), &g_busy)) return false;
     char err[96];
-    int r = cow_resolve_file(&f, cow.sectorCount(), map_entry, NUM_PAGES, cow.sectorTable(), err, sizeof err);
+    int r = cow_resolve_file(&f, cow.sectorCount(), map_entry, NUM_PAGES, 0, 0, cow.sectorTable(), nullptr, err, sizeof err);
     f_close(&f);
     CHECK(r == 0);
     image.resize(size);
@@ -532,7 +595,32 @@ static void test_busy() {
     printf("  waited %ld ms\n", (long)ms);
 }
 
-int main() {
+void learn_tests(int argc, char** argv);
+
+// The image deleted with TRIM (the firmware since learn): the trim hook
+// preserves the blocks by a remap onto a zero page before the pages go
+static constexpr uint16_t ZERO_PAGE = 1;   // inside RESERVED_PAGES
+static void trim_hook(uint32_t, uint16_t old) { if (g_cow) g_cow->remap(old, ZERO_PAGE); }
+
+static void test_replace_trim() {
+    printf("image deleted (TRIM) and replaced while running\n");
+    const uint32_t SIZE = 128 * 1024;
+    CowStore cow;
+    std::vector<uint8_t> model;
+    CHECK(open_disk(cow, SIZE, 200, model));
+    memset(&g_flash[ZERO_PAGE * 512u], 0, 512);
+    g_cow = &cow; g_remap_hook = hook; g_emu_trim = true; g_trim_hook = trim_hook;
+    model[777] ^= 0x40; cow.write(777, model[777]);
+    replace_image();
+    printf("  preserved %lu lost %lu\n", (unsigned long)cow.stats.preserved, (unsigned long)cow.stats.lost);
+    CHECK(cow.stats.lost == 0);
+    CHECK(cow.stats.preserved == SIZE / 1024 - 1);   // all but the pooled one
+    CHECK(compare_all(cow, model) == 0);
+    CHECK(poisoned_sectors(cow, SIZE) == 0);
+    g_remap_hook = nullptr; g_cow = nullptr; g_emu_trim = false; g_trim_hook = nullptr;
+}
+
+int main(int argc, char** argv) {
     test_resolve(1);
     test_resolve(4);
     test_semantics();
@@ -540,8 +628,10 @@ int main() {
     test_stress(16, 60, true);     // exhaustion
     test_rewrite();
     test_replace();
+    test_replace_trim();
     test_positions();
     test_busy();
+    learn_tests(argc, argv);
     printf(g_fail ? "%d FAILED\n" : "all passed\n", g_fail);
     return g_fail ? 1 : 0;
 }
