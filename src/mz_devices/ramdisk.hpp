@@ -4,11 +4,19 @@
 #include "byte_source.hpp"
 #include "mz_devices.hpp"
 #include "common.hpp"
+#include "cow_store.hpp"
 
 constexpr uint32_t RAMDISK_DEFAULT_SIZE = 65536;
 constexpr uint8_t RAMDISK_DEFAULT_BASE_PORT = 0xe9;
 constexpr const char RAMDISK_ID[] = "ramdisk";
 constexpr bool RAMDISK_EXWAIT = true;
+constexpr uint32_t RAMDISK_COW_DEFAULT_POOL_KB = 64;
+
+// REST / diagnostics (core 0): the COW RAM disk's state as a JSON object,
+// and a pool clear armed for the next Z80 reset. Plain C linkage so the C
+// heap diagnostic can embed the object.
+extern "C" int ramdisk_cow_json(char* buf, size_t len);
+extern "C" void ramdisk_cow_request_clear(void);
 
 class RamDisk final : public MZDevice {
 public:
@@ -30,7 +38,13 @@ public:
     RAM_FUNC static int writeAddress(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
     RAM_FUNC static int readHighAddr(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr);
 
-    void softReset() override { pos_ = 0; } // contents persist, like real RAM
+    // Contents persist, like real RAM (in COW mode: the pool survives
+    // every Z80 reset; only a card power-up - or a reboot - clears it)
+    void softReset() override;
+
+    // mode=cow: the store (state for REST), and flash_fs's page-move hook
+    const CowStore& cowStore() const { return cow; }
+    void cowRemap(uint16_t old_entry, uint16_t new_entry) { cow.remap(old_entry, new_entry); }
 
     // Deluxe only: 16-bit intra-page positioning (what real MZ-1R18
     // software uses) needs the Deluxe write capture - on Frugal the
@@ -47,6 +61,10 @@ public:
     }
 
 private:
+    int readConfigCow(dictionary* ini, const std::string& image, uint32_t size_given);
+
+    bool cow_ = false;      // mode=cow: flash image (XIP) + SRAM copy-on-write pool
+    CowStore cow;
     uint8_t* data;
     bool readOnly;
     uint32_t size;

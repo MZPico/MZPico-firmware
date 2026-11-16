@@ -10,6 +10,9 @@
 #include "pico/stdlib.h"
 #include "lwip/tcp.h"
 #include "heap_diag.h"
+// src/mz_devices/ramdisk.cpp
+extern "C" int ramdisk_cow_json(char *buf, size_t len);
+extern "C" void ramdisk_cow_request_clear(void);
 
 
 #ifndef REST_API_PORT
@@ -35,7 +38,7 @@ static char g_last_cmd[REST_MAX_CMD_SIZE] = {0};
 static RestApiCommandHandler g_cmd_handler = nullptr;
 // Response body for /api/status and /api/heap. Static, not on the 2 KB
 // core 0 stack the lwIP callbacks run on; tcp_write copies it out.
-static char g_json_buf[512];
+static char g_json_buf[1024];
 
 static const char *find_substr(const char *data, size_t len, const char *needle, size_t nlen) {
     if (!data || !needle || nlen == 0 || len < nlen) return nullptr;
@@ -185,6 +188,20 @@ static void rest_parse_and_handle(RestConn *conn) {
 
     if (strcasecmp(method, "GET") == 0 && strncmp(uri, "/api/heap", 9) == 0) {
         heap_diag_json(g_json_buf, sizeof(g_json_buf));
+        rest_send_response(conn, "200 OK", "application/json", g_json_buf);
+        return;
+    }
+
+    // COW RAM disk: its state, and a pool clear armed for the next Z80 reset
+    if (strncmp(uri, "/api/ramdisk/clear", 18) == 0 &&
+        (strcasecmp(method, "POST") == 0 || strcasecmp(method, "GET") == 0)) {
+        ramdisk_cow_request_clear();
+        rest_send_response(conn, "200 OK", "application/json",
+                           "{\"clear\":\"armed: the pool clears at the next MZ-800 reset\"}");
+        return;
+    }
+    if (strcasecmp(method, "GET") == 0 && strncmp(uri, "/api/ramdisk", 12) == 0) {
+        ramdisk_cow_json(g_json_buf, sizeof(g_json_buf));
         rest_send_response(conn, "200 OK", "application/json", g_json_buf);
         return;
     }

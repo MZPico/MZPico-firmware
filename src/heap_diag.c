@@ -15,6 +15,8 @@
 
 #include "heap_diag.h"
 
+int ramdisk_cow_json(char *buf, size_t len);   // src/mz_devices/ramdisk.cpp
+
 #ifdef USE_PICO_W   // exposed via the REST API only; non-W builds are unchanged
 
 #include <malloc.h>
@@ -145,11 +147,11 @@ int heap_diag_json(char *buf, size_t len) {
     uint32_t probe_us = (uint32_t)(time_us_64() - t0);
     if (h.total_free < g_min_free) g_min_free = h.total_free;
 
-    return snprintf(buf, len,
+    int n = snprintf(buf, len,
         "{\"free\":%lu,\"largest\":%lu,\"blocks_16k\":%lu,\"blocks_4k\":%lu,"
         "\"min_free\":%lu,\"free_devices_up\":%lu,\"free_wifi_up\":%lu,"
         "\"arena\":%lu,\"arena_free\":%lu,\"arena_used\":%lu,\"tail\":%lu,"
-        "\"span\":%lu,\"samples\":%lu,\"probe_us\":%lu}",
+        "\"span\":%lu,\"samples\":%lu,\"probe_us\":%lu,\"ramdisk\":",
         (unsigned long)h.total_free, (unsigned long)largest,
         (unsigned long)n16, (unsigned long)n4,
         (unsigned long)(g_min_free == UINT32_MAX ? 0 : g_min_free),
@@ -158,6 +160,10 @@ int heap_diag_json(char *buf, size_t len) {
         (unsigned long)h.uordblks, (unsigned long)h.tail,
         (unsigned long)(&__StackLimit - &end),
         (unsigned long)g_samples, (unsigned long)probe_us);
+    // The COW RAM disk's pool state rides along (src/mz_devices/ramdisk.cpp)
+    if (n > 0 && (size_t)n < len) n += ramdisk_cow_json(buf + n, len - (size_t)n);
+    if (n > 0 && (size_t)n + 1 < len) { buf[n++] = '}'; buf[n] = '\0'; }
+    return n;
 }
 
 #endif // USE_PICO_W

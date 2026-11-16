@@ -117,6 +117,9 @@ void flash_erase_with_copy_sector(uint16_t sector, uint8_t preserve_bitmap);
 // overrides this.
 __attribute__((weak)) volatile bool shutting_down = false;
 
+volatile uint32_t flash_fs_op_active = 0;
+void (*flash_fs_remap_hook)(uint16_t old_entry, uint16_t new_entry) = NULL;
+
 // Helpers to minimize repetition and keep flash critical sections consistent
 static inline bool flash_guard_enter(uint32_t *saved_ints) {
     // Core 1 yields at this (pre-lockout, safe) boundary during shutdown:
@@ -125,6 +128,11 @@ static inline bool flash_guard_enter(uint32_t *saved_ints) {
     if (get_core_num() == 1) {
         while (shutting_down) { tight_loop_contents(); }
     }
+    // Announce the operation before the other core is parked: a bus
+    // handler that XIP-reads the storage region (RAM disk COW mode) spins
+    // on this instead of reading mid-erase
+    flash_fs_op_active++;
+    __dmb();
     uint other_core = 1u - get_core_num();
     bool lockout_started = false;
     bool lockout_ready = multicore_lockout_victim_is_initialized(other_core);
@@ -141,6 +149,8 @@ static inline void flash_guard_exit(uint32_t saved_ints, bool lockout_started) {
     if (lockout_started) {
         multicore_lockout_end_blocking();
     }
+    __dmb();
+    flash_fs_op_active--;
 }
 
 void debug_print_in_use() {
@@ -491,7 +501,25 @@ bool flash_fs_write_FAT_sector(uint16_t fat_sector, const void *buffer)
     used_bitmap[getMapSector(mapEntry)] |= (1 << getMapOffset(mapEntry));
 
     flash_write_sector(getMapSector(mapEntry), getMapOffset(mapEntry), buffer, 512);
+    if (oldEntry && flash_fs_remap_hook)
+        flash_fs_remap_hook(oldEntry, mapEntry);
     return true;
+}
+
+uint16_t flash_fs_map_entry(uint32_t fat_sector)
+{
+    if (fat_sector >= flash_fs_num_fat_sectors()) return 0;
+    return fs_map.sectors[fat_sector];
+}
+
+uint32_t flash_fs_num_pages(void)
+{
+    return (uint32_t)NUM_FLASH_SECTORS * 8;
+}
+
+const uint8_t *flash_fs_xip_base(void)
+{
+    return (const uint8_t *)(XIP_BASE + HW_FLASH_STORAGE_BASE);
 }
 
 bool flash_fs_verify_FAT_sector(uint16_t fat_sector, const void *buffer)
