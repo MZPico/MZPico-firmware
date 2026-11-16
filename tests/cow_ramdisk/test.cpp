@@ -18,10 +18,16 @@
 //     write-then-restore blocks reclaimed when the pool fills, exhaustion
 //     drops counted (and the ONLY way reads ever diverge from a perfect
 //     RAM), random stress with and without exhaustion.
-//  3. Rewriting the image file in place while the disk runs: the table
-//     follows the moved pages (never reads a poisoned page), pooled blocks
-//     keep their content and their difference counts are recounted.
+//  3. Changing the image file while the disk runs (rewritten in place;
+//     deleted and replaced by another file reusing its clusters): the disk
+//     keeps its power-up content, the touched blocks preserved (pinned) in
+//     the pool, the table following the moved pages (never a poisoned
+//     page); with too small a pool the loss is counted, never silent;
+//     clear() keeps the pinned blocks and ends the pool-full state.
 //  4. The flash-busy flag: an access waits for the flag to clear.
+//  5. Positions: the MR1R18 counter wraps inside its 64 KB page (a 64 KB
+//     disk at 0xFFFF, two reads), and a stray position past the end is
+//     wrapped, never indexes past the tables (run.sh builds with ASan).
 
 #include <cstdio>
 #include <cstdlib>
@@ -37,6 +43,7 @@
 #include "diskio.h"
 #include "cow_store.hpp"
 #include "cow_resolve.hpp"
+#include "ramdisk_pos.hpp"
 
 static int g_fail = 0;
 #define CHECK(c) do { if (!(c)) { printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); g_fail++; } } while (0)
@@ -215,7 +222,7 @@ static void test_resolve(UINT au) {
 }
 
 // ---------------- CowStore vs a model ----------------
-static volatile uint32_t g_busy = 0;
+static std::atomic<uint32_t> g_busy{0};   // CowBusy is std::atomic on the host
 static CowStore* g_cow = nullptr;
 static void hook(uint16_t o, uint16_t n) { if (g_cow) g_cow->remap(o, n); }
 
@@ -344,48 +351,162 @@ static void test_stress(uint32_t pool, uint32_t blocks_touched, bool expect_drop
     if (expect_drops) CHECK(cow.stats.drops > 0); else CHECK(cow.stats.drops == 0);
 }
 
+static std::vector<uint8_t> file_bytes(uint32_t off, uint32_t n, uint32_t seed) {
+    std::vector<uint8_t> b(n);
+    for (uint32_t i = 0; i < n; i++) b[i] = pattern(off + i, seed);
+    return b;
+}
+
 static void test_rewrite() {
-    printf("image rewritten while running\n");
+    printf("image rewritten in place while running\n");
     const uint32_t SIZE = 256 * 1024;
     CowStore cow;
     std::vector<uint8_t> model;
     CHECK(open_disk(cow, SIZE, 16, model));
     g_cow = &cow;
     g_remap_hook = hook;
-    // Pool two blocks inside the region about to be rewritten
+    // Two blocks pooled by the Z80 inside the region about to be rewritten
     const uint32_t P1 = 20 * 1024 + 5, P2 = 23 * 1024 + 9;
     model[P1] ^= 0x11; cow.write(P1, model[P1]);
     model[P2] ^= 0x22; cow.write(P2, model[P2]);
+    // and one elsewhere
+    const uint32_t P3 = 100 * 1024 + 1;
+    model[P3] ^= 0x33; cow.write(P3, model[P3]);
 
-    // In-place rewrite of bytes 20000..29999 of the file (new pattern)
+    // In-place rewrite of bytes 20000..29999 (blocks 19..29) of the file
     FIL f;
     CHECK(f_open(&f, "flash:/IMG.BIN", FA_READ | FA_WRITE) == FR_OK);
     CHECK(f_lseek(&f, 20000) == FR_OK);
-    std::vector<uint8_t> nb(10000);
-    for (uint32_t i = 0; i < nb.size(); i++) nb[i] = pattern(20000 + i, 9);
+    std::vector<uint8_t> nb = file_bytes(20000, 10000, 9);
     UINT w;
     CHECK(f_write(&f, nb.data(), (UINT)nb.size(), &w) == FR_OK && w == nb.size());
     f_close(&f);
-    printf("  image_moves %lu\n", (unsigned long)cow.stats.image_moves);
+    printf("  image_moves %lu preserved %lu lost %lu\n", (unsigned long)cow.stats.image_moves,
+           (unsigned long)cow.stats.preserved, (unsigned long)cow.stats.lost);
     CHECK(cow.stats.image_moves >= 10000 / 512);
+    CHECK(cow.stats.preserved == 11 - 2);   // blocks 19..29, two already pooled
+    CHECK(cow.stats.lost == 0);
+    CHECK(compare_all(cow, model) == 0);    // the power-up content, not the new file
+    for (uint32_t b = 19; b <= 29; b++) CHECK(cow.slotOf(b * 1024) != COW_NONE && cow.pinnedSlot(cow.slotOf(b * 1024)));
+    CHECK(!cow.pinnedSlot(cow.slotOf(P3)));
 
-    // Expected: new bytes where not pooled; the pooled blocks keep the pool
-    std::vector<uint8_t> image(SIZE);
-    for (uint32_t i = 0; i < SIZE; i++) image[i] = pattern(i, 1);
-    for (uint32_t i = 0; i < nb.size(); i++) image[20000 + i] = nb[i];
+    // Pinned blocks are not reclaimable: fill the pool, the 13th change drops
+    // (16 slots: 11 pinned + P3 + 4 more)
+    for (uint32_t k = 0; k < 4; k++) { uint32_t a = (150 + k) * 1024; model[a] ^= 1; cow.write(a, model[a]); }
+    CHECK(cow.stats.drops == 0);
+    uint32_t a = 200 * 1024;
+    cow.write(a, (uint8_t)(model[a] ^ 1));
+    CHECK(cow.stats.drops == 1 && cow.stats.pool_full == 1);
+    CHECK(compare_all(cow, model) == 0);
+
+    // clear(): back to the power-up image - the pinned blocks hold it
+    // (P1/P2 lose their Z80 change? no: their pool content IS the disk, and
+    // the power-up bytes are gone from flash, so they stay as they are)
+    cow.clear();
+    CHECK(cow.stats.pool_full == 0 && cow.stats.used == 11);
     for (uint32_t i = 0; i < SIZE; i++) {
-        uint32_t blk = i / 1024;
-        if (blk != P1 / 1024 && blk != P2 / 1024) model[i] = image[i];
+        const uint32_t blk = i / 1024;
+        if (blk < 19 || blk > 29) model[i] = pattern(i, 1);
     }
-    CHECK(compare_all(cow, model) == 0);   // poisoned old pages would show 0xEE here
-    // Difference counts recounted against the new image
-    for (uint32_t p : {P1, P2}) {
-        uint32_t blk = p / 1024, d = 0;
-        for (uint32_t o = 0; o < 1024; o++) d += model[blk * 1024 + o] != image[blk * 1024 + o];
-        CHECK(cow.diffOf(cow.slotOf(p)) == d);
-    }
+    CHECK(compare_all(cow, model) == 0);
     g_remap_hook = nullptr;
     g_cow = nullptr;
+}
+
+// Delete the image and write a different file until the volume is full,
+// so every cluster the image had is reused (FatFS allocates forward from
+// its last position, wrapping round to the freed clusters at the end)
+static void replace_image() {
+    CHECK(f_unlink("flash:/IMG.BIN") == FR_OK);
+    FIL f;
+    CHECK(f_open(&f, "flash:/NEW.BIN", FA_CREATE_ALWAYS | FA_WRITE) == FR_OK);
+    std::vector<uint8_t> b(4096);
+    uint32_t pos = 0;
+    for (;;) {
+        for (uint32_t i = 0; i < b.size(); i++) b[i] = pattern(pos + i, 5);
+        UINT w = 0;
+        if (f_write(&f, b.data(), (UINT)b.size(), &w) != FR_OK || w < b.size()) break;
+        pos += w;
+    }
+    f_close(&f);
+    FATFS* fs; DWORD nfree = 0;
+    CHECK(f_getfree("flash:", &nfree, &fs) == FR_OK && nfree == 0);
+}
+
+static uint32_t poisoned_sectors(CowStore& cow, uint32_t size) {
+    uint32_t n = 0;
+    for (uint32_t s = 0; s < size / 512; s++) {
+        uint32_t ee = 0;
+        for (uint32_t o = 0; o < 512; o++) ee += cow.read(s * 512 + o) == 0xEE;
+        if (ee == 512) n++;
+    }
+    return n;
+}
+
+static void test_replace() {
+    printf("image deleted and replaced while running\n");
+    {   // a pool big enough to keep every block: the disk does not change
+        const uint32_t SIZE = 128 * 1024;
+        CowStore cow;
+        std::vector<uint8_t> model;
+        CHECK(open_disk(cow, SIZE, 200, model));
+        g_cow = &cow; g_remap_hook = hook;
+        model[777] ^= 0x40; cow.write(777, model[777]);
+        replace_image();   // more than was freed: every cluster reused
+        printf("  big pool: image_moves %lu preserved %lu lost %lu\n",
+               (unsigned long)cow.stats.image_moves, (unsigned long)cow.stats.preserved,
+               (unsigned long)cow.stats.lost);
+        CHECK(cow.stats.image_moves >= SIZE / 512);
+        CHECK(cow.stats.lost == 0);
+        CHECK(compare_all(cow, model) == 0);
+        g_remap_hook = nullptr; g_cow = nullptr;
+    }
+    {   // too small a pool: the loss is counted, blocks read the new data
+        const uint32_t SIZE = 256 * 1024;
+        CowStore cow;
+        std::vector<uint8_t> model;
+        CHECK(open_disk(cow, SIZE, 16, model));
+        g_cow = &cow; g_remap_hook = hook;
+        replace_image();
+        printf("  small pool: preserved %lu lost %lu\n",
+               (unsigned long)cow.stats.preserved, (unsigned long)cow.stats.lost);
+        CHECK(cow.stats.preserved == 16);
+        CHECK(cow.stats.lost > 0);
+        uint32_t changed = 0;
+        for (uint32_t b = 0; b < SIZE / 1024; b++) {
+            bool same = true;
+            for (uint32_t o = 0; o < 1024 && same; o++) same = cow.read(b * 1024 + o) == model[b * 1024 + o];
+            if (!same) changed++;
+        }
+        CHECK(changed <= cow.stats.lost);        // every changed block is accounted for
+        CHECK(poisoned_sectors(cow, SIZE) == 0); // never a recycled page
+        g_remap_hook = nullptr; g_cow = nullptr;
+    }
+}
+
+static void test_positions() {
+    printf("positions\n");
+    // The counter: 64 KB page wrap, the page bits kept
+    CHECK(mr1r18_next_pos(0x0000FFFF) == 0x00000000);
+    CHECK(mr1r18_next_pos(0x0002FFFF) == 0x00020000);
+    CHECK(mr1r18_next_pos(0x00021234) == 0x00021235);
+    // The review's case: a 64 KB disk, address 0xFFFF, two data reads
+    CowStore cow;
+    std::vector<uint8_t> model;
+    CHECK(open_disk(cow, 64 * 1024, 4, model));
+    uint32_t pos = 0xFFFF;
+    CHECK(cow.read(pos) == model[0xFFFF]); pos = mr1r18_next_pos(pos);
+    CHECK(pos == 0);
+    CHECK(cow.read(pos) == model[0]);
+    cow.write(pos, (uint8_t)(model[0] ^ 1)); model[0] ^= 1;
+    CHECK(cow.stats.out_of_range == 0);
+    // A stray position past the end wraps into page 0 (counted)
+    CHECK(cow.read(0x10000) == model[0]);
+    cow.write(0x10005, (uint8_t)(model[5] ^ 2)); model[5] ^= 2;
+    CHECK(cow.read(5) == model[5]);
+    CHECK(cow.read(0xFFFFFFFF) == model[0xFFFF]);
+    CHECK(cow.stats.out_of_range == 3);
+    CHECK(compare_all(cow, model) == 0);
 }
 
 static void test_busy() {
@@ -412,6 +533,8 @@ int main() {
     test_stress(64, 40, false);    // the game's shape: fewer changed blocks than slots
     test_stress(16, 60, true);     // exhaustion
     test_rewrite();
+    test_replace();
+    test_positions();
     test_busy();
     printf(g_fail ? "%d FAILED\n" : "all passed\n", g_fail);
     return g_fail ? 1 : 0;

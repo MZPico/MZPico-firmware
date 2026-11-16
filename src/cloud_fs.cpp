@@ -522,6 +522,7 @@ static bool http_request_and_wait(const char *hostname, const char *url, void *c
     while (!g_http_req.complete) {
         cyw43_arch_poll();
         i2s_audio_poll();
+        heap_diag_poll();   // the low-water mark must see the listing's buffer
         if (time_reached(deadline)) {
             // Abandon: the connection may still deliver callbacks later;
             // disarming makes them drop their data instead of writing

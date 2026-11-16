@@ -10,7 +10,8 @@ OUT=${TMPDIR:-/tmp}/cow_ramdisk_test
 cc -O1 -w -I stubs -I $R -I $FF -c $FF/ff.c -o $OUT.ff.o
 cc -O1 -w -I stubs -I $R -I $FF -c $FF/ffunicode.c -o $OUT.ffu.o
 cc -O1 -w -I stubs -I $R -I $FF -c $FF/ffsystem.c -o $OUT.ffs.o
-g++ -std=c++17 -O1 -Wall -Wextra -Wno-unused-parameter -I stubs -I $R -I $R/mz_devices -I $FF \
+g++ -std=c++17 -O1 -g -Wall -Wextra -Wno-unused-parameter -fsanitize=address,undefined \
+    -DCOW_HOST_ATOMIC_BUSY -I stubs -I $R -I $R/mz_devices -I $FF \
     test.cpp $R/mz_devices/cow_store.cpp $R/mz_devices/cow_resolve.cpp \
-    $OUT.ff.o $OUT.ffu.o $OUT.ffs.o -lpthread -o $OUT
+    $OUT.ff.o $OUT.ffu.o $OUT.ffs.o -lpthread -fsanitize=address,undefined -o $OUT
 $OUT

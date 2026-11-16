@@ -7,6 +7,7 @@
 #include "bus.hpp"
 #include "flash_fs.h"
 #include "cow_resolve.hpp"
+#include "ramdisk_pos.hpp"
 
 #include <cstdio>
 #include <strings.h>
@@ -127,7 +128,14 @@ int RamDisk::readConfigCow(dictionary* ini, const std::string& image, uint32_t s
         cow.release();
         return (int)E_DEVICE_NO_MEMORY;   // = skip the device, keep booting
     };
-    snprintf(g_cow_image, sizeof(g_cow_image), "%s", image.c_str());
+    // Kept JSON-escaped: it is only ever printed into the REST state
+    size_t n = 0;
+    for (const char* p = image.c_str(); *p && n + 2 < sizeof(g_cow_image); ++p) {
+        if (*p == '\\' || *p == '"') g_cow_image[n++] = '\\';
+        else if ((unsigned char)*p < 0x20) continue;
+        g_cow_image[n++] = *p;
+    }
+    g_cow_image[n] = '\0';
     g_cow_error[0] = '\0';
     if (g_cow_disk) return fail("only one ramdisk can be mode=cow");
     if (image.empty()) return fail("mode=cow needs image=flash:/...");
@@ -208,12 +216,17 @@ extern "C" int ramdisk_cow_json(char* buf, size_t len) {
     return snprintf(buf, len,
         "{\"mode\":\"cow\",\"state\":\"%s\",\"image\":\"%s\",\"size\":%lu,"
         "\"pool_blocks\":%lu,\"used\":%lu,\"peak\":%lu,\"allocs\":%lu,\"reclaims\":%lu,"
-        "\"drops\":%lu,\"last_drop\":%lu,\"image_moves\":%lu,\"flash_waits\":%lu,"
+        "\"drops\":%lu,\"last_drop\":%lu,\"image_moves\":%lu,\"preserved\":%lu,"
+        "\"lost\":%lu,\"out_of_range\":%lu,\"flash_waits\":%lu,"
         "\"clears\":%lu,\"clear_pending\":%s,\"ram\":%lu}",
-        st.drops ? "pool_full" : "ok", g_cow_image, (unsigned long)st.size,
+        // image_changed (blocks lost, until power-up) outranks pool_full
+        // (writes dropped, until a clear)
+        st.lost ? "image_changed" : (st.pool_full ? "pool_full" : "ok"),
+        g_cow_image, (unsigned long)st.size,
         (unsigned long)st.pool_blocks, (unsigned long)st.used, (unsigned long)st.peak,
         (unsigned long)st.allocs, (unsigned long)st.reclaims, (unsigned long)st.drops,
         (unsigned long)st.last_drop, (unsigned long)st.image_moves,
+        (unsigned long)st.preserved, (unsigned long)st.lost, (unsigned long)st.out_of_range,
         (unsigned long)st.flash_waits, (unsigned long)st.clears,
         g_cow_clear_requested ? "true" : "false", (unsigned long)g_cow_disk->cowStore().ramBytes());
 }
@@ -239,9 +252,7 @@ RAM_FUNC int RamDisk::readData(MZDevice* self, uint8_t port, uint8_t* dt, uint8_
     }
     
     // Increment with 64K page wrapping
-    disk->pos_++;
-    if ((disk->pos_ & 0xffff) == 0)
-        disk->pos_ &= 0xffff0000;
+    disk->pos_ = mr1r18_next_pos(disk->pos_);
     
     return ret;
 }
@@ -275,9 +286,7 @@ RAM_FUNC int RamDisk::writeData(MZDevice* self, uint8_t port, uint8_t dt, uint8_
     }
     
     // Increment with 64K page wrapping
-    disk->pos_++;
-    if ((disk->pos_ & 0xffff) == 0)
-        disk->pos_ &= 0xffff0000;
+    disk->pos_ = mr1r18_next_pos(disk->pos_);
     
     return ret;
 }
