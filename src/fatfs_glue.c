@@ -181,8 +181,14 @@ DRESULT disk_ioctl(BYTE pdrv, /* Physical drive number (0..) */
         case GET_BLOCK_SIZE:
           *(DWORD*) buff = 1;
           return RES_OK;
-        case CTRL_TRIM:
+        case CTRL_TRIM: {
+          // Freed clusters (delete, truncate): drop their flash pages, or
+          // flash_fs would keep every deleted file's pages occupied
+          const LBA_t *r = (const LBA_t *)buff;
+          if (r[1] >= r[0])
+            flash_fs_trim_FAT_sectors((uint32_t)r[0], (uint32_t)(r[1] - r[0] + 1));
           return RES_OK;
+        }
         default:
           return RES_PARERR;
       }

@@ -62,6 +62,22 @@ extern volatile uint32_t flash_fs_op_active;
 // pointers into file data must follow the move. NULL = no listener.
 extern void (*flash_fs_remap_hook)(uint16_t old_entry, uint16_t new_entry);
 
+// Forget sectors [first, first + count): they read as zeros again and their
+// pages are freed (quarantined until the next map sync, like a rewrite's
+// old page). No flash operation. FatFS's CTRL_TRIM (cluster chains freed by
+// a delete or truncate) and the COW RAM disk's blank image use it.
+void flash_fs_trim_FAT_sectors(uint32_t first, uint32_t count);
+// Called first by flash_fs_trim_FAT_sectors (single context). NULL = none.
+extern void (*flash_fs_trim_hook)(uint32_t first_sector, uint32_t count);
+
+// Counters since power-up (diagnostics, the COW RAM disk's wear figures):
+// sector erases, bytes programmed, erases of the erase-with-copy path,
+// map syncs (MZP1: one map-sector erase + program per dirty meg).
+extern volatile uint32_t flash_fs_erases;
+extern volatile uint32_t flash_fs_programmed;
+extern volatile uint32_t flash_fs_copy_erases;
+extern volatile uint32_t flash_fs_map_syncs;
+
 #ifdef __cplusplus
 }
 #endif
