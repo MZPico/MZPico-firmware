@@ -533,6 +533,9 @@ void device_main() {
 #ifdef USE_PICO_W
     heap_diag_init();   // arm the heap lock before core 1 starts allocating
 #endif
+    #ifdef BOARD_DELUXE
+    mem_snoop_alloc();  // first heap block: its alignment slack stays reusable
+    #endif
     multicore_launch_core1(device_main1);
 
     #ifdef BOARD_DELUXE
