@@ -102,7 +102,9 @@ public:
     bool setup(uint32_t size, uint32_t pool_blocks, const uint8_t* xip_base,
                CowBusy* busy) {
         release();
-        if (!size || (size & (COW_BLOCK - 1)) || !pool_blocks) return false;
+        // Whole 64 KB pages only: outOfRange() wraps a stray position into
+        // page 0, which is in range only if the disk has at least one page
+        if (!size || (size & 0xFFFFu) || !pool_blocks) return false;
         if (pool_blocks > COW_MAX_SLOTS) pool_blocks = COW_MAX_SLOTS;
         nblk_ = size >> COW_BLOCK_SHIFT;
         nsect_ = size >> COW_SECT_SHIFT;
