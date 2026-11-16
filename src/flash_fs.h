@@ -40,6 +40,28 @@ uint32_t flash_fs_num_fat_sectors(void);
 // non-blank but fails to mount is damaged and must NOT be reformatted.
 bool flash_fs_region_is_blank(void);
 
+// ---- Direct (XIP) access to file data, for the RAM disk's COW mode ----
+//
+// A FAT sector's data lives in one 512-byte flash page; its map entry is
+// the page's index from the start of the storage region, so the page is
+// readable at flash_fs_xip_base() + entry * 512. 0 = never written (the
+// sector reads as zeros and has no page).
+uint16_t flash_fs_map_entry(uint32_t fat_sector);
+const uint8_t *flash_fs_xip_base(void);
+uint32_t flash_fs_num_pages(void);   // valid entries are below this
+
+// Non-zero while a flash program/erase is in progress (set before the
+// other core is locked out, cleared after it is released). XIP reads of
+// the storage region must not be issued meanwhile.
+extern volatile uint32_t flash_fs_op_active;
+
+// Called (single context, from inside flash_fs_write_FAT_sector, after the
+// new page is programmed and the map updated) whenever a sector that HAD a
+// page moves to a new page: log-structured writes never update in place,
+// and the old page is recycled after the next map sync. A holder of XIP
+// pointers into file data must follow the move. NULL = no listener.
+extern void (*flash_fs_remap_hook)(uint16_t old_entry, uint16_t new_entry);
+
 #ifdef __cplusplus
 }
 #endif

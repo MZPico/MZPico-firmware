@@ -152,6 +152,8 @@ target_sources(mzpico PUBLIC
     ${SRC_ROOT}/mz_devices/fdc.cpp
     ${SRC_ROOT}/mz_devices/sramdisk.cpp
     ${SRC_ROOT}/mz_devices/ramdisk.cpp
+    ${SRC_ROOT}/mz_devices/cow_store.cpp
+    ${SRC_ROOT}/mz_devices/cow_resolve.cpp
     ${SRC_ROOT}/mz_devices/pico_rd.cpp
     ${SRC_ROOT}/mz_devices/sn76489.cpp
     ${SRC_ROOT}/mz_devices/ctc.cpp

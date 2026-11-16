@@ -360,8 +360,10 @@ Config section name: `[ramdisk]`
 
 Options:
 - `base_port` — default `0xe9` (the reset port stays fixed at `0xf8`)
-- `size` — capacity in bytes, rounded up to 64 KB multiples; default `65536` (one page). **Use `131072` or more to enable page switching** — with a single page, page selects wrap back to page 0.
+- `size` — capacity in bytes (`K`/`M` suffixes accepted: `512K`, `1M`), rounded up to 64 KB multiples; default `65536` (one page). **Use `131072` or more to enable page switching** — with a single page, page selects wrap back to page 0. With `mode=cow`, omitted = the image's size (whole 64 KB pages).
 - `image` — optional backing file; omitted = volatile RAM
+- `mode` — `file` (default: RAM, or the `image` file behind a 128-byte window) or `cow` (see below)
+- `cow_pool` — `mode=cow` only: the SRAM pool in KB (1 KB blocks), `1`–`255`, default `64`
 - `read_only` — `true`/`false` (default `false`)
 
 Example:
@@ -370,6 +372,53 @@ Example:
 [ramdisk]
 size=131072
 ```
+
+#### `mode=cow`: a large, fast RAM disk from a flash image
+
+A file-backed disk serves the Z80 through a 128-byte window of the file, so
+every access outside the window waits for FatFS (about 96 wait states on
+average for scattered reads) — too slow for software that streams from a
+RAM disk, such as the Prince of Persia port. `mode=cow` instead reads an
+image file in the **internal flash volume** directly through the RP2040's
+memory-mapped flash (XIP), and keeps every 1 KB block the Z80 changes in a
+small SRAM pool (copy-on-write). Reads and writes run without FatFS, at
+about the speed of a RAM-backed disk.
+
+```ini
+[ramdisk]
+image=flash:/POP800RD.IMG
+mode=cow
+cow_pool=64
+size=512K
+```
+
+- **The image**: a raw RAM-disk dump, page 0 first, 64 KB a page, on the
+  `flash:` volume (copy it there over USB: power the MZPico from USB with
+  the MZ-800 off, and it appears as the `MZ800PICO` drive). It must be at
+  least `size` bytes. It is never written: the pool starts empty at every
+  card power-up, i.e. the disk then holds exactly the image.
+- **Writes** compare with the image first: a byte equal to what the block
+  already holds changes nothing and costs no pool space (an MZ-800 program
+  that copies its data onto the disk from floppy uses almost none).
+  The first differing byte of a block copies its 1 KB into the pool.
+- **The pool** lives like a real MZ-1R18's RAM: it survives MZ-800 resets
+  and is lost at power-off (and at the double-reset reboot). A block that
+  becomes equal to the image again is reclaimed when the pool fills up.
+  **If the pool is full and nothing is reclaimable, the write is lost**:
+  it is counted (`drops`, the address in `last_drop`) and the state reads
+  `pool_full` until the pool is cleared — raise `cow_pool` if that
+  happens. REST (Pico W): `GET /api/ramdisk` shows the pool (also inside
+  `GET /api/heap`); `GET /api/ramdisk/clear` empties it at the next
+  MZ-800 reset.
+- **RAM**: `cow_pool` KB plus about 5 bytes per KB of disk (2.5 KB for
+  512 KB), allocated at boot.
+- **Rewriting the image while it is in use**: flash writes never stop or
+  disturb the disk (an access waits out a flash erase/program). Bytes of
+  the file rewritten in place show through at once (blocks in the pool keep
+  their pool content); replacing the file (delete + copy) leaves the
+  running disk on the old file's sectors until the next power-up.
+- If the image is missing, too short, not on `flash:`, or has unwritten
+  sectors, the RAM disk is skipped at boot and `/api/ramdisk` says why.
 
 ---
 
@@ -568,7 +617,8 @@ substantial extra share of RAM, leaving less room for devices.
 
 What costs RAM: `pico_rd` without an image file
 and `[ramdisk]` allocate their entire `size` in RAM (ramdisk page
-switching needs at least two pages); `sramdisk` costs almost nothing
+switching needs at least two pages), a `mode=cow` ramdisk its
+`cow_pool` plus ~2.5 KB a 512 KB disk; `sramdisk` costs almost nothing
 unless `in_ram=true`; the sound devices are cheap but not free (`ctc`
 ≈ 7 KB, `psg` ≈ 1 KB). File-backed images (`image=...`) cost almost no
 RAM regardless of their size — this is why the default `mzpico.ini`

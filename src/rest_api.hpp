@@ -11,7 +11,9 @@
 //   POST /api/command   (body: raw or form-encoded cmd=...)
 //   GET  /api/last
 //   GET  /api/status   (includes a "heap" object, see heap_diag.h)
-//   GET  /api/heap     (the heap object alone)
+//   GET  /api/heap     (the heap object alone, with the COW RAM disk's "ramdisk")
+//   GET  /api/ramdisk  (the COW RAM disk's state)
+//   GET|POST /api/ramdisk/clear  (clear the COW pool at the next Z80 reset)
 
 // Initialize listener (idempotent). Returns 0 on success.
 int rest_api_init(void);
