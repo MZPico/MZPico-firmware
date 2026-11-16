@@ -15,6 +15,8 @@ extern "C" int ramdisk_cow_json(char *buf, size_t len);
 extern "C" void ramdisk_cow_request_clear(void);
 extern "C" int ramdisk_cow_json_full(char *buf, size_t len);
 extern "C" int ramdisk_cow_request(const char *what);
+// src/mz_devices.cpp: the last Z80 reset's flush/softReset timing
+extern "C" int mz_reset_diag_json(char *buf, size_t len);
 
 
 #ifndef REST_API_PORT
@@ -181,7 +183,9 @@ static void rest_parse_and_handle(RestConn *conn) {
     if (strcasecmp(method, "GET") == 0 && strncmp(uri, "/api/status", 11) == 0) {
         char *body_json = g_json_buf;
         uint32_t ms = to_ms_since_boot(get_absolute_time());
-        int n = snprintf(body_json, sizeof(g_json_buf), "{\"status\":\"ok\",\"uptime_ms\":%lu,\"heap\":", (unsigned long)ms);
+        int n = snprintf(body_json, sizeof(g_json_buf), "{\"status\":\"ok\",\"uptime_ms\":%lu,\"reset\":", (unsigned long)ms);
+        n += mz_reset_diag_json(body_json + n, sizeof(g_json_buf) - (size_t)n - 1);
+        n += snprintf(body_json + n, sizeof(g_json_buf) - (size_t)n - 1, ",\"heap\":");
         n += heap_diag_json(body_json + n, sizeof(g_json_buf) - (size_t)n - 1);
         if (n < (int)sizeof(g_json_buf) - 1) { body_json[n] = '}'; body_json[n + 1] = '\0'; }
         rest_send_response(conn, "200 OK", "application/json", body_json);
