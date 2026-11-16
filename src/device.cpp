@@ -37,6 +37,7 @@
 #ifdef USE_PICO_W
 #include "cloud_fs.hpp"
 #include "net_relay.hpp"
+#include "heap_diag.h"
 #include "pico/cyw43_arch.h"
 #endif
 
@@ -529,6 +530,9 @@ void device_main() {
     // Initialize lockout on this core before launching the other core
     multicore_lockout_victim_init();
 
+#ifdef USE_PICO_W
+    heap_diag_init();   // arm the heap lock before core 1 starts allocating
+#endif
     multicore_launch_core1(device_main1);
 
     #ifdef BOARD_DELUXE
