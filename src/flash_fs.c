@@ -119,6 +119,11 @@ __attribute__((weak)) volatile bool shutting_down = false;
 
 volatile uint32_t flash_fs_op_active = 0;
 void (*flash_fs_remap_hook)(uint16_t old_entry, uint16_t new_entry) = NULL;
+void (*flash_fs_trim_hook)(uint32_t first_sector, uint32_t count) = NULL;
+volatile uint32_t flash_fs_erases = 0;
+volatile uint32_t flash_fs_programmed = 0;
+volatile uint32_t flash_fs_copy_erases = 0;
+volatile uint32_t flash_fs_map_syncs = 0;
 
 // Helpers to minimize repetition and keep flash critical sections consistent
 static inline bool flash_guard_enter(uint32_t *saved_ints) {
@@ -228,6 +233,7 @@ void write_fs_map()
 
     // MZP1: write each dirty meg to its INACTIVE slot with a fresh
     // generation; the old slot stays valid until the new one verifies
+    flash_fs_map_syncs++;
     map_generation++;
     for (int i=0; i<FLASH_MEGS; i++) {
         if (!fs_map_needs_written[i]) continue;
@@ -270,6 +276,15 @@ static bool any_pending_free(void)
     return false;
 }
 
+// A sector whose every occupied page is quarantined: a map sync makes it
+// completely free (no erase-with-copy needed for it)
+static bool sync_frees_a_sector(void)
+{
+    for (int i=0; i<NUM_FLASH_SECTORS; i++)
+        if (used_bitmap[i] == 0 && pending_free_bitmap[i]) return true;
+    return false;
+}
+
 uint16_t getNextWriteSector()
 {
     static uint16_t search_start_pos = 0;
@@ -291,6 +306,17 @@ uint16_t getNextWriteSector()
                 write_sector_bitmap = 0xFF;
                 flash_erase_sector(write_sector);
                 break;
+            }
+            // No completely free sector. If syncing the map would free one
+            // (all its occupied pages are quarantined), sync once instead
+            // of erase-with-copy: the copy holds the surviving pages only
+            // in RAM between its erase and re-program, so a power cut
+            // there loses them (whatever files they belong to). A long
+            // rewrite (the COW RAM disk's write-back) frees whole sectors
+            // this way.
+            if (attempt == 0 && sync_frees_a_sector()) {
+                write_fs_map();
+                continue;
             }
             // no completely free sector, first sector with eligible space
             for (i=0; i<NUM_FLASH_SECTORS; i++) {
@@ -495,15 +521,37 @@ bool flash_fs_write_FAT_sector(uint16_t fat_sector, const void *buffer)
         }
         return false;
     }
+    // Program the page BEFORE the map points at it: a map sync that runs
+    // while this core is parked at the program's lockout boundary (the
+    // core-0 reset flush) then persists the old entry, never a page that
+    // was not programmed yet
+    used_bitmap[getMapSector(mapEntry)] |= (1 << getMapOffset(mapEntry));
+    flash_write_sector(getMapSector(mapEntry), getMapOffset(mapEntry), buffer, 512);
+
     fs_map.sectors[fat_sector] = mapEntry;
     mark_map_meg_dirty(fat_sector);
-
-    used_bitmap[getMapSector(mapEntry)] |= (1 << getMapOffset(mapEntry));
-
-    flash_write_sector(getMapSector(mapEntry), getMapOffset(mapEntry), buffer, 512);
     if (oldEntry && flash_fs_remap_hook)
         flash_fs_remap_hook(oldEntry, mapEntry);
     return true;
+}
+
+void flash_fs_trim_FAT_sectors(uint32_t first, uint32_t count)
+{
+    const uint32_t n = flash_fs_num_fat_sectors();
+    if (first >= n) return;
+    if (count > n - first) count = n - first;
+    if (!count) return;
+    if (flash_fs_trim_hook) flash_fs_trim_hook(first, count);
+    for (uint32_t s = first; s < first + count; s++) {
+        uint16_t e = fs_map.sectors[s];
+        if (!e) continue;
+        // Same rule as a rewrite: the persisted map may still reference
+        // the page, so it is quarantined until the next map sync
+        used_bitmap[getMapSector(e)] &= ~(1 << getMapOffset(e));
+        pending_free_bitmap[getMapSector(e)] |= (1 << getMapOffset(e));
+        fs_map.sectors[s] = 0;
+        mark_map_meg_dirty((uint16_t)s);
+    }
 }
 
 uint16_t flash_fs_map_entry(uint32_t fat_sector)
@@ -547,6 +595,7 @@ void flash_erase_sector(uint16_t sector)
     uint32_t offset = fs_start + (sector * FLASH_SECTOR_SIZE);
     uint32_t ints;
     bool lockout_started = flash_guard_enter(&ints);
+    flash_fs_erases++;
     flash_range_erase(offset, FLASH_SECTOR_SIZE);
     flash_guard_exit(ints, lockout_started);
     return;
@@ -559,6 +608,7 @@ void flash_write_sector(uint16_t sector, uint8_t offset, const void *buffer, uin
     uint32_t addr = fs_start + (sector * FLASH_SECTOR_SIZE) + (offset * 512);
     uint32_t ints;
     bool lockout_started = flash_guard_enter(&ints);
+    flash_fs_programmed += size;
     flash_range_program(addr, (const uint8_t *)buffer, size);
     flash_guard_exit(ints, lockout_started);
 }
@@ -569,6 +619,7 @@ void flash_erase_with_copy_sector(uint16_t sector, uint8_t preserve_bitmap)
     // sector_scratch, not a stack local: 4KB would overflow the ~2KB core
     // stacks (this path triggers on a well-filled volume)
     flash_read_sector(sector, 0, sector_scratch, FLASH_SECTOR_SIZE);
+    flash_fs_copy_erases++;
     flash_erase_sector(sector);
     for (int i=0; i<8; i++) {
         if (preserve_bitmap & (1 << i))
