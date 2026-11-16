@@ -305,16 +305,21 @@ int cloud_init(void) {
 
 #define MAX_JSON_RESPONSE_SIZE 16384  // 16KB should be enough for directory listing
 
-// Context for accumulating HTTP response. Static: 16KB must not live on a
-// 2KB core stack, and an abandoned request's late callbacks need a valid
-// target (they are dropped via g_http_cb_armed, but the pointer must hold)
+// Context for accumulating HTTP response. Heap, for the listing's
+// duration only (16 KB idle in .bss was the biggest single static): it
+// must not live on a 2KB core stack, and it is freed only once
+// http_request_and_wait() has returned, i.e. with g_http_cb_armed false.
+// An abandoned request's late callbacks still receive the stale pointer as
+// their arg, but cloud_receive_fn tests g_http_cb_armed before touching
+// *ctx and only null-checks the pointer otherwise; a new request (which
+// re-arms) cannot start until the abandoned one has completed. Callbacks
+// run inside cyw43_arch_poll() on this same core (poll architecture), so
+// no callback can be mid-copy when the context is freed.
 typedef struct {
     char buffer[MAX_JSON_RESPONSE_SIZE];
     uint16_t offset;
     bool overflow;
 } HTTP_RESPONSE_CTX;
-
-static HTTP_RESPONSE_CTX g_response_ctx;
 
 // Context for a file download, streamed directly into the sink buffer
 // buffer (no intermediate copy)
@@ -543,25 +548,30 @@ static int cloud_list_dir(const char *path, CloudDirSink *sink, char *msg, size_
     char url[128];
     snprintf(url, sizeof(url), "/list?path=%s", normalized_path);
 
-    memset(&g_response_ctx, 0, sizeof(g_response_ctx));
+    HTTP_RESPONSE_CTX *ctx = (HTTP_RESPONSE_CTX *)calloc(1, sizeof(HTTP_RESPONSE_CTX));
+    if (!ctx) {
+        snprintf(msg, msg_len, "Out of memory (listing)");
+        return CLOUD_ERR_NO_MEMORY;
+    }
+    int rc = 0;
     int result;
-    if (!http_request_and_wait("api.mzpico.com", url, &g_response_ctx, cloud_receive_fn, 10000, &result)) {
+    // Every path out of http_request_and_wait() leaves g_http_cb_armed
+    // false: from here on no callback writes into ctx
+    if (!http_request_and_wait("api.mzpico.com", url, ctx, cloud_receive_fn, 10000, &result)) {
         snprintf(msg, msg_len, "HTTP request timeout");
-        return CLOUD_ERR_TIMEOUT;
-    }
-    if (result != 0) {
+        rc = CLOUD_ERR_TIMEOUT;
+    } else if (result != 0) {
         snprintf(msg, msg_len, "HTTP request failed");
-        return CLOUD_ERR_FAILED;
-    }
-    if (g_response_ctx.overflow) {
+        rc = CLOUD_ERR_FAILED;
+    } else if (ctx->overflow) {
         snprintf(msg, msg_len, "Response too large");
-        return CLOUD_ERR_TOO_LARGE;
-    }
-    if (!parse_cloud_directory_json(g_response_ctx.buffer, normalized_path, sink)) {
+        rc = CLOUD_ERR_TOO_LARGE;
+    } else if (!parse_cloud_directory_json(ctx->buffer, normalized_path, sink)) {
         snprintf(msg, msg_len, "Bad listing");
-        return CLOUD_ERR_INVALID;
+        rc = CLOUD_ERR_INVALID;
     }
-    return 0;
+    free(ctx);
+    return rc;
 }
 
 // Download file callback - parses chunked encoding and buffers data

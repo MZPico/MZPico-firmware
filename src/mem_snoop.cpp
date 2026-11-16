@@ -5,15 +5,39 @@
 #include "mem_snoop.hpp"
 #include "hardware/timer.h"
 
-// Rings must be size-aligned for the DMA address wrap
-static uint32_t __attribute__((aligned(MEM_SNOOP_RING_WORDS * 4))) event_ring[MEM_SNOOP_RING_WORDS];
-static uint32_t __attribute__((aligned(MEM_SNOOP_RING_WORDS * 4))) ts_ring[MEM_SNOOP_RING_WORDS];
+#include <malloc.h>
+#include "pico/platform.h"
+
+// Rings must be size-aligned for the DMA address wrap. They are one heap
+// block (memalign, before core 1 starts allocating), not two aligned .bss
+// arrays: as statics the linker padded .bss up to the 8 KB boundary - a
+// ~5 KB hole nothing could use. memalign hands the leading slack back to
+// the heap as an ordinary free chunk.
+constexpr uint32_t RING_BYTES = MEM_SNOOP_RING_WORDS * 4;
+static_assert((RING_BYTES & (RING_BYTES - 1)) == 0, "DMA rings are a power of two");
+static uint32_t* event_ring = nullptr;
+static uint32_t* ts_ring = nullptr;
 
 static int ev_ch = -1;
 int g_mem_snoop_ts_dma_ch = -1;
-uint32_t g_mem_snoop_ts_ring_base = (uint32_t)ts_ring;
+uint32_t g_mem_snoop_ts_ring_base = 0;
+
+void mem_snoop_alloc(void) {
+    if (event_ring) return;
+    uint32_t* rings = static_cast<uint32_t*>(memalign(RING_BYTES, 2 * RING_BYTES));
+    // No rings, no snoop: and a stalled snoop SM corrupts the shared
+    // transceiver gate state (see the header), so this cannot degrade.
+    // The DMA write ring wraps on the low ctz(RING_BYTES) address bits:
+    // both rings must sit on a RING_BYTES boundary.
+    if (!rings || ((uintptr_t)rings & (RING_BYTES - 1)))
+        panic("mem_snoop: no %lu-aligned rings", (unsigned long)RING_BYTES);
+    event_ring = rings;
+    ts_ring = rings + MEM_SNOOP_RING_WORDS;   // RING_BYTES further: aligned too
+    g_mem_snoop_ts_ring_base = (uint32_t)ts_ring;
+}
 
 void mem_snoop_start(PIO pio, uint sm) {
+    mem_snoop_alloc();
     ev_ch = dma_claim_unused_channel(true);
     g_mem_snoop_ts_dma_ch = dma_claim_unused_channel(true);
 

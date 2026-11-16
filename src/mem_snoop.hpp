@@ -32,6 +32,12 @@ static inline uint32_t mem_snoop_cursor_inline(void) {
     return (dma_hw->ch[g_mem_snoop_ts_dma_ch].write_addr - g_mem_snoop_ts_ring_base) / 4;
 }
 
+// Allocate the two rings (one 16 KB, 8 KB-aligned heap block). Call on
+// core 0 before core 1 is launched, so the block sits at the heap's start
+// and the alignment slack returns to the heap; mem_snoop_start() calls it
+// too if it has not run.
+void mem_snoop_alloc(void);
+
 // Claim two DMA channels and start streaming. Call once from core0 after
 // bus_mem_snoop_init().
 void mem_snoop_start(PIO pio, uint sm);
