@@ -229,14 +229,49 @@ MZDevice* MZDeviceManager::createDevice(const std::string& devType, const std::s
     return dev;
 }
 
+// Z80 reset diagnostics (GET /api/status "reset"): how long the last
+// flushAll / softResetAll took, and the slowest device in each
+static struct {
+    uint32_t count, flush_us, soft_us, flush_max_us, soft_max_us;
+    char flush_dev[16], soft_dev[16];
+} g_reset_diag;
+
+static void note_slowest(uint32_t us, MZDevice* dev, uint32_t& max_us, char* name) {
+    if (us < max_us) return;
+    max_us = us;
+    snprintf(name, 16, "%s", dev->getDevID().c_str());
+}
+
 void MZDeviceManager::flushAll() {
-    for (uint8_t i=0; i<deviceCount; i++)
+    const uint32_t t0 = time_us_32();
+    g_reset_diag.flush_max_us = 0;
+    for (uint8_t i=0; i<deviceCount; i++) {
+        const uint32_t t = time_us_32();
         devices[i]->flush();
+        note_slowest(time_us_32() - t, devices[i], g_reset_diag.flush_max_us, g_reset_diag.flush_dev);
+    }
+    g_reset_diag.flush_us = time_us_32() - t0;
 }
 
 void MZDeviceManager::softResetAll() {
-    for (uint8_t i=0; i<deviceCount; i++)
+    const uint32_t t0 = time_us_32();
+    g_reset_diag.count++;
+    g_reset_diag.soft_max_us = 0;
+    for (uint8_t i=0; i<deviceCount; i++) {
+        const uint32_t t = time_us_32();
         devices[i]->softReset();
+        note_slowest(time_us_32() - t, devices[i], g_reset_diag.soft_max_us, g_reset_diag.soft_dev);
+    }
+    g_reset_diag.soft_us = time_us_32() - t0;
+}
+
+extern "C" int mz_reset_diag_json(char* buf, size_t len) {
+    return snprintf(buf, len,
+        "{\"count\":%lu,\"flush_us\":%lu,\"flush_slowest\":\"%s\",\"flush_slowest_us\":%lu,"
+        "\"soft_us\":%lu,\"soft_slowest\":\"%s\",\"soft_slowest_us\":%lu}",
+        (unsigned long)g_reset_diag.count, (unsigned long)g_reset_diag.flush_us, g_reset_diag.flush_dev,
+        (unsigned long)g_reset_diag.flush_max_us, (unsigned long)g_reset_diag.soft_us,
+        g_reset_diag.soft_dev, (unsigned long)g_reset_diag.soft_max_us);
 }
 
 int MZDeviceManager::enableDevice(MZDevice* dev) {
