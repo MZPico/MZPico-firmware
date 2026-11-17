@@ -3,6 +3,7 @@
 #include "file_source.hpp"
 #include "pico_rd.hpp"
 #include "bus.hpp"
+#include <cctype>
 
 REGISTER_MZ_DEVICE(PicoRD)
 
@@ -54,7 +55,7 @@ std::vector<uint8_t> PicoRD::getWritePorts() const {
 }
 
 int PicoRD::init() {
-    addr_idx = 0;
+    a_ = PicoRdAddr();
     return 0;
 }
 
@@ -63,8 +64,23 @@ int PicoRD::readConfig(dictionary *ini) {
 
     readOnly = iniparser_getboolean(ini, (getDevID() + ":read_only").c_str(), false);
     bool in_ram = iniparser_getboolean(ini, (getDevID() + ":in_ram").c_str(), false);
+    (void)in_ram;
     std::string image = iniparser_getstring(ini, (getDevID() + ":image").c_str(), "");
-    uint32_t sz = iniparser_getint(ini, (getDevID() + ":size").c_str(), 0);
+    // Bytes; K/M suffixes accepted ("512K", "1M"), as in [ramdisk]
+    uint32_t sz = cow_parse_size(iniparser_getstring(ini, (getDevID() + ":size").c_str(), ""));
+    std::string mode = iniparser_getstring(ini, (getDevID() + ":mode").c_str(), "");
+    for (auto& c : mode) c = (char)tolower((unsigned char)c);
+    if (mode == "cow") {
+        // The card's flash-image backend, as [ramdisk] mode=cow (cow_disk.hpp):
+        // whole 64 KB pages, size= omitted = the image's own size
+        const int r = CowDisk::open(ini, getDevID(), image, sz, PICO_RD_DEFAULT_SIZE, &cow_);
+        if (r) return r;
+        size = cow_->size();
+        a_.size = size;
+        return 0;
+    }
+    if (!mode.empty() && mode != "file" && mode != "ram")
+        printf("%s: unknown mode '%s', ignored\n", getDevID().c_str(), mode.c_str());
     if (sz) size = sz;
     if (!size && image.empty())
         size = PICO_RD_DEFAULT_SIZE;
@@ -96,123 +112,116 @@ int PicoRD::readConfig(dictionary *ini) {
            return E_DEVICE_NO_MEMORY;
        }
     }
+    a_.size = size ? size : 1;
     return 0;
 }
 
 void PicoRD::setDriveContent(std::string content, bool in_ram) {
-/*    if (content == "@menu") {
-        if (size < sizeof(firmware)) size = sizeof(firmware);
-        if (in_ram) {
-            std::memcpy(data, firmware, sizeof(firmware));
-            data = (uint8_t *)malloc(sizeof(firmware));
-        } else {
-            data = (uint8_t *)firmware;
-            size = sizeof(firmware);
-            readOnly = true;
-        }
-    }
-    */
+    (void)content; (void)in_ram;
+}
+
+void PicoRD::softReset() {
+    a_.control();
+    if (cow_) cow_->softReset();
 }
 
 int PicoRD::flush() {
+    if (cow_)
+        return 0;   // the pool is RAM; learn persists after a reset (cow_disk.hpp)
     if (!bs)
         return -1;
-    
     return bs->flush();
 }
 
-int PicoRD::writeControl(MZDevice* self, uint8_t, uint8_t, uint8_t) {
+// The bus path (RAM_FUNC, core 1, the Z80 held by EXWAIT). The position is
+// PicoRD's own register (pico_rd_addr.hpp); the storage is the byte source
+// or the cow disk, addressed with a position below size.
+
+RAM_FUNC int PicoRD::writeControl(MZDevice* self, uint8_t, uint8_t, uint8_t) {
     auto* rd = static_cast<PicoRD*>(self);
-    rd->bs->seek(0);
-    rd->addr_idx = 0;
+    rd->a_.control();
+    if (rd->cow_) rd->cow_->touch();
     return 0;
 }
 
-int PicoRD::readControl(MZDevice* self, uint8_t, uint8_t* dt, uint8_t) {
+RAM_FUNC int PicoRD::readControl(MZDevice* self, uint8_t, uint8_t* dt, uint8_t) {
     auto* rd = static_cast<PicoRD*>(self);
-    rd->bs->seek(0);
-    rd->addr_idx = 0;
+    rd->a_.control();
     *dt = 0;
     return 0;
 }
 
-int PicoRD::writeData(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
+RAM_FUNC int PicoRD::writeData(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
     auto* rd = static_cast<PicoRD*>(self);
-    uint32_t wtn;
-
-    if (rd->readOnly)
-        rd->bs->next();
-    else
-        rd->bs->setByte(dt);
-    rd->addr_idx = 0;
+    const uint32_t p = rd->a_.take();
+    if (rd->readOnly) return 0;
+    if (rd->cow_) {
+        rd->cow_->write(p, dt);
+        return 0;
+    }
+    rd->bs->seek(p);
+    rd->bs->setByte(dt);
     return 0;
 }
 
-int PicoRD::readData(MZDevice* self, uint8_t, uint8_t* dt, uint8_t) {
+RAM_FUNC int PicoRD::readData(MZDevice* self, uint8_t, uint8_t* dt, uint8_t) {
     auto* rd = static_cast<PicoRD*>(self);
-    uint32_t br;
-
+    const uint32_t p = rd->a_.take();
+    if (rd->cow_) {
+        *dt = rd->cow_->read(p);
+        return 0;
+    }
+    rd->bs->seek(p);
     rd->bs->getByte(*dt);
-    rd->addr_idx = 0;
     return 0;
 }
 
-int PicoRD::writeAddr2(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
+RAM_FUNC int PicoRD::writeAddr2(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
     auto* rd = static_cast<PicoRD*>(self);
-    rd->bs->seek((rd->bs->tell() & 0x00FFffff) | ((uint32_t)dt << 16));
-    rd->addr_idx = 0;
+    rd->a_.setByte(2, dt);
+    if (rd->cow_) rd->cow_->touch();
     return 0;
 }
 
-int PicoRD::readAddr2(MZDevice* self, uint8_t, uint8_t* dt, uint8_t) {
+RAM_FUNC int PicoRD::readAddr2(MZDevice* self, uint8_t, uint8_t* dt, uint8_t) {
+    *dt = static_cast<PicoRD*>(self)->a_.getByte(2);
+    return 0;
+}
+
+RAM_FUNC int PicoRD::writeAddr1(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
     auto* rd = static_cast<PicoRD*>(self);
-    *dt = (rd->bs->tell() >> 16) & 0xFF;
-    rd->addr_idx = 0;
+    rd->a_.setByte(1, dt);
+    if (rd->cow_) rd->cow_->touch();
     return 0;
 }
 
-int PicoRD::writeAddr1(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
+RAM_FUNC int PicoRD::readAddr1(MZDevice* self, uint8_t, uint8_t* dt, uint8_t) {
+    *dt = static_cast<PicoRD*>(self)->a_.getByte(1);
+    return 0;
+}
+
+RAM_FUNC int PicoRD::writeAddr0(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
     auto* rd = static_cast<PicoRD*>(self);
-    rd->bs->seek((rd->bs->tell() & 0xFF00ffff) | ((uint32_t)dt << 8));
-    rd->addr_idx = 0;
+    rd->a_.setByte(0, dt);
+    if (rd->cow_) rd->cow_->touch();
     return 0;
 }
 
-int PicoRD::readAddr1(MZDevice* self, uint8_t, uint8_t* dt, uint8_t) {
+RAM_FUNC int PicoRD::readAddr0(MZDevice* self, uint8_t, uint8_t* dt, uint8_t) {
+    *dt = static_cast<PicoRD*>(self)->a_.getByte(0);
+    return 0;
+}
+
+RAM_FUNC int PicoRD::writeAddrs(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
     auto* rd = static_cast<PicoRD*>(self);
-    *dt = (rd->bs->tell() >> 8) & 0xFF;
-    rd->addr_idx = 0;
+    rd->a_.addrs(dt);
+    if (rd->cow_) rd->cow_->touch();
     return 0;
 }
 
-int PicoRD::writeAddr0(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
+RAM_FUNC int PicoRD::writeAddri(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
     auto* rd = static_cast<PicoRD*>(self);
-    rd->bs->seek((rd->bs->tell() & 0xFFFFff00) | dt);
-    rd->addr_idx = 0;
+    rd->a_.addri(dt);
+    if (rd->cow_) rd->cow_->touch();
     return 0;
 }
-
-int PicoRD::readAddr0(MZDevice* self, uint8_t, uint8_t* dt, uint8_t) {
-    auto* rd = static_cast<PicoRD*>(self);
-    *dt = rd->bs->tell() & 0xFF;
-    rd->addr_idx = 0;
-    return 0;
-}
-
-int PicoRD::writeAddrs(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
-    auto* rd = static_cast<PicoRD*>(self);
-    rd->bs->seek((rd->bs->tell() & ~(0xFF << (rd->addr_idx * 8))) | ((uint32_t)dt << (rd->addr_idx * 8)));
-    rd->addr_idx++;
-    if (rd->addr_idx > 2) rd->addr_idx = 0;
-    return 0;
-}
-
-int PicoRD::writeAddri(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
-    auto* rd = static_cast<PicoRD*>(self);
-
-    uint32_t new_index = rd->bs->tell() + dt;
-    if (new_index >= rd->size) new_index -= rd->size;
-    rd->bs->seek(new_index);
-    return 0;
-}
-

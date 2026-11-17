@@ -39,6 +39,7 @@
 #include "flash_sim.h"
 #include "cow_store.hpp"
 #include "cow_image.hpp"
+#include "pico_rd_addr.hpp"
 
 extern int g_fail;
 extern bool g_real_flash;
@@ -502,6 +503,61 @@ static void test_power_sessions() {
     d.close();
 }
 
+// ---------------- 3d. [pico_rd] addressing ----------------
+static void test_picord_addr() {
+    printf("pico_rd: the address ports\n");
+    PicoRdAddr a;
+    a.size = 512 * 1024;
+    // Each direct port replaces its byte and keeps the other two
+    a.pos = 0x123456;
+    a.setByte(2, 0x07); CHECK(a.pos == 0x073456);
+    a.setByte(1, 0xAB); CHECK(a.pos == 0x07AB56);
+    a.setByte(0, 0xCD); CHECK(a.pos == 0x07ABCD);
+    CHECK(a.getByte(2) == 0x07 && a.getByte(1) == 0xAB && a.getByte(0) == 0xCD);
+    // The old masks: A2 ORed (0x05 | 0x02 = 0x07 instead of 0x02), A1
+    // cleared byte 2 and kept byte 1
+    a.pos = 0x050000; a.setByte(2, 0x02); CHECK(a.pos == 0x020000);
+    a.pos = 0x061200; a.setByte(1, 0x34); CHECK(a.pos == 0x063400);
+    // Any order of the three writes lands on the same position
+    const uint8_t b[3] = {0x05, 0x6F, 0x81};
+    int orders[6][3] = {{0,1,2},{0,2,1},{1,0,2},{1,2,0},{2,0,1},{2,1,0}};
+    for (auto& o : orders) {
+        a.pos = 0xFFFFFF;
+        for (int k = 0; k < 3; k++) a.setByte(o[k], b[o[k]]);
+        CHECK(a.pos == ((uint32_t)b[2] << 16 | (uint32_t)b[1] << 8 | b[0]));
+    }
+    // ADDRS: A0, A1, A2 in turn, then A0 again; restarted by other ports
+    a.control();
+    a.addrs(0x11); a.addrs(0x22); a.addrs(0x03);
+    CHECK(a.pos == 0x032211 && a.idx == 0);
+    a.addrs(0x44); CHECK(a.pos == 0x032244 && a.idx == 1);
+    a.getByte(0); CHECK(a.idx == 0);              // a read of a byte port restarts it
+    a.addrs(0x55); a.take(); CHECK(a.idx == 0);   // so does a data access
+    a.addrs(0x66); a.addri(1); CHECK(a.idx == 1); // ADDRI does not
+    a.addrs(0x77); a.setByte(0, 0); CHECK(a.idx == 0);
+    // ADDRI: a skip, wrapping at size
+    a.pos = 512 * 1024 - 3; a.addri(5); CHECK(a.pos == 2);
+    a.pos = 0x07FFFF; a.addri(0); CHECK(a.pos == 0x07FFFF);
+    a.pos = 0x0A0000; a.addri(0x10); CHECK(a.pos == 0x020010);   // the register past size first wraps
+    // Data: auto-increment across the size end
+    a.pos = 512 * 1024 - 2;
+    CHECK(a.take() == 512 * 1024 - 2 && a.take() == 512 * 1024 - 1 && a.take() == 0 && a.take() == 1);
+    // A register past size (written byte by byte) reads back as written;
+    // the data access reduces it
+    a.setByte(2, 0x09); a.setByte(1, 0); a.setByte(0, 0x10);
+    CHECK(a.getByte(2) == 0x09);
+    CHECK(a.take() == 0x010010 && a.pos == 0x010011);
+    // A size that is not a power of two, and 16 MB
+    PicoRdAddr c; c.size = 100000;
+    c.pos = 99999; CHECK(c.take() == 99999 && c.take() == 0);
+    c.pos = 99990; c.addri(20); CHECK(c.pos == 10);
+    PicoRdAddr m; m.size = 16u << 20;
+    m.setByte(2, 0xFF); m.setByte(1, 0xFF); m.setByte(0, 0xFF);
+    CHECK(m.take() == 0xFFFFFF && m.take() == 0);
+    m.addrs(1); m.addrs(2); m.addrs(3); m.addrs(4);
+    CHECK(m.pos == 0x030204);
+}
+
 // ---------------- 4. wear cap ----------------
 static void test_cap() {
     printf("learn: wear cap\n");
@@ -710,6 +766,25 @@ struct ReplayCtx {
     uint32_t read_bad = 0;
 };
 
+// How the replay positions the disk: 0 = the MR1R18 counter of [ramdisk]
+// (positions straight from the trace), 1 = [pico_rd] by ADDRS seeks (A0,
+// A1, A2), 2 = [pico_rd] by direct A2/A1/A0 writes. The pico_rd modes run
+// every byte through PicoRdAddr (auto-increment), re-seeking where the
+// trace's MR1R18 run wraps inside its 64 KB page.
+static int g_replay_addr = 0;
+static PicoRdAddr g_prd;
+static uint32_t g_prd_seeks = 0, g_prd_bad = 0;
+
+static void prd_seek(uint32_t p) {
+    g_prd_seeks++;
+    if (g_replay_addr == 1) {
+        g_prd.control();                        // any port but ADDRI restarts the ADDRS index
+        g_prd.addrs((uint8_t)p); g_prd.addrs((uint8_t)(p >> 8)); g_prd.addrs((uint8_t)(p >> 16));
+    } else {
+        g_prd.setByte(2, (uint8_t)(p >> 16)); g_prd.setByte(1, (uint8_t)(p >> 8)); g_prd.setByte(0, (uint8_t)p);
+    }
+}
+
 // salt != 0: every written byte XOR salt - the same writes with other
 // content (scratch that differs from session to session)
 static void replay_range(ReplayCtx& c, LDisk& d, std::vector<uint8_t>& model, size_t from, size_t to,
@@ -721,7 +796,13 @@ static void replay_range(ReplayCtx& c, LDisk& d, std::vector<uint8_t>& model, si
         if (r.k == 'F') continue;
         const uint32_t pagebase = ((uint32_t)r.page << 16) % SIZE;
         for (uint32_t i = 0; i < r.len; i++) {
-            const uint32_t p = pagebase | ((r.start + i) & 0xFFFF);
+            uint32_t p = pagebase | ((r.start + i) & 0xFFFF);
+            if (g_replay_addr) {
+                if (i == 0 || ((r.start + i) & 0xFFFF) == 0) prd_seek(p);
+                const uint32_t q = g_prd.take();
+                g_prd_bad += q != p;
+                p = q;
+            }
             if (r.k == 'R') {
                 c.read_bad += d.st.read(p) != model[p];
             } else {
@@ -795,6 +876,9 @@ static void replay_sessions(const std::vector<Rec>& recs, const std::vector<uint
     const uint32_t SIZE = 512 * 1024;
     std::vector<uint8_t> model(SIZE, 0);
     ReplayCtx c{&recs, &data, boot_end, play_start};
+    g_prd = PicoRdAddr();
+    g_prd.size = SIZE;
+    g_prd_seeks = g_prd_bad = 0;
     LDisk d;
     CHECK(d.open("flash:/POP800RD.IMG", SIZE, pool, -1) == 0);
     // power: the session starts with a card power-up (the pool is gone;
@@ -803,7 +887,8 @@ static void replay_sessions(const std::vector<Rec>& recs, const std::vector<uint
         {true, 1.0}, {false, 0.5}, {true, 1.5}, {false, 0.25}, {true, 2.0}, {true, 1.0},
         {false, 0.75}, {true, 3.0}, {true, 0.1}, {false, 1.0},
     };
-    printf("  pool %lu KB:\n", (unsigned long)pool);
+    static const char* AM[] = {"[ramdisk] MR1R18 addressing", "[pico_rd] ADDRS seeks", "[pico_rd] direct A2/A1/A0"};
+    printf("  pool %lu KB, %s:\n", (unsigned long)pool, AM[g_replay_addr]);
     uint32_t late_wb = 0, all_drops = 0;
     int n = 0;
     for (const Plan& pl : plan) {
@@ -842,6 +927,9 @@ static void replay_sessions(const std::vector<Rec>& recs, const std::vector<uint
     CHECK(late_wb == 0);
     CHECK(all_drops == 0);
     CHECK(d.im.mode() == COW_LEARN_OK);
+    if (g_replay_addr)
+        printf("    pico_rd: %lu seeks, %lu positions off\n", (unsigned long)g_prd_seeks, (unsigned long)g_prd_bad);
+    CHECK(g_prd_bad == 0);
     CHECK(c.read_bad == 0);
     CHECK(mismatches(d.st, model) == 0);
     d.close();
@@ -870,6 +958,12 @@ static void test_trace(const char* path) {
     const uint32_t pool = getenv("COW_POOL") ? (uint32_t)atoi(getenv("COW_POOL")) : 72;
     replay_sessions(recs, data, boot_end, play, pool, true);
     replay_sessions(recs, data, boot_end, play, 40, true);     // scratch > pool: the hot-block rule at work
+    // The same through [pico_rd]: its 24-bit counter, both seek patterns
+    for (int am : {1, 2}) {
+        g_replay_addr = am;
+        replay_sessions(recs, data, boot_end, play, pool, false);
+    }
+    g_replay_addr = 0;
     if (getenv("COW_TRACE_VARIANTS"))
         for (uint32_t pv : {48u, 64u, 96u}) replay_sessions(recs, data, boot_end, play, pv, false);
 }
@@ -881,6 +975,7 @@ void learn_tests(int argc, char** argv) {
     test_converge();
     test_reset_path();
     test_power_sessions();
+    test_picord_addr();
     test_cap();
     test_remap();
     test_powercut();

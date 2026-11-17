@@ -2,6 +2,9 @@
 
 #include <cstdint>
 #include "mz_devices.hpp"
+#include "common.hpp"
+#include "pico_rd_addr.hpp"
+#include "cow_disk.hpp"
 
 constexpr uint8_t PICO_RD_READ_PORT_COUNT = 5;
 constexpr uint8_t PICO_RD_WRITE_PORT_COUNT = 7;
@@ -33,29 +36,29 @@ public:
     int flush() override;
     void setDriveContent(std::string content, bool in_ram);
 
-    static int writeControl(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
-    static int readControl(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr);
-    static int writeData(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
-    static int readData(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr);
-    static int writeAddr2(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
-    static int readAddr2(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr);
-    static int writeAddr1(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
-    static int readAddr1(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr);
-    static int writeAddr0(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
-    static int readAddr0(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr);
-    static int writeAddrs(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
-    static int writeAddri(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
+    RAM_FUNC static int writeControl(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
+    RAM_FUNC static int readControl(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr);
+    RAM_FUNC static int writeData(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
+    RAM_FUNC static int readData(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr);
+    RAM_FUNC static int writeAddr2(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
+    RAM_FUNC static int readAddr2(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr);
+    RAM_FUNC static int writeAddr1(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
+    RAM_FUNC static int readAddr1(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr);
+    RAM_FUNC static int writeAddr0(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
+    RAM_FUNC static int readAddr0(MZDevice* self, uint8_t port, uint8_t* dt, uint8_t high_addr);
+    RAM_FUNC static int writeAddrs(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
+    RAM_FUNC static int writeAddri(MZDevice* self, uint8_t port, uint8_t dt, uint8_t high_addr);
 
-    void softReset() override { // contents persist, like real RAM
-        addr_idx = 0;
-        if (bs) bs->seek(0);
-    }
+    // Contents persist, like real RAM (mode=cow: the pool survives every
+    // Z80 reset); the position returns to 0
+    void softReset() override;
 
 private:
     uint8_t* data;
     uint32_t size;
-    uint8_t addr_idx;
     bool readOnly;
+    PicoRdAddr a_;             // the position register (pico_rd_addr.hpp)
     std::unique_ptr<ByteSource> bs;
+    CowDisk* cow_ = nullptr;   // mode=cow: the card's flash image (XIP) + SRAM pool
 };
 
