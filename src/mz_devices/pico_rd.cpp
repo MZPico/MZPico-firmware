@@ -76,7 +76,7 @@ int PicoRD::readConfig(dictionary *ini) {
         const int r = CowDisk::open(ini, getDevID(), image, sz, PICO_RD_DEFAULT_SIZE, &cow_);
         if (r) return r;
         size = cow_->size();
-        a_.size = size;
+        a_.setSize(size);
         return 0;
     }
     if (!mode.empty() && mode != "file" && mode != "ram")
@@ -112,7 +112,10 @@ int PicoRD::readConfig(dictionary *ini) {
            return E_DEVICE_NO_MEMORY;
        }
     }
-    a_.size = size ? size : 1;
+    // size= omitted with an image: the bound is the file's length (what the
+    // file source adopted), as before
+    a_.setSize(size, bs ? bs->size() : 0);
+    if (!size) size = a_.size;
     return 0;
 }
 
@@ -159,7 +162,10 @@ RAM_FUNC int PicoRD::writeData(MZDevice* self, uint8_t, uint8_t dt, uint8_t) {
         rd->cow_->write(p, dt);
         return 0;
     }
-    rd->bs->seek(p);
+    // Sequential access needs no seek (the source advanced with the last
+    // byte); a seek to the append position would flush the file cache on
+    // every byte
+    if (rd->bs->tell() != p) rd->bs->seek(p);
     rd->bs->setByte(dt);
     return 0;
 }
@@ -171,7 +177,7 @@ RAM_FUNC int PicoRD::readData(MZDevice* self, uint8_t, uint8_t* dt, uint8_t) {
         *dt = rd->cow_->read(p);
         return 0;
     }
-    rd->bs->seek(p);
+    if (rd->bs->tell() != p) rd->bs->seek(p);
     rd->bs->getByte(*dt);
     return 0;
 }

@@ -21,10 +21,22 @@
 #include <stdint.h>
 #include "common.hpp"
 
+constexpr uint32_t PICO_RD_ADDR_SPAN = 1u << 24;   // what 24 address bits reach
+
 struct PicoRdAddr {
     uint32_t pos = 0;      // the register, 24 bits
-    uint32_t size = 1;     // bytes, >= 1
+    uint32_t size = 1;     // the bound: bytes, 1..2^24 (setSize)
     uint8_t  idx = 0;      // ADDRS: the next byte to write (0 = A0)
+
+    // The bound: the configured size, else (size= omitted, file-backed) the
+    // storage's own length; at most 2^24 - the register cannot address more,
+    // so the position never leaves its 24 bits
+    void setSize(uint32_t cfg_size, uint32_t storage_size = 0) {
+        uint32_t s = cfg_size ? cfg_size : storage_size;
+        if (s == 0) s = 1;
+        if (s > PICO_RD_ADDR_SPAN) s = PICO_RD_ADDR_SPAN;
+        size = s;
+    }
 
     ALWAYS_INLINE void control() { pos = 0; idx = 0; }
     // Direct byte write, b = 0 (A0), 1 (A1), 2 (A2)

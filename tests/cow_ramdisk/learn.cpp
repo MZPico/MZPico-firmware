@@ -621,7 +621,20 @@ static void test_picord_addr() {
     PicoRdAddr c; c.size = 100000;
     c.pos = 99999; CHECK(c.take() == 99999 && c.take() == 0);
     c.pos = 99990; c.addri(20); CHECK(c.pos == 10);
-    PicoRdAddr m; m.size = 16u << 20;
+    // The bound: size= omitted (0) with a file takes the file's length
+    PicoRdAddr f; f.setSize(0, 40000);
+    CHECK(f.size == 40000);
+    f.pos = 39999; CHECK(f.take() == 39999 && f.take() == 0);
+    f.pos = 39990; f.addri(20); CHECK(f.pos == 10);
+    PicoRdAddr z; z.setSize(0, 0); CHECK(z.size == 1);
+    // A size past 2^24 (32 MB) is capped: the 24-bit register never leaves
+    // its 24 bits, advancing or skipping
+    PicoRdAddr big; big.setSize(32u << 20);
+    CHECK(big.size == 1u << 24);
+    big.pos = 0xFFFFFF; big.addri(1); CHECK(big.pos == 0);
+    big.pos = 0xFFFFFF; CHECK(big.take() == 0xFFFFFF && big.pos == 0);
+    big.pos = 0xFFFFF0; big.addri(0x20); CHECK(big.pos == 0x10);
+    PicoRdAddr m; m.setSize(16u << 20);
     m.setByte(2, 0xFF); m.setByte(1, 0xFF); m.setByte(0, 0xFF);
     CHECK(m.take() == 0xFFFFFF && m.take() == 0);
     m.addrs(1); m.addrs(2); m.addrs(3); m.addrs(4);
