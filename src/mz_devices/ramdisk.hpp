@@ -11,7 +11,7 @@ constexpr uint32_t RAMDISK_DEFAULT_SIZE = 65536;
 constexpr uint8_t RAMDISK_DEFAULT_BASE_PORT = 0xe9;
 constexpr const char RAMDISK_ID[] = "ramdisk";
 constexpr bool RAMDISK_EXWAIT = true;
-constexpr uint32_t RAMDISK_COW_DEFAULT_POOL_KB = 64;
+constexpr uint32_t RAMDISK_COW_DEFAULT_POOL_KB = 72;   // PoP: ~64 blocks + headroom
 
 // REST / diagnostics (core 0): the COW RAM disk's state as a JSON object,
 // and a pool clear armed for the next Z80 reset. Plain C linkage so the C

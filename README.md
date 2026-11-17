@@ -363,7 +363,7 @@ Options:
 - `size` — capacity in bytes (`K`/`M` suffixes accepted: `512K`, `1M`), rounded up to 64 KB multiples; default `65536` (one page). **Use `131072` or more to enable page switching** — with a single page, page selects wrap back to page 0. With `mode=cow`, omitted = the image's size (whole 64 KB pages).
 - `image` — optional backing file; omitted = volatile RAM
 - `mode` — `file` (default: RAM, or the `image` file behind a 128-byte window) or `cow` (see below)
-- `cow_pool` — `mode=cow` only: the SRAM pool in KB (1 KB blocks), `1`–`255`, default `64`
+- `cow_pool` — `mode=cow` only: the SRAM pool in KB (1 KB blocks), `1`–`255`, default `72`
 - `learn` — `mode=cow` only: the card builds and refreshes the image itself (see *learn* below). `true`, `false`, `frozen`; omitted = on for an image the card created, off for one prepared elsewhere
 - `learn_batch` (`4` blocks), `learn_cap` (`1024` blocks an hour), `learn_converge` (`2` sessions), `learn_sync` (`64` blocks), `learn_freeze_after` (`0` = never), `learn_reserve` (`0`) — learn tuning, see below
 - `read_only` — `true`/`false` (default `false`)
@@ -390,7 +390,7 @@ about the speed of a RAM-backed disk.
 [ramdisk]
 image=flash:/POP800RD.IMG
 mode=cow
-cow_pool=64
+cow_pool=72
 size=512K
 ```
 
@@ -414,7 +414,9 @@ size=512K
   the pool and learn (a short form inside `GET /api/heap`);
   `GET /api/ramdisk/clear` empties it at the next MZ-800 reset.
 - **RAM**: `cow_pool` KB plus about 6 bytes per KB of disk (3 KB for
-  512 KB), allocated at boot.
+  512 KB), allocated at boot. On a Pico W with WiFi up the default 72 KB
+  pool leaves about 40 KB of heap: enough for the network, **not** for a
+  cloud file load (49 KB) next to the RAM disk.
 - **Changing the image while it is in use**: the running disk is a
   snapshot of the image as it was at power-up. Flash writes never stop or
   disturb it (an access waits out a flash erase/program). When the file is
@@ -475,9 +477,23 @@ size=512K
   working set stays in the pool. `learn_reserve=N` keeps N slots free
   ahead of need during such a learning burst (off: it only added writes in
   the Prince of Persia trace).
-- **Convergence**: a *session* runs from one MZ-800 reset to the next.
-  The state is `learning` until `learn_converge` consecutive sessions
-  with RAM-disk activity pass without a write-back, then `ok`. A new
+- **Hot blocks**: a block written back in two different sessions (or
+  twice in one) is scratch whose content differs every time — PoP's room
+  shadow, caches, the measured speed byte. It is marked **volatile**
+  (persisted in the trailer, for the first 1,184 KB of the disk): never
+  chosen as a write-back victim while another block can free a slot, and
+  its write-backs don't count against convergence. If only volatile blocks
+  are left when the Z80 needs a slot, one of them is still written back
+  (`vol_forced`) rather than the write lost: the image then churns only by
+  what the pool cannot hold. Blocks equal to the image again (the size
+  probe's restored markers) are always freed first, before any
+  write-back. A relearn clears the marks.
+- **Convergence**: a *session* runs from one MZ-800 reset, or card
+  power-up, to the next (a session ended by power-off is closed at the
+  next power-up from what the trailer recorded; a learning session marks
+  itself there at its first RAM-disk access). The state is `learning`
+  until `learn_converge` consecutive sessions with RAM-disk activity pass
+  without a write-back of a non-volatile block, then `ok`. A new
   version of the software writes data that differs from the image, its
   first boot writes back again and the state returns to `learning` by
   itself. `frozen` turns the write-back off (the pool then works as
@@ -507,7 +523,8 @@ size=512K
   `blocks`, `sectors`, `flash_bytes`, `stall_ms`, `stall_max_ms`,
   `erases`, `syncs`, `tokens`, `cap_drops`, `fails`, and from the trailer
   `sessions`, `clean_sessions`, `dirty_sessions`, `relearns`,
-  `blocks_total`, `erases_total`, `wear_ppm`; `fs_erases`,
+  `blocks_total`, `erases_total`, `wear_ppm`, `volatile` (hot blocks),
+  `vol_skips`, `vol_forced`, `session_vol`; `fs_erases`,
   `fs_copy_erases`, `fs_map_syncs` count all flash_fs work since power-up;
   `resets`, `reset_us` (the last reset's handling), `persists`,
   `persist_ms`, `persist_due` show the deferred reset work.
@@ -515,9 +532,14 @@ size=512K
   512 KB image, typical flash timings): the first session writes back
   436 blocks (857 sectors, 428 KB, 113 erases) in 109 stalls of up to
   ~100 ms, 5.8 s in all (5.2 s of them in the 18 s boot, the rest in the
-  title); play writes nothing back. The second boot, and every boot after
-  a power cycle, writes back nothing; the pool peaks at 64 of 64 with no
-  drop.
+  title); play writes nothing back. Over ten further sessions (resets and
+  power cycles, the title/story run from 0.1x to 3x with different
+  scratch each time) nothing is written back and the state reaches `ok`
+  at session 4; the pool peaks at 72 of 72 with no drop. With a pool too
+  small for the scratch (40 KB) the hot-block rule marks 51 blocks
+  volatile (the 1:0000-7FFF room shadow, the page-6 caches, the speed
+  byte's block, the probe blocks), convergence still comes at session 4,
+  and nothing is dropped.
 
 ---
 

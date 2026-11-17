@@ -13,8 +13,13 @@
 // directory sectors plus one map sync instead of 1,024 pages (128 erases).
 //
 // Trailer: one 512 B sector right after the disk's `size` bytes (the file is
-// size + 512). Present = the image is a learn image. Updated in place (one
-// sector write + map sync) at an MZ-800 reset when the state changed.
+// size + 512). Present = the image is a learn image. Layout: the CowTrailer
+// header (64 B), the store's three hot-block bitmaps (sess, seen, vol,
+// COW_HOT_BYTES each), a checksum over the rest in the last 4 bytes. It is
+// rewritten with every learn map sync, so what the map holds and what the
+// trailer says about the session always match - in particular the current
+// session's write-backs (cur_*), which close the session at the next
+// power-up when no MZ-800 reset did.
 //
 // Pure FatFS + flash_fs.h: tests/cow_ramdisk runs it on the host on the
 // real flash_fs over an emulated flash chip.
@@ -33,11 +38,11 @@ enum CowLearnMode : uint8_t {
 };
 
 struct CowTrailer {
-    char     magic[8];        // "MZPCOWL1"
+    char     magic[8];        // "MZPCOWL2" ("MZPCOWL1": 15d9e36's, read and upgraded)
     uint32_t disk_size;
     uint8_t  mode;            // CowLearnMode (never OFF on flash)
     uint8_t  frozen_auto;     // frozen by learn_freeze_after, not by the user
-    uint16_t clean;           // consecutive sessions without write-back
+    uint16_t clean;           // consecutive sessions without (non-volatile) write-back
     uint16_t dirty;           // consecutive sessions with write-back
     uint16_t relearns;
     uint32_t sessions;        // sessions with RAM-disk activity, ever
@@ -45,8 +50,15 @@ struct CowTrailer {
     uint32_t wb_sectors;      // sectors written back, ever
     uint32_t erases;          // flash erases caused by the learn path, ever
     uint32_t created;         // creations / relearns from blank
-    uint32_t sum;             // over the bytes before it
+    uint32_t l1_sum;          // MZPCOWL1's checksum (0 in v2: the sector's last word)
+    uint8_t  cur_active;      // the current session is open (closed at the next power-up)
+    uint8_t  pad0;
+    uint16_t cur_wb;          // ... its non-volatile write-backs so far
+    uint16_t cur_vol;         // ... its volatile write-backs so far
+    uint16_t pad1;
+    uint8_t  reserved[12];
 };
+static_assert(sizeof(CowTrailer) == 64, "the trailer header is 64 B");
 
 struct CowLearnPolicy {
     uint16_t converge = 2;        // clean sessions: learning -> ok
@@ -59,10 +71,11 @@ bool cow_learn_end_session(CowTrailer& t, const CowLearnPolicy& p, bool active,
                            uint32_t wb_blocks, uint32_t wb_sectors, uint32_t drops,
                            uint32_t erases);
 void cow_trailer_init(CowTrailer& t, uint32_t disk_size);
-bool cow_trailer_valid(const CowTrailer& t, uint32_t disk_size);
+bool cow_trailer_valid(const uint8_t* sector, uint32_t disk_size);   // a 512 B trailer sector
 const char* cow_learn_mode_name(uint8_t mode);
 
 struct CowImageCfg {
+    CowLearnPolicy policy;    // also applied when a power-up closes the last session
     const char* path;
     uint32_t size;            // bytes, multiple of 64 KB; 0 = the image's (whole 64 KB pages)
     uint32_t default_size;    // creating with size 0
@@ -107,13 +120,18 @@ public:
     // learning, pool empty; persisted by persist()
     bool relearn(CowStore& store);
     // Deferred flash work: true when persist() has something to write
+    // (A learning session is marked open in the trailer at its first access,
+    // so a power-off can close it at the next power-up.)
     bool persistPending(const CowStore& store) const {
-        return mode_ != COW_LEARN_OFF && !gone_ && (pending_write_ || store.syncPending());
+        return mode_ != COW_LEARN_OFF && !gone_ && has_trailer_ &&
+               (pending_write_ || store.syncPending() ||
+                (mode_ == COW_LEARN_LEARNING && !session_marked_));
     }
     // The trailer if it changed, then the map sync: one page program + one
     // or two map syncs, ~50-150 ms. Called by the owner from a RAM-disk
     // port access (core 1, the Z80 held by EXWAIT), like a write-back.
     void persist(CowStore& store);
+    uint32_t volatileCount(const CowStore& store) const { return store.volatileCount(); }
 
     // flash_fs hooks (installed by the owner, both modes): page moves, and
     // trims (FatFS CTRL_TRIM: the image deleted or truncated). An external
@@ -130,6 +148,7 @@ private:
     static void ioSync(void* ctx);
     static uint32_t ioNow(void* ctx);
     bool writeTrailer();
+    void syncWithTrailer();         // the trailer (with the session record), then the map
     void trimDisk(CowStore* store);
 
     CowRuns runs_;
@@ -148,6 +167,8 @@ private:
     uint32_t trailer_writes_ = 0;
     uint32_t (*now_us_)(void*) = nullptr;
     void* now_ctx_ = nullptr;
-    bool pending_write_ = false;        // freeze/unfreeze: persist at the next reset
+    bool pending_write_ = false;        // the trailer changed: persist()
+    bool session_marked_ = false;       // the trailer says this session is open
+    CowStore* store_ = nullptr;
     uint32_t session_sectors0_ = 0, session_erases0_ = 0;
 };

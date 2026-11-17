@@ -179,7 +179,10 @@ int RamDisk::readConfigCow(dictionary* ini, const std::string& image, uint32_t s
     if (lv == "true" || lv == "1" || lv == "yes" || lv == "on" || lv == "frozen") learn = 1;
     else if (lv == "false" || lv == "0" || lv == "no" || lv == "off") learn = 0;
 
+    learnPolicy_.converge = (uint16_t)ini_int(ini, id + ":learn_converge", learnPolicy_.converge, 1, 1000);
+    learnPolicy_.freeze_after = (uint16_t)ini_int(ini, id + ":learn_freeze_after", 0, 0, 1000);
     CowImageCfg cfg{};
+    cfg.policy = learnPolicy_;
     cfg.path = image.c_str();
     cfg.size = size_given ? ((size_given + 0xffff) & 0xffff0000) : 0;
     cfg.default_size = RAMDISK_DEFAULT_SIZE;
@@ -207,11 +210,12 @@ int RamDisk::readConfigCow(dictionary* ini, const std::string& image, uint32_t s
     lc.reserve = (uint32_t)ini_int(ini, id + ":learn_reserve", (int)lc.reserve, 0, (int)pool_kb);
     lc.cap = (uint32_t)ini_int(ini, id + ":learn_cap", (int)lc.cap, 0, 1 << 20);
     lc.sync_every = (uint32_t)ini_int(ini, id + ":learn_sync", (int)lc.sync_every, 1, 4096);
-    learnPolicy_.converge = (uint16_t)ini_int(ini, id + ":learn_converge", learnPolicy_.converge, 1, 1000);
-    learnPolicy_.freeze_after = (uint16_t)ini_int(ini, id + ":learn_freeze_after", 0, 0, 1000);
     cow.setLearn(cowImage.io(), lc);
     if (lv == "frozen" && cowImage.mode() != COW_LEARN_FROZEN) cowImage.freeze(cow, true);
     cow.setWriteBack(cowImage.learning());
+    // The first RAM-disk access marks a learning session open in the
+    // trailer (and persists a power-up's closing of the last one)
+    persist_due_ = cowImage.persistPending(cow);
 
     cow_ = true;
     g_cow_disk = this;
@@ -339,6 +343,7 @@ extern "C" int ramdisk_cow_json_full(char* buf, size_t len) {
         "\"tokens\":%lu,\"cap_drops\":%lu,\"session_blocks\":%lu,"
         "\"sessions\":%lu,\"clean_sessions\":%u,\"dirty_sessions\":%u,\"relearns\":%u,"
         "\"blocks_total\":%lu,\"erases_total\":%lu,\"wear_ppm\":%lu,"
+        "\"volatile\":%lu,\"vol_skips\":%lu,\"vol_forced\":%lu,\"session_vol\":%lu,"
         "\"fs_erases\":%lu,\"fs_copy_erases\":%lu,\"fs_map_syncs\":%lu,\"pending\":\"%s\","
         "\"resets\":%lu,\"reset_us\":%lu,\"persists\":%lu,\"persist_ms\":%lu,\"persist_due\":%s}}",
         cow_learn_state(im, cs), im.created() ? "true" : "false",
@@ -350,6 +355,8 @@ extern "C" int ramdisk_cow_json_full(char* buf, size_t len) {
         (unsigned long)cs.tokens(), (unsigned long)L.cap_drops, (unsigned long)L.session_blocks,
         (unsigned long)t.sessions, (unsigned)t.clean, (unsigned)t.dirty, (unsigned)t.relearns,
         (unsigned long)(t.wb_blocks + L.session_blocks), (unsigned long)erases_total, wear_ppm,
+        (unsigned long)cs.volatileCount(), (unsigned long)L.vol_skips, (unsigned long)L.vol_forced,
+        (unsigned long)L.session_vol,
         (unsigned long)flash_fs_erases, (unsigned long)flash_fs_copy_erases,
         (unsigned long)flash_fs_map_syncs,
         g_cow_relearn_req ? "relearn" : (g_cow_freeze_req ? "freeze" : (g_cow_unfreeze_req ? "unfreeze" : "")),

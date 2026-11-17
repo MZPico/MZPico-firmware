@@ -6,12 +6,15 @@
 #include <string.h>
 #include "flash_fs.h"
 
-static const char COW_TRAILER_MAGIC[8] = {'M', 'Z', 'P', 'C', 'O', 'W', 'L', '1'};
+static const char COW_TRAILER_MAGIC[8] = {'M', 'Z', 'P', 'C', 'O', 'W', 'L', '2'};
+static const char COW_TRAILER_MAGIC1[8] = {'M', 'Z', 'P', 'C', 'O', 'W', 'L', '1'};
+static const size_t COW_TR_HOT = sizeof(CowTrailer);          // the bitmaps' offset
+static const size_t COW_TR_SUM = COW_SECT - 4;                // the checksum's
+static_assert(COW_TR_HOT + 3 * COW_HOT_BYTES <= COW_TR_SUM, "the trailer sector layout");
 
-static uint32_t trailer_sum(const CowTrailer& t) {
-    const uint8_t* p = reinterpret_cast<const uint8_t*>(&t);
+static uint32_t sum_bytes(const uint8_t* p, size_t n) {
     uint32_t s = 0x5A17C0DEu;
-    for (size_t i = 0; i < offsetof(CowTrailer, sum); i++) s = (s << 5) + s + p[i];
+    for (size_t i = 0; i < n; i++) s = (s << 5) + s + p[i];
     return s;
 }
 
@@ -22,9 +25,42 @@ void cow_trailer_init(CowTrailer& t, uint32_t disk_size) {
     t.mode = COW_LEARN_LEARNING;
 }
 
-bool cow_trailer_valid(const CowTrailer& t, uint32_t disk_size) {
-    return memcmp(t.magic, COW_TRAILER_MAGIC, 8) == 0 && t.disk_size == disk_size &&
-           t.mode >= COW_LEARN_LEARNING && t.mode <= COW_LEARN_FROZEN && t.sum == trailer_sum(t);
+// The 512 B trailer sector: header, the hot bitmaps (hot: 3 * COW_HOT_BYTES,
+// nullptr = none), checksum
+static void trailer_encode(uint8_t* sec, const CowTrailer& t, const CowStore* hot) {
+    memset(sec, 0, COW_SECT);
+    CowTrailer h = t;
+    memcpy(h.magic, COW_TRAILER_MAGIC, 8);
+    h.l1_sum = 0;
+    memcpy(sec, &h, sizeof(h));
+    if (hot) hot->exportHot(sec + COW_TR_HOT);
+    const uint32_t s = sum_bytes(sec, COW_TR_SUM);
+    memcpy(sec + COW_TR_SUM, &s, 4);
+}
+
+// 0 = not a trailer of this disk, 1 = a v1 trailer (no bitmaps), 2 = v2
+static int trailer_decode(const uint8_t* sec, uint32_t disk_size, CowTrailer& t) {
+    memcpy(&t, sec, sizeof(t));
+    if (t.disk_size != disk_size || t.mode < COW_LEARN_LEARNING || t.mode > COW_LEARN_FROZEN) return 0;
+    if (memcmp(t.magic, COW_TRAILER_MAGIC, 8) == 0) {
+        uint32_t s;
+        memcpy(&s, sec + COW_TR_SUM, 4);
+        return s == sum_bytes(sec, COW_TR_SUM) ? 2 : 0;
+    }
+    if (memcmp(t.magic, COW_TRAILER_MAGIC1, 8) == 0 &&
+        t.l1_sum == sum_bytes(sec, offsetof(CowTrailer, l1_sum))) {
+        // v1 ended at its checksum: no session record, no bitmaps
+        memset(reinterpret_cast<uint8_t*>(&t) + offsetof(CowTrailer, cur_active), 0,
+               sizeof(t) - offsetof(CowTrailer, cur_active));
+        memcpy(t.magic, COW_TRAILER_MAGIC, 8);
+        return 1;
+    }
+    return 0;
+}
+
+bool cow_trailer_valid(const uint8_t* sec, uint32_t disk_size) {
+    CowTrailer t;
+    return trailer_decode(sec, disk_size, t) != 0;
 }
 
 const char* cow_learn_mode_name(uint8_t mode) {
@@ -49,6 +85,8 @@ bool cow_learn_end_session(CowTrailer& t, const CowLearnPolicy& p, bool active,
     // Erases only accumulate: they ride along with the next real change
     // (the deferred persist's own erases land in the session after it)
     if (t.mode == COW_LEARN_FROZEN) return wb_blocks != 0;
+    // wb_blocks: non-volatile write-backs only - scratch the hot-block rule
+    // marked volatile does not keep the image learning
     if (wb_blocks || drops) {
         // Written back (or wanted to and could not): still learning
         t.clean = 0;
@@ -75,9 +113,7 @@ static bool fatfs_write_trailer(const char* path, uint32_t size, const CowTraile
     uint8_t* b = static_cast<uint8_t*>(calloc(1, COW_SECT));
     bool ok = false;
     if (f && b && f_open(f, path, FA_WRITE | FA_OPEN_EXISTING) == FR_OK) {
-        CowTrailer tt = t;
-        tt.sum = trailer_sum(tt);
-        memcpy(b, &tt, sizeof(tt));
+        trailer_encode(b, t, nullptr);
         UINT w = 0;
         ok = f_lseek(f, size) == FR_OK && f_write(f, b, COW_SECT, &w) == FR_OK && w == COW_SECT;
         ok = (f_close(f) == FR_OK) && ok;
@@ -179,15 +215,16 @@ int CowImage::open(const CowImageCfg& cfg, CowStore& store, char* err, size_t er
     bool short_learn = false;
     if (exists && fsize0 < size && fsize0 > COW_SECT && cfg.learn != 0) {
         FIL* f = static_cast<FIL*>(malloc(sizeof(FIL)));
-        CowTrailer t;
+        uint8_t* sec = static_cast<uint8_t*>(malloc(COW_SECT));
         UINT got = 0;
-        if (f && f_open(f, cfg.path, FA_READ) == FR_OK) {
+        if (f && sec && f_open(f, cfg.path, FA_READ) == FR_OK) {
             short_learn = f_lseek(f, fsize0 - COW_SECT) == FR_OK &&
-                          f_read(f, &t, sizeof(t), &got) == FR_OK && got == sizeof(t) &&
-                          cow_trailer_valid(t, fsize0 - COW_SECT);
+                          f_read(f, sec, COW_SECT, &got) == FR_OK && got == COW_SECT &&
+                          cow_trailer_valid(sec, fsize0 - COW_SECT);
             f_close(f);
         }
         free(f);
+        free(sec);
     }
     if (!exists || fsize0 < size) {
         if (exists && cfg.learn == -1 && !short_learn) {
@@ -222,11 +259,14 @@ int CowImage::open(const CowImageCfg& cfg, CowStore& store, char* err, size_t er
     const uint32_t fsize = (uint32_t)f_size(f);
     // The trailer: a learn image
     has_trailer_ = false;
+    uint8_t* hot = nullptr;           // its bitmaps, until the store exists
     if (fsize >= size + COW_SECT) {
         UINT got = 0;
         if (f_lseek(f, size) == FR_OK && f_read(f, chk, COW_SECT, &got) == FR_OK && got == COW_SECT) {
-            memcpy(&tr_, chk, sizeof(tr_));
-            has_trailer_ = cow_trailer_valid(tr_, size);
+            const int v = trailer_decode(chk, size, tr_);
+            has_trailer_ = v != 0;
+            if (v == 2 && (hot = static_cast<uint8_t*>(malloc(3 * COW_HOT_BYTES))) != nullptr)
+                memcpy(hot, chk + COW_TR_HOT, 3 * COW_HOT_BYTES);
         }
     }
     // learn: auto = a learn image (created now or earlier); on/off as given
@@ -245,7 +285,9 @@ int CowImage::open(const CowImageCfg& cfg, CowStore& store, char* err, size_t er
         mode_ = COW_LEARN_LEARNING;     // without a trailer: in RAM only
     } else mode_ = COW_LEARN_OFF;
 
-    if (!store.setup(size, cfg.pool_blocks, cfg.flash_base, cfg.busy)) {
+    const bool ram_ok = store.setup(size, cfg.pool_blocks, cfg.flash_base, cfg.busy);
+    if (ram_ok && hot) store.importHot(hot);
+    if (!ram_ok) {
         snprintf(err, err_len, "out of RAM (pool %lu KB)", (unsigned long)cfg.pool_blocks);
     } else if (cow_resolve_file(f, store.sectorCount(), flash_fs_map_entry, flash_fs_num_pages(),
                                 base_, zero_entry_, store.sectorTable(), &runs_, err, err_len) == 0) {
@@ -270,8 +312,22 @@ int CowImage::open(const CowImageCfg& cfg, CowStore& store, char* err, size_t er
     f_close(f);
     free(f);
     free(chk);
-    if (ret) { store.release(); runs_.release(); }
-    return ret;
+    free(hot);
+    if (ret) { store.release(); runs_.release(); return ret; }
+    store_ = &store;
+    // The last session ended by power-off, not by an MZ-800 reset: close it
+    // from what the trailer recorded with its last map sync (write-backs
+    // after that sync never reached the map either)
+    if (mode_ != COW_LEARN_OFF && has_trailer_ && tr_.cur_active) {
+        store.foldSession();
+        cow_learn_end_session(tr_, cfg.policy, true, tr_.cur_wb, 0, 0, 0);
+        mode_ = tr_.mode;
+        pending_write_ = true;
+    }
+    tr_.cur_active = 0;
+    tr_.cur_wb = tr_.cur_vol = 0;
+    session_marked_ = false;
+    return 0;
 }
 
 void CowImage::close() {
@@ -280,6 +336,8 @@ void CowImage::close() {
     mode_ = COW_LEARN_OFF;
     erases_ = trailer_writes_ = create_us_ = 0;
     pending_write_ = false;
+    session_marked_ = false;
+    store_ = nullptr;
     session_sectors0_ = session_erases0_ = 0;
 }
 
@@ -344,11 +402,22 @@ uint16_t CowImage::ioWrite(void* ctx, uint32_t sector, const uint8_t* data) {
     return (uint16_t)(self->base_ + e);
 }
 
+// The store's map sync (every learn_sync blocks of write-back)
 void CowImage::ioSync(void* ctx) {
-    CowImage* self = static_cast<CowImage*>(ctx);
+    static_cast<CowImage*>(ctx)->syncWithTrailer();
+}
+
+void CowImage::syncWithTrailer() {
+    if (store_ && has_trailer_ && !gone_) {
+        tr_.cur_active = (mode_ == COW_LEARN_LEARNING || store_->learn.session_blocks ||
+                          store_->learn.session_vol) ? 1 : 0;
+        tr_.cur_wb = (uint16_t)(store_->learn.session_blocks > 0xFFFF ? 0xFFFF : store_->learn.session_blocks);
+        tr_.cur_vol = (uint16_t)(store_->learn.session_vol > 0xFFFF ? 0xFFFF : store_->learn.session_vol);
+        if (writeTrailer()) session_marked_ = tr_.cur_active != 0;
+    }
     const uint32_t e0 = flash_fs_erases;
     flash_fs_sync();
-    self->erases_ += flash_fs_erases - e0;
+    erases_ += flash_fs_erases - e0;
 }
 
 uint32_t CowImage::ioNow(void* ctx) {
@@ -360,10 +429,9 @@ bool CowImage::writeTrailer() {
     if (!has_trailer_ || gone_) return false;
     const uint32_t lba = runs_.lba(nsect_);
     if (lba == UINT32_MAX || lba > 0xFFFF) return false;
-    uint8_t* b = static_cast<uint8_t*>(calloc(1, COW_SECT));
+    uint8_t* b = static_cast<uint8_t*>(malloc(COW_SECT));
     if (!b) return false;
-    tr_.sum = trailer_sum(tr_);
-    memcpy(b, &tr_, sizeof(tr_));
+    trailer_encode(b, tr_, store_);
     const uint32_t e0 = flash_fs_erases;
     const bool ok = flash_fs_write_FAT_sector((uint16_t)lba, b);
     erases_ += flash_fs_erases - e0;
@@ -374,8 +442,12 @@ bool CowImage::writeTrailer() {
 
 void CowImage::endSession(CowStore& store, const CowLearnPolicy& p, bool active) {
     const uint32_t drops = store.learn.session_drops;
-    const uint32_t wb = store.endSession();
+    const uint32_t wb = store.endSession();          // non-volatile write-backs
     if (mode_ == COW_LEARN_OFF) return;
+    if (store.foldSession()) pending_write_ = true;   // new volatile blocks
+    tr_.cur_active = 0;
+    tr_.cur_wb = tr_.cur_vol = 0;
+    session_marked_ = false;
     const uint32_t secs = store.learn.sectors - session_sectors0_;
     session_sectors0_ = store.learn.sectors;
     const bool changed = cow_learn_end_session(tr_, p, active, wb, secs, drops,
@@ -388,15 +460,9 @@ void CowImage::endSession(CowStore& store, const CowLearnPolicy& p, bool active)
 
 void CowImage::persist(CowStore& store) {
     if (!persistPending(store)) return;
-    if (pending_write_) {
-        pending_write_ = false;
-        if (writeTrailer()) {
-            ioSync(this);             // the trailer and every write-back so far
-            store.syncNow();          // (nothing left for the store to sync)
-            return;
-        }
-    }
-    store.syncNow();
+    pending_write_ = false;
+    syncWithTrailer();                // the trailer (session open), then the map
+    store.markSynced();
 }
 
 void CowImage::freeze(CowStore& store, bool frozen) {
@@ -417,6 +483,7 @@ void CowImage::freeze(CowStore& store, bool frozen) {
 bool CowImage::relearn(CowStore& store) {
     if (mode_ == COW_LEARN_OFF || gone_) return false;
     store.clear(true);
+    store.clearHot();
     trimDisk(&store);
     const CowTrailer old = tr_;
     cow_trailer_init(tr_, old.disk_size ? old.disk_size : nsect_ << COW_SECT_SHIFT);

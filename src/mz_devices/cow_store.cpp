@@ -139,6 +139,12 @@ bool CowStore::writeBackSlot(uint32_t s) {
         diff_[s] = countDiff((uint8_t)s, blk);   // one half may have landed
         return false;
     }
+    if (blk < hot_n_) {
+        uint8_t& sess = hot_[blk >> 3];
+        const uint8_t bit = (uint8_t)(1u << (blk & 7));
+        if (sess & bit) hot_[2 * COW_HOT_BYTES + (blk >> 3)] |= bit;   // twice in one session: hot
+        sess |= bit;
+    }
     freeSlot(s);
     return true;
 }
@@ -152,22 +158,41 @@ bool CowStore::writeBackSlot(uint32_t s) {
 uint32_t CowStore::writeBack(uint32_t max_blocks, bool ahead) {
     if (!wb_on_ || !max_blocks || !nslot_) return 0;
     const uint32_t t0 = io_.now_us(io_.ctx);
-    uint32_t freed = 0, written = 0;
-    for (uint32_t steps = 0; freed < max_blocks && steps < 2 * nslot_ + 1; steps++) {
+    uint32_t freed = 0, written = 0, vol_written = 0;
+    bool stop = false;
+    for (uint32_t steps = 0; freed < max_blocks && steps < 2 * nslot_ + 1 && !stop; steps++) {
         const uint32_t s = hand_;
         hand_ = (hand_ + 1 < nslot_) ? hand_ + 1 : 0;
         if (owner_[s] == COW_FREE || pinned_[s]) continue;
         if (diff_[s] == 0) { freeSlot(s); stats.reclaims++; freed++; continue; }
+        if (isVolatile(owner_[s])) { learn.vol_skips++; continue; }
         if (ref_[s]) { ref_[s] = 0; continue; }
-        if (!takeToken(io_.now_us(io_.ctx))) break;
-        if (!writeBackSlot(s)) break;
+        if (!takeToken(io_.now_us(io_.ctx))) { stop = true; break; }
+        if (!writeBackSlot(s)) { stop = true; break; }
         freed++;
         written++;
     }
-    if (written) {
+    // Only volatile blocks left and the Z80 needs a slot (need-driven):
+    // write back ONE of them, the least recently written - losing the
+    // write would corrupt the disk; the image churns only by what the pool
+    // cannot hold, and convergence ignores it
+    if (!freed && !ahead && !stop) {
+        for (uint32_t steps = 0; steps < 2 * nslot_ + 1; steps++) {
+            const uint32_t s = hand_;
+            hand_ = (hand_ + 1 < nslot_) ? hand_ + 1 : 0;
+            if (owner_[s] == COW_FREE || pinned_[s] || diff_[s] == 0) continue;
+            if (ref_[s]) { ref_[s] = 0; continue; }
+            if (!takeToken(io_.now_us(io_.ctx))) break;
+            if (writeBackSlot(s)) { freed++; vol_written++; learn.vol_forced++; }
+            break;
+        }
+    }
+    if (written || vol_written) {
         learn.batches++;
-        learn.blocks += written;
+        learn.blocks += written + vol_written;
         learn.session_blocks += written;
+        learn.session_vol += vol_written;
+        written += vol_written;
         if (ahead) learn.ahead += written;
         since_sync_ += written;
         // Bound what a power cut can undo: the map is persisted every

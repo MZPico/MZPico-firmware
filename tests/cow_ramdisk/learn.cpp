@@ -19,9 +19,10 @@
 //     a learning run all mount, keep the other files intact, and every
 //     image sector holds a version the Z80 wrote (or the blank)
 //  7. the trace replay (argv[1] or COW_TRACE=...rdlog): a real Prince of
-//     Persia RAM-disk trace from a blank image - boot, title, play - then a
-//     reset and a second session, a power cycle and a third; write-backs
-//     per phase
+//     Persia RAM-disk trace from a blank image over ten sessions, MZ-800
+//     resets and power cycles mixed, the title/story phase cut short or
+//     repeated with different scratch content each time; write-backs per
+//     phase, convergence, the volatile (hot) blocks - at pool 72 and 40
 
 #include <cstdio>
 #include <cstdlib>
@@ -121,6 +122,7 @@ struct LDisk {
     static void trimH(uint32_t f, uint32_t c) { if (cur) cur->im.onTrim(cur->st, f, c); }
     int open(const char* path, uint32_t size, uint32_t pool, int learn, const CowLearnCfg& lc = CowLearnCfg()) {
         CowImageCfg c{};
+        c.policy = pol;
         c.path = path; c.size = size; c.default_size = 65536; c.pool_blocks = pool; c.learn = learn;
         c.flash_base = CHIP; c.zero_page = ZERO; c.busy = &g_lbusy;
         const int r = im.open(c, st, err, sizeof err, now_us, nullptr);
@@ -439,6 +441,63 @@ static void test_reset_path() {
     d.close();
 }
 
+// ---------------- 3c. power-up sessions, the v1 trailer ----------------
+static void test_power_sessions() {
+    printf("learn: sessions ended by power-off, a v1 (15d9e36) trailer\n");
+    real_volume();
+    const uint32_t SIZE = 256 * 1024;
+    std::vector<uint8_t> model(SIZE, 0);
+    LDisk d;
+    CHECK(d.open("flash:/PS.IMG", SIZE, 16, -1) == 0);
+    d.im.persist(d.st);                       // first access: the session marked open
+    boot_like(d, model, 100, 80);             // learns (write-backs, map syncs on the way)
+    CHECK(d.st.learn.blocks > 0);
+    // Power-off without an MZ-800 reset, three times, the same boot
+    int ok_at = 0;
+    for (int pw = 1; pw <= 4; pw++) {
+        d.close();
+        CHECK(remount());
+        CHECK(d.open("flash:/PS.IMG", SIZE, 16, -1) == 0);
+        if (pw == 1) CHECK(d.im.trailer().dirty == 1 && d.im.trailer().sessions == 1);
+        if (!ok_at && d.im.mode() == COW_LEARN_OK) ok_at = pw;
+        for (uint32_t i = 0; i < SIZE; i++) model[i] = d.st.read(i);
+        d.im.persist(d.st);
+        boot_like(d, model, 100, 80);
+    }
+    printf("  ok after %d power cycles (clean %u, sessions %lu)\n", ok_at, (unsigned)d.im.trailer().clean,
+           (unsigned long)d.im.trailer().sessions);
+    CHECK(ok_at == 3);   // power-up 1 closes the dirty session, 2 and 3 the clean ones
+    d.close();
+
+    // A v1 trailer (as 15d9e36 wrote it) is read, its state kept, upgraded
+    CHECK(remount());
+    write_file("flash:/V1.IMG", 64 * 1024 + 512, 0);
+    FIL f;
+    CHECK(f_open(&f, "flash:/V1.IMG", FA_READ | FA_WRITE) == FR_OK);
+    uint8_t sec[512] = {0};
+    CowTrailer t;
+    memset(&t, 0, sizeof t);
+    memcpy(t.magic, "MZPCOWL1", 8);
+    t.disk_size = 64 * 1024; t.mode = COW_LEARN_OK; t.clean = 2; t.sessions = 7; t.wb_blocks = 123;
+    memcpy(sec, &t, sizeof t);
+    uint32_t h = 0x5A17C0DEu;
+    for (size_t i = 0; i < offsetof(CowTrailer, l1_sum); i++) h = (h << 5) + h + sec[i];
+    memcpy(sec + offsetof(CowTrailer, l1_sum), &h, 4);
+    UINT w = 0;
+    CHECK(f_lseek(&f, 64 * 1024) == FR_OK && f_write(&f, sec, 512, &w) == FR_OK && w == 512);
+    CHECK(f_close(&f) == FR_OK);
+    CHECK(d.open("flash:/V1.IMG", 0, 16, -1) == 0);
+    CHECK(d.im.hasTrailer() && d.im.mode() == COW_LEARN_OK && d.im.trailer().sessions == 7 &&
+          d.im.trailer().wb_blocks == 123 && d.st.volatileCount() == 0);
+    d.im.freeze(d.st, true);
+    d.reset();                                // writes it back as v2
+    d.close();
+    CHECK(remount());
+    CHECK(d.open("flash:/V1.IMG", 0, 16, -1) == 0);
+    CHECK(d.im.mode() == COW_LEARN_FROZEN && d.im.trailer().sessions >= 7);
+    d.close();
+}
+
 // ---------------- 4. wear cap ----------------
 static void test_cap() {
     printf("learn: wear cap\n");
@@ -628,110 +687,151 @@ struct PhaseStat {
     uint32_t stall_max = 0;
 };
 
-static void replay_variant(const std::vector<Rec>& recs, const std::vector<uint8_t>& data,
-                           uint64_t boot_end, uint64_t play_start, uint32_t reserve, bool verbose) {
+// One session of the trace: the boot, the title/story phase played for
+// `title` of its length (> 1: repeated - PRES runs longer, its scratch
+// grows and differs), then the play phase
+struct ReplayCtx {
+    const std::vector<Rec>* recs;
+    const std::vector<uint8_t>* data;
+    uint64_t boot_end, play_start;
+    uint64_t base_us = 0;
+    uint32_t read_bad = 0;
+};
+
+// salt != 0: every written byte XOR salt - the same writes with other
+// content (scratch that differs from session to session)
+static void replay_range(ReplayCtx& c, LDisk& d, std::vector<uint8_t>& model, size_t from, size_t to,
+                         uint64_t c0, uint32_t& peak, uint8_t salt = 0) {
+    const uint32_t SIZE = (uint32_t)model.size();
+    for (size_t k = from; k < to; k++) {
+        const Rec& r = (*c.recs)[k];
+        g_trace_us = c.base_us + (r.cycle - c0) * 1000000ull / 3546875ull;
+        if (r.k == 'F') continue;
+        const uint32_t pagebase = ((uint32_t)r.page << 16) % SIZE;
+        for (uint32_t i = 0; i < r.len; i++) {
+            const uint32_t p = pagebase | ((r.start + i) & 0xFFFF);
+            if (r.k == 'R') {
+                c.read_bad += d.st.read(p) != model[p];
+            } else {
+                const uint8_t v = (uint8_t)((*c.data)[r.data + i] ^ salt);
+                const uint32_t dr = d.st.stats.drops;
+                d.st.write(p, v);
+                if (d.st.stats.drops == dr) model[p] = v;
+            }
+        }
+        if (d.st.stats.used > peak) peak = d.st.stats.used;
+    }
+    if (!c.recs->empty() && to > from) c.base_us = g_trace_us;
+}
+
+struct SessStat { uint32_t wb_boot, wb_title, wb_play, vol, drops, peak, volatiles; uint64_t stall_us; };
+
+static SessStat replay_session(ReplayCtx& c, LDisk& d, std::vector<uint8_t>& model, double title, int sess) {
+    const auto& R = *c.recs;
+    size_t b_end = 0, t_end = 0;
+    while (b_end < R.size() && R[b_end].cycle < c.boot_end) b_end++;
+    t_end = b_end;
+    while (t_end < R.size() && R[t_end].cycle < c.play_start) t_end++;
+    SessStat st{};
+    d.im.persist(d.st);                 // the session's first RAM-disk access
+    const uint32_t b0 = d.st.learn.blocks, v0 = d.st.learn.vol_forced, dr0 = d.st.stats.drops;
+    const uint64_t s0 = d.st.learn.stall_us;
+    replay_range(c, d, model, 0, b_end, R.front().cycle, st.peak);
+    st.wb_boot = d.st.learn.blocks - b0;
+    // title/story: whole passes, then a part
+    double left = title;
+    const uint64_t tlen = c.play_start - c.boot_end;
+    int pass = 0;
+    while (left > 1e-9) {
+        const double f = left >= 1.0 ? 1.0 : left;
+        size_t e = b_end;
+        const uint64_t lim = c.boot_end + (uint64_t)(f * (double)tlen);
+        while (e < t_end && R[e].cycle < lim) e++;
+        // Session 1's first pass is the trace as recorded; every other pass
+        // writes different scratch content
+        const uint8_t salt = (sess == 1 && pass == 0) ? 0 : (uint8_t)(0x11 * (sess + 3 * pass) | 1);
+        replay_range(c, d, model, b_end, e, c.boot_end, st.peak, salt);
+        left -= f;
+        pass++;
+    }
+    st.wb_title = d.st.learn.blocks - b0 - st.wb_boot;
+    replay_range(c, d, model, t_end, R.size(), c.play_start, st.peak);
+    st.wb_play = d.st.learn.blocks - b0 - st.wb_boot - st.wb_title;
+    st.vol = d.st.learn.vol_forced - v0;
+    st.drops = d.st.stats.drops - dr0;
+    st.stall_us = d.st.learn.stall_us - s0;
+    c.base_us += 10000000ull;             // 10 s to the next session
+    return st;
+}
+
+// The volatile blocks as page:offset ranges
+static void print_volatile(const CowStore& st, uint32_t nblk) {
+    printf("    volatile blocks (%lu):", (unsigned long)st.volatileCount());
+    for (uint32_t b = 0; b < nblk; ) {
+        if (!st.isVolatile(b)) { b++; continue; }
+        uint32_t e = b;
+        while (e + 1 < nblk && st.isVolatile(e + 1)) e++;
+        printf(" %u:%04X-%04X", b >> 6, (b & 63) << 10, ((e & 63) << 10) | 0x3FF);
+        b = e + 1;
+    }
+    printf("\n");
+}
+
+static void replay_sessions(const std::vector<Rec>& recs, const std::vector<uint8_t>& data,
+                            uint64_t boot_end, uint64_t play_start, uint32_t pool, bool verbose) {
     real_volume();
     const uint32_t SIZE = 512 * 1024;
     std::vector<uint8_t> model(SIZE, 0);
+    ReplayCtx c{&recs, &data, boot_end, play_start};
     LDisk d;
-    CowLearnCfg lc;
-    lc.reserve = reserve;
-    CHECK(d.open("flash:/POP800RD.IMG", SIZE, 64, -1, lc) == 0);
-    const char* phase_names[3] = {"boot", "title", "play"};
-    const char* sessions[4] = {"1 (blank, power-up)", "2 (MZ-800 reset)", "3 (power cycle)", "4 (MZ-800 reset)"};
-    uint32_t read_bad = 0;
-    uint64_t base_us = 0;
-    PhaseStat tot;
-    const uint32_t copy0 = flash_fs_copy_erases, sync0 = flash_fs_map_syncs;
-    for (int sess = 0; sess < 4; sess++) {
-        if (sess == 2) {
-            d.close();
-            CHECK(remount());
-            CHECK(d.open("flash:/POP800RD.IMG", SIZE, 64, -1, lc) == 0);
-            for (uint32_t i = 0; i < SIZE; i++) model[i] = d.st.read(i);   // the pool is gone
-        }
-        PhaseStat ps[3];
-        int ph = 0;
-        CowLearnStats L0 = d.st.learn;
-        uint32_t dr0 = d.st.stats.drops, er0 = d.im.erases();
-        auto close_phase = [&](int p) {
-            const CowLearnStats& L = d.st.learn;
-            ps[p].batches = L.batches - L0.batches;
-            ps[p].blocks = L.blocks - L0.blocks;
-            ps[p].ahead = L.ahead - L0.ahead;
-            ps[p].sectors = L.sectors - L0.sectors;
-            ps[p].stall_us = L.stall_us - L0.stall_us;
-            ps[p].drops = d.st.stats.drops - dr0;
-            ps[p].erases = d.im.erases() - er0;
-            L0 = L; dr0 = d.st.stats.drops; er0 = d.im.erases();
-        };
-        const uint64_t c0 = recs.front().cycle;
-        uint32_t stall_max0 = 0;
-        for (const Rec& r : recs) {
-            const int want = r.cycle < boot_end ? 0 : (r.cycle < play_start ? 1 : 2);
-            while (ph < want) {
-                close_phase(ph);
-                ps[ph].stall_max = d.st.learn.stall_max_us;   // so far (global max)
-                ph++;
+    CHECK(d.open("flash:/POP800RD.IMG", SIZE, pool, -1) == 0);
+    // power: the session starts with a card power-up (the pool is gone;
+    // the previous session is closed from the trailer); else an MZ-800 reset
+    struct Plan { bool power; double title; } plan[] = {
+        {true, 1.0}, {false, 0.5}, {true, 1.5}, {false, 0.25}, {true, 2.0}, {true, 1.0},
+        {false, 0.75}, {true, 3.0}, {true, 0.1}, {false, 1.0},
+    };
+    printf("  pool %lu KB:\n", (unsigned long)pool);
+    uint32_t late_wb = 0, all_drops = 0;
+    int n = 0;
+    for (const Plan& pl : plan) {
+        n++;
+        if (n > 1) {
+            if (pl.power) {
+                d.close();
+                CHECK(remount());
+                CHECK(d.open("flash:/POP800RD.IMG", SIZE, pool, -1) == 0);
+                for (uint32_t i = 0; i < SIZE; i++) model[i] = d.st.read(i);   // the pool is gone
+            } else {
+                d.resetOnly();
             }
-            g_trace_us = base_us + (r.cycle - c0) * 1000000ull / 3546875ull;
-            if (r.k == 'F') continue;
-            const uint32_t pagebase = ((uint32_t)r.page << 16) % SIZE;
-            for (uint32_t i = 0; i < r.len; i++) {
-                const uint32_t p = pagebase | ((r.start + i) & 0xFFFF);
-                if (r.k == 'R') {
-                    read_bad += d.st.read(p) != model[p];
-                } else {
-                    const uint8_t v = data[r.data + i];
-                    const uint32_t dr = d.st.stats.drops;
-                    d.st.write(p, v);
-                    if (d.st.stats.drops == dr) model[p] = v;
-                }
-            }
-            if (d.st.stats.used > ps[ph].peak) ps[ph].peak = d.st.stats.used;
         }
-        while (ph < 3) { close_phase(ph); ph++; }
-        (void)stall_max0;
-        for (int p = 0; p < 3; p++) {
-            tot.batches += ps[p].batches; tot.blocks += ps[p].blocks; tot.sectors += ps[p].sectors;
-            tot.erases += ps[p].erases; tot.stall_us += ps[p].stall_us;
-        }
-        if (d.st.learn.stall_max_us > tot.stall_max) tot.stall_max = d.st.learn.stall_max_us;
-        base_us = g_trace_us + 10000000ull;   // 10 s between sessions
-        const uint32_t pinned = d.st.pinnedCount();
-        if (verbose) {
-            printf("  session %s:\n", sessions[sess]);
-            for (int p = 0; p < 3; p++)
-                printf("    %-5s write-backs %4lu  blocks %4lu (ahead %3lu)  sectors %4lu  erases %4lu  "
-                       "stall %6.2f s  drops %lu  pool peak %lu\n", phase_names[p],
-                       (unsigned long)ps[p].batches, (unsigned long)ps[p].blocks, (unsigned long)ps[p].ahead,
-                       (unsigned long)ps[p].sectors, (unsigned long)ps[p].erases, ps[p].stall_us / 1e6,
-                       (unsigned long)ps[p].drops, (unsigned long)ps[p].peak);
-            printf("    pinned %lu lost %lu, dirty in pool %lu, used %lu\n", (unsigned long)pinned,
-                   (unsigned long)d.st.stats.lost, (unsigned long)d.st.dirtyCount(), (unsigned long)d.st.stats.used);
-        } else {
-            printf("  reserve %2lu session %d: wb blocks boot %lu title %lu play %lu, stall boot %.2f s "
-                   "play %.2f s, drops %lu\n", (unsigned long)reserve, sess + 1, (unsigned long)ps[0].blocks,
-                   (unsigned long)ps[1].blocks, (unsigned long)ps[2].blocks, ps[0].stall_us / 1e6,
-                   ps[2].stall_us / 1e6, (unsigned long)(ps[0].drops + ps[1].drops + ps[2].drops));
-        }
-        CHECK(pinned == 0 && d.st.stats.lost == 0);
-        CHECK(ps[0].drops + ps[1].drops + ps[2].drops == 0);
-        if (sess >= 2) CHECK(ps[0].blocks + ps[1].blocks + ps[2].blocks == 0);   // converged
-        d.reset();
-        if (verbose) printf("    after the reset: learn %s, clean %u dirty %u\n",
-                            cow_learn_mode_name(d.im.mode()), (unsigned)d.im.trailer().clean,
-                            (unsigned)d.im.trailer().dirty);
+        const SessStat st = replay_session(c, d, model, pl.title, n);
+        if (verbose || st.wb_boot + st.wb_title + st.wb_play || st.drops)
+            printf("    session %2d (%s, title x%.2f): write-backs boot %3lu title %3lu play %3lu (volatile %lu), "
+                   "stall %5.2f s, drops %lu, pool peak %lu, learn %s, volatile %lu\n", n,
+                   pl.power ? "power-up" : "reset   ", pl.title, (unsigned long)st.wb_boot,
+                   (unsigned long)st.wb_title, (unsigned long)st.wb_play, (unsigned long)st.vol,
+                   st.stall_us / 1e6, (unsigned long)st.drops, (unsigned long)st.peak,
+                   cow_learn_mode_name(d.im.mode()), (unsigned long)d.st.volatileCount());
+        if (n >= 4) late_wb += st.wb_boot + st.wb_title + st.wb_play - st.vol;
+        all_drops += st.drops;
+        CHECK(d.st.pinnedCount() == 0 && d.st.stats.lost == 0);
     }
-    CHECK(read_bad == 0);
+    d.resetOnly();
+    d.im.persist(d.st);
+    print_volatile(d.st, SIZE / 1024);
+    printf("    end: learn %s (clean %u), sessions %lu, non-volatile write-backs from session 4 on: %lu, "
+           "drops %lu, reads wrong %lu\n", cow_learn_mode_name(d.im.mode()), (unsigned)d.im.trailer().clean,
+           (unsigned long)d.im.trailer().sessions, (unsigned long)late_wb, (unsigned long)all_drops,
+           (unsigned long)c.read_bad);
+    // Even a pool far too small for the scratch converges: the scratch
+    // turns volatile, its write-backs stop counting, nothing is dropped
+    CHECK(late_wb == 0);
+    CHECK(all_drops == 0);
+    CHECK(d.im.mode() == COW_LEARN_OK);
+    CHECK(c.read_bad == 0);
     CHECK(mismatches(d.st, model) == 0);
-    if (verbose)
-        printf("  totals (4 sessions): %lu write-backs, %lu blocks, %lu sectors (%lu KB written), %lu erases "
-               "(%lu erase-with-copy, %lu map syncs), stall %.2f s (longest %.0f ms); every read checked, %lu wrong\n",
-               (unsigned long)tot.batches, (unsigned long)tot.blocks, (unsigned long)tot.sectors,
-               (unsigned long)(tot.sectors / 2), (unsigned long)tot.erases,
-               (unsigned long)(flash_fs_copy_erases - copy0), (unsigned long)(flash_fs_map_syncs - sync0),
-               tot.stall_us / 1e6, tot.stall_max / 1e3, (unsigned long)read_bad);
     d.close();
 }
 
@@ -750,10 +850,11 @@ static void test_trace(const char* path) {
     for (const Rec& r : recs) if (r.k == 'W') w += r.len;
     printf("learn: trace replay %s: %lu records, %lu bytes written\n", path,
            (unsigned long)recs.size(), (unsigned long)w);
-    const uint32_t reserve = getenv("COW_RESERVE") ? (uint32_t)atoi(getenv("COW_RESERVE")) : CowLearnCfg().reserve;
-    replay_variant(recs, data, boot_end, play, reserve, true);
+    const uint32_t pool = getenv("COW_POOL") ? (uint32_t)atoi(getenv("COW_POOL")) : 72;
+    replay_sessions(recs, data, boot_end, play, pool, true);
+    replay_sessions(recs, data, boot_end, play, 40, true);     // scratch > pool: the hot-block rule at work
     if (getenv("COW_TRACE_VARIANTS"))
-        for (uint32_t rv : {0u, 8u, 16u, 32u}) replay_variant(recs, data, boot_end, play, rv, false);
+        for (uint32_t pv : {48u, 64u, 96u}) replay_sessions(recs, data, boot_end, play, pv, false);
 }
 
 void learn_tests(int argc, char** argv) {
@@ -762,6 +863,7 @@ void learn_tests(int argc, char** argv) {
     test_writeback();
     test_converge();
     test_reset_path();
+    test_power_sessions();
     test_cap();
     test_remap();
     test_powercut();
