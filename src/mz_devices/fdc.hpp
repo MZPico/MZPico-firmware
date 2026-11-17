@@ -38,7 +38,10 @@ public:
     int init() override;
     void softReset() override;
     int isInterrupt() override;
-    RAM_FUNC bool needsExwait() const override { return FDC_EXWAIT; }
+    // Not RAM_FUNC: read at setup only, and an in-class (COMDAT) function in
+    // the RAM_FUNC section next to fdc.cpp's handlers is a section type
+    // conflict for GCC 14
+    bool needsExwait() const override { return FDC_EXWAIT; }
     std::vector<uint8_t> getReadPorts() const override;
     std::vector<uint8_t> getWritePorts() const override;
     int readConfig(dictionary *ini) override;

@@ -91,7 +91,7 @@ public:
     // Opens (creating if needed) and resolves the image into store. 0, or
     // -1 with the reason in err. Creation time in createUs().
     int open(const CowImageCfg& cfg, CowStore& store, char* err, size_t err_len,
-             uint32_t (*now_us)(void*), void* now_ctx);
+             uint64_t (*now_us)(void*), void* now_ctx);
     void close();
 
     // ---- learn ----
@@ -105,6 +105,7 @@ public:
     uint32_t erases() const { return erases_; }        // learn path, since power-up
     uint32_t sessionErases() const { return erases_ - session_erases0_; }   // not yet in the trailer
     uint32_t trailerWrites() const { return trailer_writes_; }
+    uint32_t trailerFails() const { return trailer_fails_; }
     uint16_t zeroEntry() const { return zero_entry_; }
     uint32_t pageBase() const { return base_; }
     const CowRuns& runs() const { return runs_; }
@@ -146,9 +147,9 @@ public:
 private:
     static uint16_t ioWrite(void* ctx, uint32_t sector, const uint8_t* data);
     static void ioSync(void* ctx);
-    static uint32_t ioNow(void* ctx);
+    static uint64_t ioNow(void* ctx);
     bool writeTrailer();
-    void syncWithTrailer();         // the trailer (with the session record), then the map
+    bool syncWithTrailer();         // the trailer (with the session record), then the map
     void trimDisk(CowStore* store);
 
     CowRuns runs_;
@@ -165,7 +166,8 @@ private:
     uint32_t create_us_ = 0;
     uint32_t erases_ = 0;
     uint32_t trailer_writes_ = 0;
-    uint32_t (*now_us_)(void*) = nullptr;
+    uint32_t trailer_fails_ = 0;
+    uint64_t (*now_us_)(void*) = nullptr;
     void* now_ctx_ = nullptr;
     bool pending_write_ = false;        // the trailer changed: persist()
     bool session_marked_ = false;       // the trailer says this session is open

@@ -139,14 +139,21 @@ static void trim_free_space(const char* image_path) {
         drive[colon - image_path + 1] = '\0';
     }
     if (f_getfree(drive, &nfree, &fs) != FR_OK || nfree == 0) return;
-    char tmp[16];
-    snprintf(tmp, sizeof(tmp), "%s/COWTRIM.TMP", drive);
     FIL* f = static_cast<FIL*>(malloc(sizeof(FIL)));
     if (!f) return;
-    if (f_open(f, tmp, FA_CREATE_ALWAYS | FA_WRITE) == FR_OK) {
-        f_lseek(f, (FSIZE_t)nfree * fs->csize * 512u);
-        f_close(f);
-        f_unlink(tmp);
+    // A new file only (FA_CREATE_NEW): never truncate or delete an existing
+    // one; a few names are tried, none free = no trim
+    char tmp[sizeof(drive) + 16];
+    for (int k = 0; k < 10; k++) {
+        snprintf(tmp, sizeof(tmp), "%s/COWTRIM%d.TMP", drive, k);
+        const FRESULT fr = f_open(f, tmp, FA_CREATE_NEW | FA_WRITE);
+        if (fr == FR_EXIST) continue;
+        if (fr == FR_OK) {
+            f_lseek(f, (FSIZE_t)nfree * fs->csize * 512u);
+            f_close(f);
+            f_unlink(tmp);    // the file this call created
+        }
+        break;
     }
     free(f);
 }
@@ -185,7 +192,7 @@ static bool create_blank(const char* path, uint32_t size, const CowTrailer& t, c
 }
 
 int CowImage::open(const CowImageCfg& cfg, CowStore& store, char* err, size_t err_len,
-                   uint32_t (*now_us)(void*), void* now_ctx) {
+                   uint64_t (*now_us)(void*), void* now_ctx) {
     close();
     err[0] = '\0';
     now_us_ = now_us;
@@ -238,13 +245,13 @@ int CowImage::open(const CowImageCfg& cfg, CowStore& store, char* err, size_t er
             else snprintf(err, err_len, "cannot open the image");
             return -1;
         }
-        const uint32_t t0 = now_us_ ? now_us_(now_ctx_) : 0;
+        const uint64_t t0 = now_us_ ? now_us_(now_ctx_) : 0;
         CowTrailer t;
         cow_trailer_init(t, size);
         t.created = 1;
         if (!create_blank(cfg.path, size, t, err, err_len)) return -1;
         created_ = true;
-        create_us_ = now_us_ ? now_us_(now_ctx_) - t0 : 0;
+        create_us_ = now_us_ ? (uint32_t)(now_us_(now_ctx_) - t0) : 0;
     }
 
     FIL* f = static_cast<FIL*>(malloc(sizeof(FIL)));
@@ -407,20 +414,25 @@ void CowImage::ioSync(void* ctx) {
     static_cast<CowImage*>(ctx)->syncWithTrailer();
 }
 
-void CowImage::syncWithTrailer() {
+// Returns false when the trailer could not be written (the map is synced
+// all the same)
+bool CowImage::syncWithTrailer() {
+    bool ok = true;
     if (store_ && has_trailer_ && !gone_) {
         tr_.cur_active = (mode_ == COW_LEARN_LEARNING || store_->learn.session_blocks ||
                           store_->learn.session_vol) ? 1 : 0;
         tr_.cur_wb = (uint16_t)(store_->learn.session_blocks > 0xFFFF ? 0xFFFF : store_->learn.session_blocks);
         tr_.cur_vol = (uint16_t)(store_->learn.session_vol > 0xFFFF ? 0xFFFF : store_->learn.session_vol);
-        if (writeTrailer()) session_marked_ = tr_.cur_active != 0;
+        ok = writeTrailer();
+        if (ok) session_marked_ = tr_.cur_active != 0;
     }
     const uint32_t e0 = flash_fs_erases;
     flash_fs_sync();
     erases_ += flash_fs_erases - e0;
+    return ok;
 }
 
-uint32_t CowImage::ioNow(void* ctx) {
+uint64_t CowImage::ioNow(void* ctx) {
     CowImage* self = static_cast<CowImage*>(ctx);
     return self->now_us_ ? self->now_us_(self->now_ctx_) : 0;
 }
@@ -460,8 +472,11 @@ void CowImage::endSession(CowStore& store, const CowLearnPolicy& p, bool active)
 
 void CowImage::persist(CowStore& store) {
     if (!persistPending(store)) return;
-    pending_write_ = false;
-    syncWithTrailer();                // the trailer (session open), then the map
+    // The trailer (session open), then the map. A failed trailer write
+    // stays pending: the owner retries at the next session (not at every
+    // access - a full volume would stall each one)
+    if (syncWithTrailer()) pending_write_ = false;
+    else trailer_fails_++;
     store.markSynced();
 }
 

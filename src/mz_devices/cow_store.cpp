@@ -98,19 +98,22 @@ RAM_FUNC void CowStore::allocAndWrite(uint32_t pos, uint8_t v) {
     // leaves the pool mostly clean for what follows. Never outside such a
     // burst: play's own blocks would go into the image for nothing.
     if (wb_on_ && cfg_.reserve && need_wb_seen_ && nslot_ - used_ < cfg_.reserve &&
-        (uint32_t)(io_.now_us(io_.ctx) - last_need_wb_us_) < cfg_.burst_ms * 1000u)
+        io_.now_us(io_.ctx) - last_need_wb_us_ < (uint64_t)cfg_.burst_ms * 1000u)
         writeBack(cfg_.batch, true);
 }
 
 // The wear cap: a token bucket of cfg_.cap blocks, refilled over
 // cfg_.cap_period_s (1024 an hour by default)
-bool CowStore::takeToken(uint32_t now) {
+bool CowStore::takeToken(uint64_t now) {
+    // 64-bit time: an idle stretch of any length refills the bucket (a
+    // 32-bit microsecond clock wraps after 71.6 minutes)
     if (per_token_us_) {
-        const uint32_t el = now - refill_at_;
+        const uint64_t el = now - refill_at_;
         if (el >= per_token_us_) {
-            const uint32_t add = el / per_token_us_;
+            const uint64_t add = el / per_token_us_;
             refill_at_ += add * per_token_us_;
-            tokens_ = (tokens_ + add > cfg_.cap) ? cfg_.cap : tokens_ + add;
+            const uint64_t t = (uint64_t)tokens_ + add;
+            tokens_ = t > cfg_.cap ? cfg_.cap : (uint32_t)t;
         }
     }
     if (tokens_ == 0) { learn.capped = true; return false; }
@@ -157,7 +160,7 @@ bool CowStore::writeBackSlot(uint32_t s) {
 // programs, ~50 ms.
 uint32_t CowStore::writeBack(uint32_t max_blocks, bool ahead) {
     if (!wb_on_ || !max_blocks || !nslot_) return 0;
-    const uint32_t t0 = io_.now_us(io_.ctx);
+    const uint64_t t0 = io_.now_us(io_.ctx);
     uint32_t freed = 0, written = 0, vol_written = 0;
     bool stop = false;
     for (uint32_t steps = 0; freed < max_blocks && steps < 2 * nslot_ + 1 && !stop; steps++) {
@@ -202,7 +205,8 @@ uint32_t CowStore::writeBack(uint32_t max_blocks, bool ahead) {
             learn.syncs++;
             since_sync_ = 0;
         }
-        const uint32_t dt = io_.now_us(io_.ctx) - t0;
+        const uint64_t d64 = io_.now_us(io_.ctx) - t0;
+        const uint32_t dt = d64 > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)d64;
         learn.stall_us += dt;
         if (dt > learn.stall_max_us) learn.stall_max_us = dt;
     }

@@ -30,6 +30,7 @@ static volatile bool g_cow_unfreeze_req = false;
 // Reset diagnostics (/api/ramdisk learn): MZ-800 resets seen, the last
 // softReset's duration, the deferred persists and the last one's duration
 static uint32_t g_cow_resets = 0, g_cow_reset_us = 0, g_cow_persists = 0, g_cow_persist_us = 0;
+static uint32_t g_cow_relearn_fails = 0;   // REST relearn requests that could not run (image gone)
 
 // "524288", "0x80000", "512K", "512k", "1M": bytes
 static uint32_t parse_size(const char* s) {
@@ -139,7 +140,7 @@ int RamDisk::readConfig(dictionary *ini) {
 // mode=cow: the image file in the internal flash volume, read through XIP;
 // see cow_store.hpp, and cow_image.hpp for learn. Any failure skips the
 // device (boot continues, the reason is in /api/ramdisk) - never halts.
-static uint32_t cow_now_us(void*) { return time_us_32(); }
+static uint64_t cow_now_us(void*) { return time_us_64(); }
 
 static int ini_int(dictionary* ini, const std::string& key, int dflt, int lo, int hi) {
     int v = iniparser_getint(ini, key.c_str(), dflt);
@@ -245,8 +246,10 @@ void RamDisk::softReset() {
     active_ = false;
     if (g_cow_relearn_req) {
         g_cow_relearn_req = false;
-        cowImage.relearn(cow);
-        g_cow_clear_requested = false;
+        // A relearn empties the pool too; if it cannot run, a pending
+        // clear still does
+        if (cowImage.relearn(cow)) g_cow_clear_requested = false;
+        else g_cow_relearn_fails++;
     }
     if (g_cow_clear_requested) {
         cow.clear();
@@ -345,7 +348,8 @@ extern "C" int ramdisk_cow_json_full(char* buf, size_t len) {
         "\"blocks_total\":%lu,\"erases_total\":%lu,\"wear_ppm\":%lu,"
         "\"volatile\":%lu,\"vol_skips\":%lu,\"vol_forced\":%lu,\"session_vol\":%lu,"
         "\"fs_erases\":%lu,\"fs_copy_erases\":%lu,\"fs_map_syncs\":%lu,\"pending\":\"%s\","
-        "\"resets\":%lu,\"reset_us\":%lu,\"persists\":%lu,\"persist_ms\":%lu,\"persist_due\":%s}}",
+        "\"resets\":%lu,\"reset_us\":%lu,\"persists\":%lu,\"persist_ms\":%lu,\"persist_due\":%s,"
+        "\"relearn_fails\":%lu,\"trailer_fails\":%lu}}",
         cow_learn_state(im, cs), im.created() ? "true" : "false",
         (unsigned long)(im.createUs() / 1000), (unsigned long)cs.dirtyCount(),
         (unsigned long)L.batches, (unsigned long)L.blocks, (unsigned long)L.ahead,
@@ -361,7 +365,8 @@ extern "C" int ramdisk_cow_json_full(char* buf, size_t len) {
         (unsigned long)flash_fs_map_syncs,
         g_cow_relearn_req ? "relearn" : (g_cow_freeze_req ? "freeze" : (g_cow_unfreeze_req ? "unfreeze" : "")),
         (unsigned long)g_cow_resets, (unsigned long)g_cow_reset_us, (unsigned long)g_cow_persists,
-        (unsigned long)(g_cow_persist_us / 1000), g_cow_disk->persistDue() ? "true" : "false");
+        (unsigned long)(g_cow_persist_us / 1000), g_cow_disk->persistDue() ? "true" : "false",
+        (unsigned long)g_cow_relearn_fails, (unsigned long)im.trailerFails());
     return n;
 }
 
