@@ -146,6 +146,13 @@ struct LDisk {
     // An MZ-800 reset (RAM only), then - as the firmware does at the next
     // RAM-disk address write - the deferred flash work
     void reset(bool active = true) { resetOnly(active); im.persist(st); }
+    // An addressing-port write (CowDisk::touch): a write-back burst that has
+    // gone quiet for learn_sync_ms (2 s) is persisted - map and trailer
+    uint64_t quiet_us = 2000000;
+    uint32_t touch_persists = 0;
+    void touch() {
+        if (im.syncDue(st, now_us(nullptr), quiet_us)) { im.persist(st); touch_persists++; }
+    }
     void resetOnly(bool active = true) { im.endSession(st, pol, active); }
 };
 LDisk* LDisk::cur = nullptr;
@@ -503,6 +510,60 @@ static void test_power_sessions() {
     d.close();
 }
 
+// ---------------- 3c'. sessions with fewer write-backs than learn_sync ----------------
+static void test_small_sessions() {
+    printf("learn: sessions with few write-backs, ended by power-off\n");
+    real_volume();
+    const uint32_t SIZE = 256 * 1024;
+    std::vector<uint8_t> model(SIZE, 0);
+    LDisk d;
+    auto power = [&]() {
+        d.close();
+        CHECK(remount());
+        CHECK(d.open("flash:/SM.IMG", SIZE, 16, -1) == 0);
+        for (uint32_t i = 0; i < SIZE; i++) model[i] = d.st.read(i);
+        d.im.persist(d.st);                   // the session's first access
+    };
+    CHECK(d.open("flash:/SM.IMG", SIZE, 16, -1) == 0);
+    d.im.persist(d.st);
+    // A session of 30 blocks: ~14 write-backs, far below learn_sync (64)
+    boot_like(d, model, 30, 90);
+    const uint32_t wb = d.st.learn.blocks;
+    CHECK(wb > 0 && wb < 64 && d.st.syncPending());
+    d.touch();                                // the burst is not quiet yet
+    CHECK(d.st.syncPending());
+    g_trace_us += 3000000;                    // 3 s later, the next addressing write
+    d.touch();
+    CHECK(!d.st.syncPending() && d.touch_persists == 1);
+    std::vector<uint8_t> expect = model;      // what flash must hold after a power cut
+    std::set<uint32_t> pooled;
+    for (uint32_t b = 0; b < SIZE / 1024; b++) if (d.st.slotOf(b * 1024) != COW_NONE) pooled.insert(b);
+    const uint32_t s0 = d.im.trailer().sessions;
+    power();                                  // no MZ-800 reset
+    uint32_t bad = 0;
+    for (uint32_t b = 0; b < SIZE / 1024; b++)
+        if (!pooled.count(b)) for (uint32_t o = 0; o < 1024; o++) bad += d.st.read(b * 1024 + o) != expect[b * 1024 + o];
+    printf("  %lu write-backs, after the power cut: %lu bytes wrong, sessions %lu -> %lu, dirty %u\n",
+           (unsigned long)wb, (unsigned long)bad, (unsigned long)s0, (unsigned long)d.im.trailer().sessions,
+           (unsigned)d.im.trailer().dirty);
+    CHECK(bad == 0);
+    CHECK(d.im.trailer().sessions == s0 + 1 && d.im.trailer().dirty == 1 && d.im.trailer().wb_blocks >= wb);
+    // Two clean power-up sessions (the same data): ok
+    for (int k = 0; k < 2; k++) { boot_like(d, model, 30, 90); g_trace_us += 3000000; d.touch(); power(); }
+    CHECK(d.im.mode() == COW_LEARN_OK);
+    // In ok, a few write-backs (a new version), then a power cut: kept,
+    // and the state goes back to learning
+    boot_like(d, model, 30, 91);
+    const uint32_t wb2 = d.st.learn.blocks;
+    CHECK(wb2 > 0 && wb2 < 64);
+    g_trace_us += 3000000;
+    d.touch();
+    CHECK(!d.st.syncPending());
+    power();
+    CHECK(d.im.mode() == COW_LEARN_LEARNING && d.im.trailer().dirty == 1);
+    d.close();
+}
+
 // ---------------- 3d. [pico_rd] addressing ----------------
 static void test_picord_addr() {
     printf("pico_rd: the address ports\n");
@@ -794,6 +855,7 @@ static void replay_range(ReplayCtx& c, LDisk& d, std::vector<uint8_t>& model, si
         const Rec& r = (*c.recs)[k];
         g_trace_us = c.base_us + (r.cycle - c0) * 1000000ull / 3546875ull;
         if (r.k == 'F') continue;
+        d.touch();                      // every run starts with an addressing write
         const uint32_t pagebase = ((uint32_t)r.page << 16) % SIZE;
         for (uint32_t i = 0; i < r.len; i++) {
             uint32_t p = pagebase | ((r.start + i) & 0xFFFF);
@@ -819,7 +881,8 @@ static void replay_range(ReplayCtx& c, LDisk& d, std::vector<uint8_t>& model, si
 
 struct SessStat { uint32_t wb_boot, wb_title, wb_play, vol, drops, peak, volatiles; uint64_t stall_us; };
 
-static SessStat replay_session(ReplayCtx& c, LDisk& d, std::vector<uint8_t>& model, double title, int sess) {
+static SessStat replay_session(ReplayCtx& c, LDisk& d, std::vector<uint8_t>& model, double title, int sess,
+                               bool play = true) {
     const auto& R = *c.recs;
     size_t b_end = 0, t_end = 0;
     while (b_end < R.size() && R[b_end].cycle < c.boot_end) b_end++;
@@ -848,7 +911,7 @@ static SessStat replay_session(ReplayCtx& c, LDisk& d, std::vector<uint8_t>& mod
         pass++;
     }
     st.wb_title = d.st.learn.blocks - b0 - st.wb_boot;
-    replay_range(c, d, model, t_end, R.size(), c.play_start, st.peak);
+    if (play) replay_range(c, d, model, t_end, R.size(), c.play_start, st.peak);
     st.wb_play = d.st.learn.blocks - b0 - st.wb_boot - st.wb_title;
     st.vol = d.st.learn.vol_forced - v0;
     st.drops = d.st.stats.drops - dr0;
@@ -870,8 +933,21 @@ static void print_volatile(const CowStore& st, uint32_t nblk) {
     printf("\n");
 }
 
+struct Plan { bool power; double title; bool play; };
+// Resets and power cycles mixed, the title/story from 0.1x to 3x, play
+static const Plan PLAN_MIXED[] = {
+    {true, 1.0, true}, {false, 0.5, true}, {true, 1.5, true}, {false, 0.25, true}, {true, 2.0, true},
+    {true, 1.0, true}, {false, 0.75, true}, {true, 3.0, true}, {true, 0.1, true}, {false, 1.0, true},
+};
+// Power cycles only, boot to a short title and off (the card's sessions)
+static const Plan PLAN_SHORT[] = {
+    {true, 1.0, true}, {true, 0.2, false}, {true, 0.3, false}, {true, 0.1, false}, {true, 0.25, false},
+    {true, 0.15, false}, {true, 0.3, false}, {true, 0.2, false}, {true, 0.1, false}, {true, 0.3, false},
+};
+
 static void replay_sessions(const std::vector<Rec>& recs, const std::vector<uint8_t>& data,
-                            uint64_t boot_end, uint64_t play_start, uint32_t pool, bool verbose) {
+                            uint64_t boot_end, uint64_t play_start, uint32_t pool, bool verbose,
+                            const Plan* plan = PLAN_MIXED, size_t nplan = 10) {
     real_volume();
     const uint32_t SIZE = 512 * 1024;
     std::vector<uint8_t> model(SIZE, 0);
@@ -883,15 +959,12 @@ static void replay_sessions(const std::vector<Rec>& recs, const std::vector<uint
     CHECK(d.open("flash:/POP800RD.IMG", SIZE, pool, -1) == 0);
     // power: the session starts with a card power-up (the pool is gone;
     // the previous session is closed from the trailer); else an MZ-800 reset
-    struct Plan { bool power; double title; } plan[] = {
-        {true, 1.0}, {false, 0.5}, {true, 1.5}, {false, 0.25}, {true, 2.0}, {true, 1.0},
-        {false, 0.75}, {true, 3.0}, {true, 0.1}, {false, 1.0},
-    };
     static const char* AM[] = {"[ramdisk] MR1R18 addressing", "[pico_rd] ADDRS seeks", "[pico_rd] direct A2/A1/A0"};
     printf("  pool %lu KB, %s:\n", (unsigned long)pool, AM[g_replay_addr]);
     uint32_t late_wb = 0, all_drops = 0;
     int n = 0;
-    for (const Plan& pl : plan) {
+    for (size_t pi = 0; pi < nplan; pi++) {
+        const Plan& pl = plan[pi];
         n++;
         if (n > 1) {
             if (pl.power) {
@@ -903,7 +976,7 @@ static void replay_sessions(const std::vector<Rec>& recs, const std::vector<uint
                 d.resetOnly();
             }
         }
-        const SessStat st = replay_session(c, d, model, pl.title, n);
+        const SessStat st = replay_session(c, d, model, pl.title, n, pl.play);
         if (verbose || st.wb_boot + st.wb_title + st.wb_play || st.drops)
             printf("    session %2d (%s, title x%.2f): write-backs boot %3lu title %3lu play %3lu (volatile %lu), "
                    "stall %5.2f s, drops %lu, pool peak %lu, learn %s, volatile %lu\n", n,
@@ -919,9 +992,9 @@ static void replay_sessions(const std::vector<Rec>& recs, const std::vector<uint
     d.im.persist(d.st);
     print_volatile(d.st, SIZE / 1024);
     printf("    end: learn %s (clean %u), sessions %lu, non-volatile write-backs from session 4 on: %lu, "
-           "drops %lu, reads wrong %lu\n", cow_learn_mode_name(d.im.mode()), (unsigned)d.im.trailer().clean,
+           "drops %lu, reads wrong %lu, burst persists %lu\n", cow_learn_mode_name(d.im.mode()), (unsigned)d.im.trailer().clean,
            (unsigned long)d.im.trailer().sessions, (unsigned long)late_wb, (unsigned long)all_drops,
-           (unsigned long)c.read_bad);
+           (unsigned long)c.read_bad, (unsigned long)d.touch_persists);
     // Even a pool far too small for the scratch converges: the scratch
     // turns volatile, its write-backs stop counting, nothing is dropped
     CHECK(late_wb == 0);
@@ -958,6 +1031,11 @@ static void test_trace(const char* path) {
     const uint32_t pool = getenv("COW_POOL") ? (uint32_t)atoi(getenv("COW_POOL")) : 72;
     replay_sessions(recs, data, boot_end, play, pool, true);
     replay_sessions(recs, data, boot_end, play, 40, true);     // scratch > pool: the hot-block rule at work
+    // Power cycles only, short sessions with few write-backs each (fewer
+    // than learn_sync): only the burst persist carries them across
+    printf("  power-ups only, boot to a short title:\n");
+    replay_sessions(recs, data, boot_end, play, 40, true, PLAN_SHORT, 10);
+    replay_sessions(recs, data, boot_end, play, pool, true, PLAN_SHORT, 10);
     // The same through [pico_rd]: its 24-bit counter, both seek patterns
     for (int am : {1, 2}) {
         g_replay_addr = am;
@@ -975,6 +1053,7 @@ void learn_tests(int argc, char** argv) {
     test_converge();
     test_reset_path();
     test_power_sessions();
+    test_small_sessions();
     test_picord_addr();
     test_cap();
     test_remap();

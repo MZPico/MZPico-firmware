@@ -205,7 +205,8 @@ uint32_t CowStore::writeBack(uint32_t max_blocks, bool ahead) {
             learn.syncs++;
             since_sync_ = 0;
         }
-        const uint64_t d64 = io_.now_us(io_.ctx) - t0;
+        last_wb_us_ = io_.now_us(io_.ctx);
+        const uint64_t d64 = last_wb_us_ - t0;
         const uint32_t dt = d64 > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)d64;
         learn.stall_us += dt;
         if (dt > learn.stall_max_us) learn.stall_max_us = dt;

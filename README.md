@@ -365,7 +365,7 @@ Options:
 - `mode` — `file` (default: RAM, or the `image` file behind a 128-byte window) or `cow` (see below)
 - `cow_pool` — `mode=cow` only: the SRAM pool in KB (1 KB blocks), `1`–`255`, default `72`
 - `learn` — `mode=cow` only: the card builds and refreshes the image itself (see *learn* below). `true`, `false`, `frozen`; omitted = on for an image the card created, off for one prepared elsewhere
-- `learn_batch` (`4` blocks), `learn_cap` (`1024` blocks an hour), `learn_converge` (`2` sessions), `learn_sync` (`64` blocks), `learn_freeze_after` (`0` = never), `learn_reserve` (`0`) — learn tuning, see below
+- `learn_batch` (`4` blocks), `learn_cap` (`1024` blocks an hour), `learn_converge` (`2` sessions), `learn_sync` (`64` blocks), `learn_sync_ms` (`2000`), `learn_freeze_after` (`0` = never), `learn_reserve` (`0`) — learn tuning, see below
 - `read_only` — `true`/`false` (default `false`)
 
 Example:
@@ -461,11 +461,14 @@ size=512K
   no write is dropped. It happens inside the port write that needed the
   slot, with the Z80 held in WAIT, in batches of `learn_batch` blocks
   (4 KB: about one flash erase + 8 page programs, ~50 ms, at most ~100 ms
-  with a map sync). Only halves that differ are written. The flash map is
-  synced every `learn_sync` blocks, and the learn state (trailer) and the
-  map once more after an MZ-800 reset - not during it: a reset does no
-  flash work and never holds the Z80; that work (~50-150 ms) waits for the
-  next RAM-disk address write, like a write-back.
+  with a map sync). Only halves that differ are written. The flash map
+  and the learn state (trailer) are synced every `learn_sync` blocks
+  (`64`), once a write-back burst has been quiet for `learn_sync_ms`
+  (`2000`: at the next RAM-disk addressing write, ~50-100 ms, at most once
+  per burst - so a session with a few write-backs that ends by power-off
+  keeps them), and after an MZ-800 reset - not during it: a reset does no
+  flash work and never holds the Z80; that work waits for the next
+  RAM-disk address write, like a write-back.
 - **Stalls and when they happen.** A flash write stalls XIP, so the Z80
   must wait; core 1 does the work itself (it is the only flash user in
   MZ-800 mode, and inside a port write no other device can be accessed).

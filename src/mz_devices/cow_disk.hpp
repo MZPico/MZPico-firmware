@@ -38,7 +38,7 @@ public:
     ALWAYS_INLINE void write(uint32_t pos, uint8_t v) { store.write(pos, v); }
     ALWAYS_INLINE void touch() {
         active_ = true;
-        if (__builtin_expect(persist_due_, 0)) persist();
+        if (__builtin_expect(persist_due_ || store.syncPending(), 0)) touchSlow();
     }
     uint32_t size() const { return store.stats.size; }
     void softReset();
@@ -50,6 +50,8 @@ public:
 private:
     CowDisk() = default;
     void persist();
+    RAM_FUNC void touchSlow();
+    uint64_t sync_quiet_us_ = 2000000;  // learn_sync_ms
     static CowDisk* g_card;
     CowLearnPolicy policy_;
     bool active_ = false;       // addressed this session (learn's convergence)

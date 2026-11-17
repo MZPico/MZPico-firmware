@@ -141,6 +141,7 @@ int CowDisk::open(dictionary* ini, const std::string& id, const std::string& ima
     lc.reserve = (uint32_t)ini_int(ini, id + ":learn_reserve", (int)lc.reserve, 0, (int)pool_kb);
     lc.cap = (uint32_t)ini_int(ini, id + ":learn_cap", (int)lc.cap, 0, 1 << 20);
     lc.sync_every = (uint32_t)ini_int(ini, id + ":learn_sync", (int)lc.sync_every, 1, 4096);
+    d->sync_quiet_us_ = (uint64_t)ini_int(ini, id + ":learn_sync_ms", 2000, 100, 600000) * 1000u;
     cow.setLearn(cowImage.io(), lc);
     if (lv == "frozen" && cowImage.mode() != COW_LEARN_FROZEN) cowImage.freeze(cow, true);
     cow.setWriteBack(cowImage.learning());
@@ -185,6 +186,13 @@ void CowDisk::softReset() {
     }
     persist_due_ = image.persistPending(store);
     g_cow_reset_us = time_us_32() - t0;
+}
+
+// An addressing write with flash work possibly due: after a reset (the
+// session record), or write-backs that the map does not hold yet and a
+// burst that has gone quiet (learn_sync_ms) - at most one persist per burst
+RAM_FUNC void CowDisk::touchSlow() {
+    if (persist_due_ || image.syncDue(store, time_us_64(), sync_quiet_us_)) persist();
 }
 
 void CowDisk::persist() {
