@@ -132,6 +132,14 @@ public:
     // or two map syncs, ~50-150 ms. Called by the owner from a RAM-disk
     // port access (core 1, the Z80 held by EXWAIT), like a write-back.
     void persist(CowStore& store);
+    // Write-backs not yet in the map (fewer than learn_sync since the last
+    // sync), and none for quiet_us: time to persist them and the session
+    // record - else a power-off loses both and the next power-up learns
+    // the same blocks again
+    bool syncDue(const CowStore& store, uint64_t now_us, uint64_t quiet_us) const {
+        return mode_ != COW_LEARN_OFF && !gone_ && store.syncPending() &&
+               now_us - store.lastWritebackUs() >= quiet_us;
+    }
     uint32_t volatileCount(const CowStore& store) const { return store.volatileCount(); }
 
     // flash_fs hooks (installed by the owner, both modes): page moves, and

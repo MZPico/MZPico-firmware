@@ -299,6 +299,7 @@ public:
         return n;
     }
     bool syncPending() const { return since_sync_ != 0; }
+    uint64_t lastWritebackUs() const { return last_wb_us_; }
     void markSynced() { since_sync_ = 0; }
 
     // ---- hot blocks: written back in two sessions -> volatile ----
@@ -398,4 +399,5 @@ private:
     uint32_t since_sync_ = 0;
     bool need_wb_seen_ = false;
     uint64_t last_need_wb_us_ = 0;
+    uint64_t last_wb_us_ = 0;          // the end of the last write-back episode
 };
