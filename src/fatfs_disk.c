@@ -117,7 +117,7 @@ void create_fatfs_disk()
            "; fast, from an image in the flash volume (+ an SRAM write pool):\r\n"
            ";image=flash:/ramdisk.img\r\n"
            ";mode=cow\r\n"
-           ";cow_pool=64\r\n"
+           ";cow_pool=72\r\n"
            "\r\n"
            "; WiFi cloud storage (Pico W builds only)\r\n"
            ";[cloud]\r\n"

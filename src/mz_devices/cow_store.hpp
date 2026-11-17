@@ -80,6 +80,10 @@ constexpr uint8_t  COW_NONE = 0xFF;
 constexpr uint32_t COW_MAX_SLOTS = 255;                  // slot index is a byte
 constexpr uint16_t COW_FREE = 0xFFFF;                    // owner_ of an empty slot
 constexpr uint32_t COW_NOBLK = 0xFFFFFFFFu;
+// Hot-block tracking covers the first COW_HOT_MAX blocks (three bitmaps of
+// COW_HOT_BYTES each fit the learn trailer's 512 B sector): 1,184 KB
+constexpr uint32_t COW_HOT_BYTES = 148;
+constexpr uint32_t COW_HOT_MAX = COW_HOT_BYTES * 8;
 
 struct CowStats {
     uint32_t size;          // disk bytes
@@ -129,8 +133,11 @@ struct CowLearnStats {
     uint32_t syncs;         // map syncs requested
     uint64_t stall_us;      // Z80 held during write-back
     uint32_t stall_max_us;  // longest single episode
-    uint32_t session_blocks;  // this session (MZ-800 reset to reset)
+    uint32_t session_blocks;  // this session (MZ-800 reset to reset), volatile ones excluded
+    uint32_t session_vol;     // volatile blocks written back this session (no other victim)
     uint32_t session_drops;
+    uint32_t vol_skips;     // volatile blocks passed over as victims
+    uint32_t vol_forced;    // volatile blocks written back anyway (nothing else freed a slot)
     bool     capped;        // the cap was hit since power-up (latched)
 };
 
@@ -162,7 +169,9 @@ public:
         diff_  = static_cast<uint16_t*>(malloc(nslot_ * sizeof(uint16_t)));
         owner_ = static_cast<uint16_t*>(malloc(nslot_ * sizeof(uint16_t)));
         pinned_ = static_cast<uint8_t*>(malloc(nslot_ * 2));
-        if (!pool_ || !sect_ || !slot_of_ || !diff_ || !owner_ || !pinned_) { release(); return false; }
+        hot_n_ = nblk_ < COW_HOT_MAX ? nblk_ : COW_HOT_MAX;
+        hot_ = static_cast<uint8_t*>(calloc(3, COW_HOT_BYTES));
+        if (!pool_ || !sect_ || !slot_of_ || !diff_ || !owner_ || !pinned_ || !hot_) { release(); return false; }
         ref_ = pinned_ + nslot_;
         memset(sect_, 0, nsect_ * sizeof(uint16_t));
         memset(slot_of_, COW_NONE, nblk_);
@@ -182,7 +191,8 @@ public:
     }
 
     void release() {
-        free(pool_); free(sect_); free(slot_of_); free(diff_); free(owner_); free(pinned_);
+        free(pool_); free(sect_); free(slot_of_); free(diff_); free(owner_); free(pinned_); free(hot_);
+        hot_ = nullptr; hot_n_ = 0;
         pool_ = nullptr; sect_ = nullptr; slot_of_ = nullptr; diff_ = nullptr; owner_ = nullptr;
         pinned_ = ref_ = nullptr;
         nblk_ = nsect_ = nslot_ = used_ = size_ = 0;
@@ -193,7 +203,7 @@ public:
     uint16_t* sectorTable() { return sect_; }
     uint32_t sectorCount() const { return nsect_; }
     // Bytes of heap held (pool + tables)
-    uint32_t ramBytes() const { return nslot_ * (COW_BLOCK + 6) + nsect_ * 2 + nblk_; }
+    uint32_t ramBytes() const { return nslot_ * (COW_BLOCK + 6) + nsect_ * 2 + nblk_ + 3 * COW_HOT_BYTES; }
 
     // Back to the power-up image: every block the Z80 changed reads from
     // flash again. Pinned blocks (the power-up content of image sectors
@@ -283,11 +293,43 @@ public:
     uint32_t endSession() {
         const uint32_t n = learn.session_blocks;
         learn.session_blocks = 0;
+        learn.session_vol = 0;
         learn.session_drops = 0;
         need_wb_seen_ = false;
         return n;
     }
     bool syncPending() const { return since_sync_ != 0; }
+    void markSynced() { since_sync_ = 0; }
+
+    // ---- hot blocks: written back in two sessions -> volatile ----
+    // Bitmaps (COW_HOT_BYTES each, persisted in the learn trailer): sess =
+    // written back this session, seen = in an earlier one, vol = volatile.
+    // A volatile block is never chosen as a write-back victim while another
+    // one can free a slot, and its write-backs do not count against
+    // convergence: scratch that differs every session stops churning the
+    // image.
+    bool isVolatile(uint32_t blk) const { return blk < hot_n_ && (hot_[2 * COW_HOT_BYTES + (blk >> 3)] >> (blk & 7) & 1); }
+    // Session end: sess & seen -> vol; seen |= sess; sess = 0. Returns new volatiles.
+    uint32_t foldSession() {
+        uint32_t n = 0;
+        uint8_t* sess = hot_; uint8_t* seen = hot_ + COW_HOT_BYTES; uint8_t* vol = hot_ + 2 * COW_HOT_BYTES;
+        for (uint32_t i = 0; i < COW_HOT_BYTES; i++) {
+            const uint8_t nv = (uint8_t)(sess[i] & seen[i] & ~vol[i]);
+            n += (uint32_t)__builtin_popcount(nv);
+            vol[i] |= nv;
+            seen[i] |= sess[i];
+            sess[i] = 0;
+        }
+        return n;
+    }
+    uint32_t volatileCount() const {
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < COW_HOT_BYTES; i++) n += (uint32_t)__builtin_popcount(hot_[2 * COW_HOT_BYTES + i]);
+        return n;
+    }
+    void clearHot() { memset(hot_, 0, 3 * COW_HOT_BYTES); }
+    void exportHot(uint8_t* dst) const { memcpy(dst, hot_, 3 * COW_HOT_BYTES); }
+    void importHot(const uint8_t* src) { memcpy(hot_, src, 3 * COW_HOT_BYTES); }
     void syncNow() {
         if (since_sync_ && io_.sync) { io_.sync(io_.ctx); learn.syncs++; }
         since_sync_ = 0;
@@ -340,6 +382,8 @@ private:
     uint16_t* owner_ = nullptr;
     uint8_t*  pinned_ = nullptr;
     uint8_t*  ref_ = nullptr;      // per slot: written since the clock hand passed (shares pinned_'s block)
+    uint8_t*  hot_ = nullptr;      // sess | seen | vol bitmaps, COW_HOT_BYTES each
+    uint32_t  hot_n_ = 0;
     uint32_t size_ = 0;
     uint32_t nblk_ = 0, nsect_ = 0, nslot_ = 0, used_ = 0, scan_ = 0, hand_ = 0;
 
