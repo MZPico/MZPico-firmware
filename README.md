@@ -575,8 +575,20 @@ Config section name: `[pico_rd]`
 
 Options:
 - `image` — optional backing file; omitted = volatile RAM
-- `size` — capacity in bytes; default `65536` when RAM-backed
+- `size` — capacity in bytes (`K`/`M` suffixes accepted); default `65536` when RAM-backed
 - `read_only` — `true`/`false` (default `false`)
+- `mode` — `file` (default: RAM, or the `image` file behind a 128-byte window) or `cow`: the flash-image backend of `[ramdisk]` (see *`mode=cow`* and *learn* there), with the same keys: `cow_pool`, `learn`, `learn_*`; `size` is then whole 64 KB pages
+
+Ports (base `0x45`): `+0` control (read or write: position 0), `+1` data
+(the byte at the position; the position then advances, wrapping at
+`size`), `+2`/`+3`/`+4` the position's bytes 2/1/0 (a write replaces that
+byte and keeps the other two; a read returns it), `+5` ADDRS (writes byte
+0, 1, 2 in turn; restarts at byte 0 after byte 2 and on any other port but
+`+6`), `+6` ADDRI (skips forward by the byte written, wrapping at `size`).
+The position is a 24-bit register; a value at or past `size` (the bytes
+are written one at a time) is reduced modulo `size` at the next data access
+or skip. (Before 2026-11 a write to `+2` ORed into byte 2 and a write to
+`+3` cleared byte 2 instead of replacing byte 1.)
 
 Example:
 
@@ -584,6 +596,25 @@ Example:
 [pico_rd]
 image=flash:/pico_rd.img
 ```
+
+Fast and large, from flash, learning its image itself (any board — the
+Prince of Persia port's PicoRD build, for example):
+
+```ini
+[pico_rd]
+image=flash:/POP800RD.IMG
+mode=cow
+size=512K
+; cow_pool=72   (default)
+; learn         (omitted: on for an image the card creates)
+```
+
+The card has **one** cow disk: if both `[ramdisk]` and `[pico_rd]` say
+`mode=cow`, the first section in the ini gets it and the other is skipped
+(`/api/ramdisk` names the device in `"device"`). An image is just the
+disk's bytes in order: a program whose PicoRD position is `page * 64 KB +
+offset` of its MZ-1R18 layout can use the same image with either device
+(not both at once).
 
 ---
 

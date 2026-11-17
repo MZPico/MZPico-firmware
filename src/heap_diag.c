@@ -15,7 +15,7 @@
 
 #include "heap_diag.h"
 
-int ramdisk_cow_json(char *buf, size_t len);   // src/mz_devices/ramdisk.cpp
+int ramdisk_cow_json(char *buf, size_t len);   // src/mz_devices/cow_disk.cpp
 
 #ifdef USE_PICO_W   // exposed via the REST API only; non-W builds are unchanged
 
