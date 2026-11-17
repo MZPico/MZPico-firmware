@@ -103,7 +103,7 @@ public:
     const CowTrailer& trailer() const { return tr_; }
     bool hasTrailer() const { return has_trailer_; }
     uint32_t erases() const { return erases_; }        // learn path, since power-up
-    uint32_t sessionErases() const { return erases_ - session_erases0_; }   // not yet in the trailer
+    uint32_t sessionErases() const { return erases_ - erases_base_; }   // not yet in tr_.erases
     uint32_t trailerWrites() const { return trailer_writes_; }
     uint32_t trailerFails() const { return trailer_fails_; }
     uint16_t zeroEntry() const { return zero_entry_; }
@@ -156,7 +156,8 @@ private:
     static uint16_t ioWrite(void* ctx, uint32_t sector, const uint8_t* data);
     static void ioSync(void* ctx);
     static uint64_t ioNow(void* ctx);
-    bool writeTrailer();
+    bool writeTrailer(uint32_t extra_erases);
+    void foldErases() { tr_.erases += erases_ - erases_base_; erases_base_ = erases_; }
     bool syncWithTrailer();         // the trailer (with the session record), then the map
     void trimDisk(CowStore* store);
 
@@ -180,5 +181,6 @@ private:
     bool pending_write_ = false;        // the trailer changed: persist()
     bool session_marked_ = false;       // the trailer says this session is open
     CowStore* store_ = nullptr;
-    uint32_t session_sectors0_ = 0, session_erases0_ = 0;
+    uint32_t session_sectors0_ = 0;
+    uint32_t erases_base_ = 0;          // erases_ already counted in tr_.erases
 };

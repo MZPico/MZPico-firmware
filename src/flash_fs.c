@@ -595,6 +595,19 @@ void flash_fs_trim_FAT_sectors(uint32_t first, uint32_t count)
     }
 }
 
+uint32_t flash_fs_predict_erases(uint16_t fat_sector)
+{
+    // The sector's allocation: a new write sector is erased first
+    uint32_t n = (write_sector == 0 || write_sector_bitmap == 0) ? 1 : 0;
+    // The sync: one map-sector erase per dirty meg, the sector's own included
+    int own;
+    if (fs_is_legacy) own = (fat_sector < 2044) ? 0 : 1 + (fat_sector - 2044) / 2048;
+    else own = fat_sector / MZP1_ENTRIES_PER_MEG;
+    for (int i = 0; i < FLASH_MEGS; i++)
+        if (fs_map_needs_written[i] || i == own) n++;
+    return n;
+}
+
 uint16_t flash_fs_map_entry(uint32_t fat_sector)
 {
     if (fat_sector >= flash_fs_num_fat_sectors()) return 0;

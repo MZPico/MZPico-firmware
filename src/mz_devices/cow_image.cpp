@@ -345,7 +345,7 @@ void CowImage::close() {
     pending_write_ = false;
     session_marked_ = false;
     store_ = nullptr;
-    session_sectors0_ = session_erases0_ = 0;
+    session_sectors0_ = erases_base_ = 0;
 }
 
 // The disk's sectors (not the trailer) become holes: zeros, no pages
@@ -423,12 +423,17 @@ bool CowImage::syncWithTrailer() {
                           store_->learn.session_vol) ? 1 : 0;
         tr_.cur_wb = (uint16_t)(store_->learn.session_blocks > 0xFFFF ? 0xFFFF : store_->learn.session_blocks);
         tr_.cur_vol = (uint16_t)(store_->learn.session_vol > 0xFFFF ? 0xFFFF : store_->learn.session_vol);
-        ok = writeTrailer();
+        // Lifetime erases: everything so far plus what this persist itself
+        // will cost (its trailer page, the map sync) - so a power-off right
+        // after it loses none of them
+        const uint32_t lba = runs_.lba(nsect_);
+        ok = writeTrailer(lba <= 0xFFFF ? flash_fs_predict_erases((uint16_t)lba) : 0);
         if (ok) session_marked_ = tr_.cur_active != 0;
     }
     const uint32_t e0 = flash_fs_erases;
     flash_fs_sync();
     erases_ += flash_fs_erases - e0;
+    foldErases();                       // RAM: the actual count from here on
     return ok;
 }
 
@@ -437,13 +442,15 @@ uint64_t CowImage::ioNow(void* ctx) {
     return self->now_us_ ? self->now_us_(self->now_ctx_) : 0;
 }
 
-bool CowImage::writeTrailer() {
+bool CowImage::writeTrailer(uint32_t extra_erases) {
     if (!has_trailer_ || gone_) return false;
     const uint32_t lba = runs_.lba(nsect_);
     if (lba == UINT32_MAX || lba > 0xFFFF) return false;
     uint8_t* b = static_cast<uint8_t*>(malloc(COW_SECT));
     if (!b) return false;
-    trailer_encode(b, tr_, store_);
+    CowTrailer t = tr_;
+    t.erases = tr_.erases + (erases_ - erases_base_) + extra_erases;
+    trailer_encode(b, t, store_);
     const uint32_t e0 = flash_fs_erases;
     const bool ok = flash_fs_write_FAT_sector((uint16_t)lba, b);
     erases_ += flash_fs_erases - e0;
@@ -462,9 +469,8 @@ void CowImage::endSession(CowStore& store, const CowLearnPolicy& p, bool active)
     session_marked_ = false;
     const uint32_t secs = store.learn.sectors - session_sectors0_;
     session_sectors0_ = store.learn.sectors;
-    const bool changed = cow_learn_end_session(tr_, p, active, wb, secs, drops,
-                                               erases_ - session_erases0_);
-    session_erases0_ = erases_;
+    foldErases();                       // erases are never a change by themselves
+    const bool changed = cow_learn_end_session(tr_, p, active, wb, secs, drops, 0);
     mode_ = tr_.mode;
     store.setWriteBack(learning() && !gone_);
     if (changed && has_trailer_) pending_write_ = true;
