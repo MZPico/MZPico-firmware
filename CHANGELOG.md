@@ -2,6 +2,80 @@
 
 All notable changes to the MZPico firmware.
 
+## v0.5.0 — 2026-11-17
+
+A fast, large RAM disk without an SD card: `mode=cow` serves a RAM-disk image
+straight from the internal flash, keeps the bytes the Z80 changes in a small
+SRAM pool, and can learn the image by itself. It works for `[ramdisk]`
+(MZ-1R18, Deluxe) and `[pico_rd]` (every board). Software that streams from a
+RAM disk, such as the Prince of Persia port, runs at about 3-4 wait states
+instead of ~96 with a file-backed disk.
+
+### Added
+
+- **`mode=cow`** for `[ramdisk]` and `[pico_rd]`: the image is a file on the
+  `flash:` volume, read through XIP; changed 1 KB blocks go to an SRAM pool
+  (`cow_pool`, KB, default 72); a write of the byte the image already holds
+  allocates nothing. The disk is a snapshot of the image at power-up; the pool
+  survives MZ-800 resets and is cleared at power-up. One cow disk per card.
+- **`learn`**: no prepared image needed. A missing image is created blank
+  (no data written) and learned from what the software writes: when the pool
+  is full, the least recently written blocks are written back into the image,
+  in short bursts with the Z80 held in WAIT. States `learning`, `ok`,
+  `frozen`; blocks that keep changing (scratch) are marked volatile and kept
+  in the pool. Keys: `learn`, `learn_batch`, `learn_cap` (a wear cap, blocks
+  an hour), `learn_converge`, `learn_sync`, `learn_sync_ms`,
+  `learn_freeze_after`, `learn_reserve`. `POST /api/ramdisk/relearn`,
+  `/freeze`, `/unfreeze`, `/clear`.
+- **REST**: `GET /api/ramdisk` (the cow disk's state, pool and learn
+  counters, the device that runs it), `GET /api/heap` and a `heap` object in
+  `/api/status` (free heap, largest block, minimum since boot), and a `reset`
+  object in `/api/status` (the last Z80 reset's flush and soft-reset times,
+  the slowest device).
+- `size` accepts `K` / `M` suffixes in `[ramdisk]` and `[pico_rd]`.
+- `tests/cow_ramdisk`: host tests (ASan/UBSan) for the cow store, the image
+  resolution over an emulated flash_fs, learning, power cuts and pico_rd
+  addressing.
+
+### Changed
+
+- **flash_fs**: deleted files release their pages (TRIM; before, they stayed
+  occupied); a new page is programmed before the map points at it; a map sync
+  replaces erase-with-copy when a whole sector would be freed; erase and
+  write counters.
+- **RAM**: the memory-snoop rings live on the heap (the 5 KB alignment gap in
+  .bss is reclaimed), the cloud listing buffer is allocated only while
+  listing: about 21 KB more free heap.
+- `[ramdisk]` (MZ-1R18): the data counter wraps inside its 64 KB page, as on
+  the real card, in every mode (before, it ran on into the next page).
+- `[pico_rd]`: one 24-bit position register for every backend. A position at
+  or past `size` wraps at the next data access; ADDRI wraps modulo `size`;
+  with `image` set and `size` omitted, the file's length is the bound; an
+  empty image without `size` skips the device.
+- A cow disk does no flash work at an MZ-800 reset (its persist waits for
+  the next RAM-disk access); file-backed devices still flush there.
+
+### Fixed
+
+- `[pico_rd]` address ports: base+2 (byte 2) ORed into the page and base+3
+  (byte 1) cleared the page; each now replaces exactly its own byte.
+- A two-core deadlock on the double-reset path when core 1 was starting a
+  flash operation (the Z80 froze until the 8 s watchdog).
+- The build with GCC 14 (GitHub's `ubuntu-latest` runner): RAM_FUNC on
+  template members caused a section type conflict.
+
+### Notes
+
+- With the default pool on a Pico W build, about 40 KB of heap is left: a
+  cloud file load (49 KB) does not fit while a cow disk is active.
+- With `learn` omitted, an image that carries a valid learn trailer keeps
+  the trailer's mode (learning, ok or frozen); an image without one, e.g.
+  copied onto the card from elsewhere, runs with `learn` off unless
+  `learn=true` is set. Let the card create the image instead.
+- On 2 MB boards the `flash:` volume holds about 1 MB, so 512 KB images;
+  16 MB boards also take 1 MB and 4 MB images (raise `learn_cap` for the
+  first learning of a 4 MB image).
+
 ## v0.4.0 — 2026-09-15
 
 The management protocol between the MZ-800 and MZPico is now the Unicard
