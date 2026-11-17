@@ -70,6 +70,11 @@ void flash_fs_trim_FAT_sectors(uint32_t first, uint32_t count);
 // Called first by flash_fs_trim_FAT_sectors (single context). NULL = none.
 extern void (*flash_fs_trim_hook)(uint32_t first_sector, uint32_t count);
 
+// Erases that writing fat_sector and then syncing the map will cost (the
+// allocation's fresh sector, one map-sector erase per dirty meg); a forced
+// sync or an erase-with-copy inside the allocation is not foreseen
+uint32_t flash_fs_predict_erases(uint16_t fat_sector);
+
 // Reset escape hatch (core 0, after setting shutting_down): wait until core
 // 1 is out of any flash operation - it then parks at its next one - so the
 // flush that follows never runs a second lockout initiator alongside core

@@ -517,10 +517,12 @@ static void test_small_sessions() {
     const uint32_t SIZE = 256 * 1024;
     std::vector<uint8_t> model(SIZE, 0);
     LDisk d;
+    uint32_t erases_at_open = 0;              // what the trailer said at the power-up
     auto power = [&]() {
         d.close();
         CHECK(remount());
         CHECK(d.open("flash:/SM.IMG", SIZE, 16, -1) == 0);
+        erases_at_open = d.im.trailer().erases;
         for (uint32_t i = 0; i < SIZE; i++) model[i] = d.st.read(i);
         d.im.persist(d.st);                   // the session's first access
     };
@@ -539,6 +541,9 @@ static void test_small_sessions() {
     std::set<uint32_t> pooled;
     for (uint32_t b = 0; b < SIZE / 1024; b++) if (d.st.slotOf(b * 1024) != COW_NONE) pooled.insert(b);
     const uint32_t s0 = d.im.trailer().sessions;
+    // Lifetime erases so far, the burst persist's own included
+    const uint32_t e_life = d.im.trailer().erases + d.im.sessionErases();
+    CHECK(e_life > 0);
     power();                                  // no MZ-800 reset
     uint32_t bad = 0;
     for (uint32_t b = 0; b < SIZE / 1024; b++)
@@ -548,6 +553,9 @@ static void test_small_sessions() {
            (unsigned)d.im.trailer().dirty);
     CHECK(bad == 0);
     CHECK(d.im.trailer().sessions == s0 + 1 && d.im.trailer().dirty == 1 && d.im.trailer().wb_blocks >= wb);
+    printf("  erases_total %lu before the power cut, %lu at the next power-up\n", (unsigned long)e_life,
+           (unsigned long)erases_at_open);
+    CHECK(erases_at_open == e_life);          // carried over, the persist's own erases included
     // Two clean power-up sessions (the same data): ok
     for (int k = 0; k < 2; k++) { boot_like(d, model, 30, 90); g_trace_us += 3000000; d.touch(); power(); }
     CHECK(d.im.mode() == COW_LEARN_OK);
@@ -561,6 +569,7 @@ static void test_small_sessions() {
     CHECK(!d.st.syncPending());
     power();
     CHECK(d.im.mode() == COW_LEARN_LEARNING && d.im.trailer().dirty == 1);
+    CHECK(d.im.trailer().erases >= e_life);
     d.close();
 }
 
