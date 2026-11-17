@@ -110,7 +110,7 @@ struct CowLearnIo {
     // page (a sect_ entry), 0 = failed (the image keeps the old content)
     uint16_t (*write_sector)(void* ctx, uint32_t sector, const uint8_t* data);
     void (*sync)(void* ctx);            // persist the flash map
-    uint32_t (*now_us)(void* ctx);      // free-running microseconds (wraps)
+    uint64_t (*now_us)(void* ctx);      // monotonic microseconds (64-bit: no wrap)
     void* ctx;
 };
 
@@ -370,7 +370,7 @@ private:
         ref_[s] = 0;
         used_--;
     }
-    bool takeToken(uint32_t now);
+    bool takeToken(uint64_t now);
     bool writeBackSlot(uint32_t s);
 
     const uint8_t* xip_ = nullptr;
@@ -393,8 +393,9 @@ private:
     bool has_io_ = false;
     bool wb_on_ = false;
     uint32_t wb_blk_ = COW_NOBLK;     // the block being written back: remap follows, never pins
-    uint32_t tokens_ = 0, per_token_us_ = 0, refill_at_ = 0;
+    uint32_t tokens_ = 0, per_token_us_ = 0;
+    uint64_t refill_at_ = 0;
     uint32_t since_sync_ = 0;
     bool need_wb_seen_ = false;
-    uint32_t last_need_wb_us_ = 0;
+    uint64_t last_need_wb_us_ = 0;
 };

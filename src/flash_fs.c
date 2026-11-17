@@ -127,6 +127,22 @@ volatile uint32_t flash_fs_map_syncs = 0;
 // Core 1 is between the shutdown check and the end of a flash operation
 // (see flash_guard_enter and flash_fs_quiesce_core1)
 static volatile uint32_t core1_in_flash_op = 0;
+// Core 1 inside a multi-step operation that must not park half-way (the
+// erase-with-copy: its preserved pages exist only in RAM between the erase
+// and their re-program): the flag stays up across its steps
+static uint32_t core1_op_group = 0;
+
+// Core 1: raise the flag, or park for good if a shutdown came first
+static void core1_op_begin(void) {
+    for (;;) {
+        core1_in_flash_op = 1;
+        __dmb();
+        if (!shutting_down) break;
+        core1_in_flash_op = 0;
+        __dmb();
+        while (shutting_down) { tight_loop_contents(); }
+    }
+}
 
 // Helpers to minimize repetition and keep flash critical sections consistent
 static inline bool flash_guard_enter(uint32_t *saved_ints) {
@@ -139,16 +155,7 @@ static inline bool flash_guard_enter(uint32_t *saved_ints) {
     // 1 inside an operation and waits it out - never both initiating a
     // lockout at once (the two handshakes cross and both cores hang until
     // the reset path's watchdog).
-    if (get_core_num() == 1) {
-        for (;;) {
-            core1_in_flash_op = 1;
-            __dmb();
-            if (!shutting_down) break;
-            core1_in_flash_op = 0;
-            __dmb();
-            while (shutting_down) { tight_loop_contents(); }
-        }
-    }
+    if (get_core_num() == 1 && core1_op_group == 0) core1_op_begin();
     // Announce the operation before the other core is parked: a bus
     // handler that XIP-reads the storage region (RAM disk COW mode) spins
     // on this instead of reading mid-erase
@@ -172,7 +179,7 @@ static inline void flash_guard_exit(uint32_t saved_ints, bool lockout_started) {
     }
     __dmb();
     flash_fs_op_active--;
-    if (get_core_num() == 1) {
+    if (get_core_num() == 1 && core1_op_group == 0) {
         __dmb();
         core1_in_flash_op = 0;
     }
@@ -652,11 +659,20 @@ void flash_erase_with_copy_sector(uint16_t sector, uint8_t preserve_bitmap)
 //  printf("[FS] ERASE with COPY: %d\n", sector);
     // sector_scratch, not a stack local: 4KB would overflow the ~2KB core
     // stacks (this path triggers on a well-filled volume)
+    // One shutdown-protected operation on core 1: the reset escape hatch
+    // waits until the preserved pages are back (flash_fs_quiesce_core1)
+    const bool c1 = get_core_num() == 1;
+    if (c1) { core1_op_begin(); core1_op_group++; }
     flash_read_sector(sector, 0, sector_scratch, FLASH_SECTOR_SIZE);
     flash_fs_copy_erases++;
     flash_erase_sector(sector);
     for (int i=0; i<8; i++) {
         if (preserve_bitmap & (1 << i))
            flash_write_sector(sector, i, sector_scratch + (i * 512), 512);
+    }
+    if (c1) {
+        core1_op_group--;
+        __dmb();
+        core1_in_flash_op = 0;
     }
 }

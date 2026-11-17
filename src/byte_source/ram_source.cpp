@@ -76,35 +76,27 @@ RAM_FUNC int RamSourceImpl<AUTO_INCREMENT>::next() {
     return 0;
 }
 
-// AUTO_INCREMENT=true: getByte auto-increments
-template<>
-RAM_FUNC int RamSourceImpl<true>::getByte(std::uint8_t &out) {
-    out = base_[pos_++];
-    if (pos_ >= size_)
-        pos_ = 0;
-    return 0;
-}
-
-// AUTO_INCREMENT=false: getByte does not auto-increment
-template<>
-RAM_FUNC int RamSourceImpl<false>::getByte(std::uint8_t &out) {
+// getByte/setByte: one template each (if constexpr), not explicit
+// specializations - an explicit specialization is an ordinary function, an
+// instantiated template member a COMDAT one, and GCC 14 refuses both in
+// the one RAM_FUNC section ("section type conflict")
+template<bool AUTO_INCREMENT>
+RAM_FUNC int RamSourceImpl<AUTO_INCREMENT>::getByte(std::uint8_t &out) {
     out = base_[pos_];
+    if constexpr (AUTO_INCREMENT) {
+        if (++pos_ >= size_)
+            pos_ = 0;
+    }
     return 0;
 }
 
-// AUTO_INCREMENT=true: setByte auto-increments
-template<>
-RAM_FUNC int RamSourceImpl<true>::setByte(std::uint8_t in) {
-    base_[pos_++] = in;
-    if (pos_ >= size_)
-        pos_ = 0;
-    return 0;
-}
-
-// AUTO_INCREMENT=false: setByte does not auto-increment
-template<>
-RAM_FUNC int RamSourceImpl<false>::setByte(std::uint8_t in) {
+template<bool AUTO_INCREMENT>
+RAM_FUNC int RamSourceImpl<AUTO_INCREMENT>::setByte(std::uint8_t in) {
     base_[pos_] = in;
+    if constexpr (AUTO_INCREMENT) {
+        if (++pos_ >= size_)
+            pos_ = 0;
+    }
     return 0;
 }
 

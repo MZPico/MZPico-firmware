@@ -49,7 +49,7 @@ static uint8_t* const CHIP = (uint8_t*)(uintptr_t)XIP_BASE;
 static const uint32_t REGION = 1024 * 1024;              // flash_fs: the upper 1 MB
 static const uint8_t* const ZERO = CHIP + 0x80000;       // "firmware" half: a zero page
 static uint64_t g_trace_us = 0;                          // Z80 time (the trace's clock)
-static uint32_t now_us(void*) { return (uint32_t)(g_trace_us + sim_flash_us); }
+static uint64_t now_us(void*) { return g_trace_us + sim_flash_us; }
 static std::atomic<uint32_t> g_lbusy{0};
 static FATFS g_lfs;
 
@@ -186,6 +186,9 @@ static void test_create() {
     const uint32_t leaked = used_pages();
     printf("  deleting it without TRIM: %lu flash pages stay in use\n", (unsigned long)leaked);
     CHECK(leaked >= without + 1024);
+    // Files named like the free-space trim's scratch file survive it
+    write_file("flash:/COWTRIM", 3000, 21);
+    write_file("flash:/COWTRIM0.TMP", 2000, 22);
     {   // learn=false: a missing image is an error, as before
         LDisk d;
         CHECK(d.open("flash:/POP.IMG", 512 * 1024, 64, 0) != 0);
@@ -200,6 +203,7 @@ static void test_create() {
            (unsigned long)(sim_erases - e0), (unsigned long)(sim_programs - p0),
            (unsigned long)used_pages());
     CHECK(d.im.created() && d.im.mode() == COW_LEARN_LEARNING && d.im.hasTrailer());
+    CHECK(file_ok("flash:/COWTRIM", 3000, 21) && file_ok("flash:/COWTRIM0.TMP", 2000, 22));
     CHECK(d.st.writeBackOn());
     printf("  after creating: %lu flash pages in use (the leaked ones reclaimed)\n", (unsigned long)used_pages());
     CHECK(used_pages() <= without + 16);    // the trailer + FAT/dir sectors, no data
@@ -521,6 +525,14 @@ static void test_cap() {
     boot_like(d, model, 30, 41, 60);
     CHECK(d.st.learn.blocks - b0 == 10);
     CHECK(mismatches(d.st, model) == 0);
+    // Five hours idle - past the 71.6 min wrap of a 32-bit microsecond
+    // clock: the bucket is full again
+    g_trace_us += 5ull * 3600 * 1000000u;
+    const uint32_t b1 = d.st.learn.blocks;
+    boot_like(d, model, 30, 42, 95);   // blocks 95..124 of 128
+    printf("  after 5 h idle: %lu more blocks\n", (unsigned long)(d.st.learn.blocks - b1));
+    CHECK(d.st.learn.blocks - b1 == 20);
+    CHECK(mismatches(d.st, model) == 0);
     d.reset();
     CHECK(d.im.mode() == COW_LEARN_LEARNING);
     d.close();
@@ -838,8 +850,13 @@ static void replay_sessions(const std::vector<Rec>& recs, const std::vector<uint
 static void test_trace(const char* path) {
     std::vector<Rec> recs;
     std::vector<uint8_t> data;
-    if (!path || !load_trace(path, recs, data) || recs.empty()) {
+    if (!path || !*path) {
         printf("learn: trace replay skipped (pass a .rdlog: argv[1] or COW_TRACE)\n");
+        return;
+    }
+    if (!load_trace(path, recs, data) || recs.empty()) {
+        printf("FAIL learn: the trace %s cannot be loaded (missing, empty or truncated)\n", path);
+        g_fail++;
         return;
     }
     const char* be = getenv("COW_TRACE_BOOT_END");
