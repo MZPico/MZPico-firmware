@@ -626,7 +626,9 @@ static void test_picord_addr() {
     CHECK(f.size == 40000);
     f.pos = 39999; CHECK(f.take() == 39999 && f.take() == 0);
     f.pos = 39990; f.addri(20); CHECK(f.pos == 10);
-    PicoRdAddr z; z.setSize(0, 0); CHECK(z.size == 1);
+    // No size= and an empty file: no usable bound, the device is refused
+    PicoRdAddr z; CHECK(!z.setSize(0, 0)); CHECK(z.size == 1);
+    CHECK(f.setSize(0, 40000) && f.setSize(65536, 0));
     // A size past 2^24 (32 MB) is capped: the 24-bit register never leaves
     // its 24 bits, advancing or skipping
     PicoRdAddr big; big.setSize(32u << 20);

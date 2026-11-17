@@ -114,7 +114,15 @@ int PicoRD::readConfig(dictionary *ini) {
     }
     // size= omitted with an image: the bound is the file's length (what the
     // file source adopted), as before
-    a_.setSize(size, bs ? bs->size() : 0);
+    // An empty image with size= omitted has no bound: refuse the device
+    // (boot continues without it) rather than serve a disk whose every
+    // access fails
+    if (!a_.setSize(size, bs ? bs->size() : 0)) {
+        printf("%s: image '%s' is empty and size= is not set: device skipped\n",
+               getDevID().c_str(), image.c_str());
+        bs.reset();
+        return E_DEVICE_NO_MEMORY;
+    }
     if (!size) size = a_.size;
     return 0;
 }

@@ -30,12 +30,16 @@ struct PicoRdAddr {
 
     // The bound: the configured size, else (size= omitted, file-backed) the
     // storage's own length; at most 2^24 - the register cannot address more,
-    // so the position never leaves its 24 bits
-    void setSize(uint32_t cfg_size, uint32_t storage_size = 0) {
+    // so the position never leaves its 24 bits. Returns false when there is
+    // no usable bound (no size= and an empty storage): the caller refuses the
+    // device; the 1-byte fallback only keeps the register's arithmetic safe
+    bool setSize(uint32_t cfg_size, uint32_t storage_size = 0) {
         uint32_t s = cfg_size ? cfg_size : storage_size;
+        const bool usable = s != 0;
         if (s == 0) s = 1;
         if (s > PICO_RD_ADDR_SPAN) s = PICO_RD_ADDR_SPAN;
         size = s;
+        return usable;
     }
 
     ALWAYS_INLINE void control() { pos = 0; idx = 0; }
