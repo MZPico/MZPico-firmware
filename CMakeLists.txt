@@ -81,7 +81,9 @@ foreach(MZF_FILE ${MZF_FILES})
         COMMAND ${CMAKE_COMMAND} -E echo "Generating header from ${MZF_FILE}"
         COMMAND ${GEN_MZF_SCRIPT}
                 ${MZF_FILE} ${HEADER_FILE}
-        DEPENDS ${MZF_FILE}
+        # The script too: a generator change (v0.5.1's inline constexpr)
+        # must regenerate the headers in existing build directories
+        DEPENDS ${MZF_FILE} ${GEN_MZF_SCRIPT}
         VERBATIM
     )
 endforeach()
