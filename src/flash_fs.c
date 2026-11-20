@@ -37,11 +37,24 @@
 // Access is single-context by design: core 1 in MZ-800 mode, core 0 thread
 // context in USB mode (the boot mode gate in main.cpp makes them exclusive).
 
-#define HW_FLASH_STORAGE_BASE  (1024 * 1024)
+// Start of the storage region (= end of the firmware region): set per
+// flash size by CMake (MZPICO_FS_BASE), which also hands it to the link
+// guard (src/flash_limit.ld) so the image can never grow into it. 2M:
+// 896 KB of firmware, 1152 KB of storage (a 1 MB RAM disk image plus
+// room); 16M: the original 1 MB boundary. Changing it orphans every
+// existing volume of that flash size (mount fails, never auto-formats).
+#ifndef MZPICO_FS_BASE
+#error "MZPICO_FS_BASE (flash offset of the storage region) must be defined"
+#endif
+#define HW_FLASH_STORAGE_BASE  (MZPICO_FS_BASE)
 #define MAGIC_8_BYTES "RHE!FS30"
 
 #define FLASH_BYTES (PICO_FLASH_SIZE_BYTES - HW_FLASH_STORAGE_BASE)
+// Legacy format only: one map sector per whole meg. A legacy volume can
+// only exist at the historic 1 MB boundary (A8PicoCart layout); elsewhere
+// it is not even tried.
 #define FLASH_MEGS (FLASH_BYTES / 1024 / 1024)
+#define LEGACY_POSSIBLE (HW_FLASH_STORAGE_BASE == 1024 * 1024)
 
 #define NUM_FAT_SECTORS (FLASH_BYTES / 512 - 4)   // legacy count; also the fs_map array size (max of both formats)
 #define NUM_FLASH_SECTORS (FLASH_BYTES / 4096) //  3840  // 15megs / 4096bytes = 3840
@@ -50,9 +63,23 @@
 // and the advertised FAT sector count equals the real page capacity so a
 // full volume runs out of space instead of running out of flash pages
 // (the legacy count over-commits by 4/116 sectors - see getNextWriteSector).
-#define MZP1_RESERVED_SECTORS (2 * FLASH_MEGS)
+// The map is split into chunks ("megs" in the code - historically one
+// per meg of storage) of MZP1_ENTRIES_PER_MEG entries, each with two
+// slots. Chunk count = the fewest that cover the remaining pages: every
+// chunk costs 2 sectors = 16 pages, hence the 2040 + 16 divisor. A whole
+// number of megs gives exactly FLASH_MEGS (1 MB -> 1, 15 MB -> 15), so
+// those volumes are byte-identical to the per-meg layout; 1152 KB -> 2.
 #define MZP1_ENTRIES_PER_MEG  ((FLASH_SECTOR_SIZE - 16) / 2)  // 2040
+#define MZP1_MAP_CHUNKS       ((NUM_FLASH_SECTORS * 8 + MZP1_ENTRIES_PER_MEG + 16 - 1) / (MZP1_ENTRIES_PER_MEG + 16))
+#define MZP1_RESERVED_SECTORS (2 * MZP1_MAP_CHUNKS)
 #define MZP1_NUM_FAT_SECTORS  ((NUM_FLASH_SECTORS - MZP1_RESERVED_SECTORS) * 8)
+// Per-chunk state arrays serve both formats
+#define MAP_PARTS_MAX (MZP1_MAP_CHUNKS > FLASH_MEGS ? MZP1_MAP_CHUNKS : FLASH_MEGS)
+
+_Static_assert(HW_FLASH_STORAGE_BASE % FLASH_SECTOR_SIZE == 0, "storage base must be 4 KB aligned");
+_Static_assert(MZP1_NUM_FAT_SECTORS <= MZP1_MAP_CHUNKS * MZP1_ENTRIES_PER_MEG, "map chunks must cover every page");
+_Static_assert(MZP1_NUM_FAT_SECTORS <= NUM_FAT_SECTORS, "fs_map.sectors must hold the MZP1 map");
+_Static_assert(NUM_FLASH_SECTORS <= 8192, "map entries carry a 13-bit flash sector index");
 
 typedef struct {
     uint8_t header[8];
@@ -71,10 +98,10 @@ typedef struct {
 static const uint8_t MZP1_MAGIC_BYTES[4] = {'M', 'Z', 'P', '1'};
 
 sector_map fs_map;
-bool fs_map_needs_written[FLASH_MEGS];
+bool fs_map_needs_written[MAP_PARTS_MAX];
 
 static bool fs_is_legacy = false;                 // mounted volume format
-static uint8_t map_active_slot[FLASH_MEGS];       // MZP1: 0 -> sector 2i, 1 -> 2i+1
+static uint8_t map_active_slot[MAP_PARTS_MAX];       // MZP1: 0 -> sector 2i, 1 -> 2i+1
 static uint32_t map_generation = 0;               // MZP1: last written generation
 
 uint8_t used_bitmap[NUM_FLASH_SECTORS];    // we will use 256 flash sectors for 2048 fat sectors
@@ -276,7 +303,7 @@ void write_fs_map()
     // generation; the old slot stays valid until the new one verifies
     flash_fs_map_syncs++;
     map_generation++;
-    for (int i=0; i<FLASH_MEGS; i++) {
+    for (int i=0; i<MZP1_MAP_CHUNKS; i++) {
         if (!fs_map_needs_written[i]) continue;
         uint8_t target = 1 - map_active_slot[i];
         uint16_t sector = (uint16_t)(2 * i + target);
@@ -298,7 +325,7 @@ void write_fs_map()
     // Quarantined pages become free only once EVERY dirty meg persisted:
     // a failed meg's old slot still references its pre-sync pages
     bool all_clean = true;
-    for (int i=0; i<FLASH_MEGS; i++)
+    for (int i=0; i<MZP1_MAP_CHUNKS; i++)
         if (fs_map_needs_written[i]) { all_clean = false; break; }
     if (all_clean)
         memset(pending_free_bitmap, 0, NUM_FLASH_SECTORS);
@@ -415,7 +442,7 @@ static int mzp1_try_mount(void)
     memset(fs_map.sectors, 0, sizeof(fs_map.sectors));
     map_generation = 0;
 
-    for (int meg = 0; meg < FLASH_MEGS; meg++) {
+    for (int meg = 0; meg < MZP1_MAP_CHUNKS; meg++) {
         int best_slot = -1;
         uint32_t best_gen = 0;
         for (int slot = 0; slot < 2; slot++) {
@@ -447,7 +474,7 @@ static int mzp1_try_mount(void)
 
 int flash_fs_mount()
 {
-    for (int i=0; i<FLASH_MEGS; i++)
+    for (int i=0; i<MAP_PARTS_MAX; i++)
         fs_map_needs_written[i] = false;
 
     // Current format first
@@ -458,6 +485,12 @@ int flash_fs_mount()
         return 0;
     }
 
+#if !LEGACY_POSSIBLE
+    // No legacy volume can exist at this storage base (and its whole-meg
+    // map would not even fit fs_map here)
+    printf("mountFlashFS() - no filesystem found\n");
+    return 1;
+#else
     // Legacy format: header + map in the first FLASH_MEGS sectors
     flash_read_sector(0, 0, &fs_map, 4096);
     if (memcmp(fs_map.header, MAGIC_8_BYTES, 8) != 0) {
@@ -472,6 +505,7 @@ int flash_fs_mount()
     init_used_bitmap();
     debug_print_in_use();
     return 0;
+#endif
 }
 
 bool flash_fs_region_is_blank(void)
@@ -497,7 +531,7 @@ void flash_fs_create()
     // previous filesystem would win the next mount over the fresh map
     for (int i=0; i<MZP1_RESERVED_SECTORS; i++)
         flash_erase_sector((uint16_t)i);
-    for (int i=0; i<FLASH_MEGS; i++) {
+    for (int i=0; i<MZP1_MAP_CHUNKS; i++) {
         map_active_slot[i] = 1;         // first sync lands in slot 0
         fs_map_needs_written[i] = true;
     }
@@ -603,7 +637,8 @@ uint32_t flash_fs_predict_erases(uint16_t fat_sector)
     int own;
     if (fs_is_legacy) own = (fat_sector < 2044) ? 0 : 1 + (fat_sector - 2044) / 2048;
     else own = fat_sector / MZP1_ENTRIES_PER_MEG;
-    for (int i = 0; i < FLASH_MEGS; i++)
+    const int parts = fs_is_legacy ? FLASH_MEGS : MZP1_MAP_CHUNKS;
+    for (int i = 0; i < parts; i++)
         if (fs_map_needs_written[i] || i == own) n++;
     return n;
 }

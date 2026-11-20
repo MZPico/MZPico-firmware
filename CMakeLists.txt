@@ -29,8 +29,13 @@ set(GEN_MZF_SCRIPT ${SCRIPTS_ROOT}/gen_mzf_array.py)
 
 if(FLASH_SIZE STREQUAL "2M")
     set(FLASH_SIZE_BYTES 2097152)
+    # 896 KB firmware / 1152 KB flash:/ (a 1 MB RAM disk image plus room).
+    # Was 1 MB / 1 MB until v0.5.1: a 2M volume from an older release does
+    # not mount and needs mzpico_format_2m once.
+    set(MZPICO_FS_BASE 0xE0000)
 elseif(FLASH_SIZE STREQUAL "16M")
     set(FLASH_SIZE_BYTES 16777216)
+    set(MZPICO_FS_BASE 0x100000)   # the original boundary; 15 MB of flash:/
     # A 16 MB module is by definition a third-party board (genuine Pico
     # boards ship 2 MB Winbond flash): assume clone-grade crystal and flash
     # and derate accordingly (see board.h). Global, not per-target: the
@@ -42,6 +47,10 @@ endif()
 
 message(STATUS "Board type: ${BOARD}")
 message(STATUS "Flash size selected: ${FLASH_SIZE}")
+# Flash offset of the flash_fs storage region = the firmware size limit.
+# Global: the firmware, the formatter and the link guard must agree.
+add_compile_definitions(MZPICO_FS_BASE=${MZPICO_FS_BASE})
+message(STATUS "Firmware region / flash:/ starts at: ${MZPICO_FS_BASE}")
 message(STATUS "Pico W WiFi support: ${USE_PICO_W}")
 
 if(USE_PICO_W AND FLASH_SIZE STREQUAL "16M")
@@ -210,6 +219,16 @@ set_source_files_properties(
 pico_enable_stdio_usb(mzpico 1)
 pico_enable_stdio_uart(mzpico 0)
 
+# Fail the link if the image would run into the flash filesystem
+# (src/flash_limit.ld; v0.5.0 W releases shipped 11-22 KB over it)
+function(mzpico_flash_limit target)
+    target_link_options(${target} PRIVATE
+        "LINKER:--defsym=MZPICO_FS_BASE=${MZPICO_FS_BASE}"
+        "LINKER:${SRC_ROOT}/flash_limit.ld")
+    set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS ${SRC_ROOT}/flash_limit.ld)
+endfunction()
+mzpico_flash_limit(mzpico)
+
 # Create UF2, bin, and hex files
 pico_add_extra_outputs(mzpico)
 
@@ -255,4 +274,5 @@ target_link_libraries(mzpico_format
 )
 
 # You need this so you get the UF2/bin/hex files
+mzpico_flash_limit(mzpico_format)
 pico_add_extra_outputs(mzpico_format)

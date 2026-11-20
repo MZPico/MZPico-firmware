@@ -2,6 +2,34 @@
 
 All notable changes to the MZPico firmware.
 
+## v0.5.1 — unreleased
+
+Fixes the v0.5.0 Pico W images, which were too large, and gives 2 MB boards a
+bigger `flash:` volume, enough for a 1 MB `mode=cow` RAM disk.
+
+### Fixed
+
+- **Pico W firmware overwrote the flash volume** (v0.5.0
+  `mzpico_*_2m_w.uf2`): the images were 11-22 KB past the firmware region,
+  over the volume's map sectors - the USB drive showed no medium and the
+  `flash:` files were lost. The images are now ~240 KB smaller: the
+  stringstream in the ini port-list parser pulled in libstdc++'s whole
+  locale machinery (~200 KB), and the embedded menu/explorer images were
+  linked twice (~33 KB). Every board's image shrank, the non-W ones from
+  ~720 KB to ~400 KB.
+- A firmware image that would reach into the flash volume now fails the
+  build (link-time guard) instead of shipping.
+
+### Changed
+
+- **2 MB boards: `flash:` grows from 1024 KB to 1152 KB** (firmware region
+  896 KB). A 1 MB learn RAM disk image fits with ~90 KB to spare. **A 2 MB
+  card needs `mzpico_format_2m` once after the update** (it erases
+  `flash:`); until then the volume does not mount and USB shows no medium.
+  16 MB boards keep their volume.
+- New flash volumes are formatted without a partition table (superfloppy):
+  the MBR layout wasted 31.5 KB before the volume.
+
 ## v0.5.0 — 2026-11-17
 
 A fast, large RAM disk without an SD card: `mode=cow` serves a RAM-disk image

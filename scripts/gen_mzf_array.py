@@ -22,7 +22,10 @@ def generate_c_header(mzf_file: Path, var_name: str) -> str:
     output.append(f"#pragma once\n")
     output.append(f"// Generated from: {mzf_file.name}")
     output.append(f"// Size: {total_size} bytes\n")
-    output.append(f"const uint8_t {var_name}[{total_size}] = {{")
+    # inline (C++17): ONE definition program-wide. A plain namespace-scope
+    # const has internal linkage, so every file including the header got
+    # its own copy of the image (two of menu and explorer: ~33 KB of flash)
+    output.append(f"inline constexpr uint8_t {var_name}[{total_size}] = {{")
 
     for i in range(0, total_size, 8):
         chunk = data[i:i+8]

@@ -48,7 +48,12 @@ void create_fatfs_disk()
 
     /* Format the default drive with default parameters */
     printf("making fatfs\n");
-    res = f_mkfs("flash:", 0, work, sizeof work);
+    // Superfloppy (FM_SFD): no partition table. FatFS's default MBR layout
+    // starts the volume at sector 63 - 31.5 KB of the 2M region lost to
+    // the gap, the difference between "1 MB RAM disk + room" and not.
+    // Floppy-style FAT volumes mount everywhere on removable media.
+    const MKFS_PARM opt = { FM_ANY | FM_SFD, 0, 0, 0, 0 };
+    res = f_mkfs("flash:", &opt, work, sizeof work);
     f_mount(&fs, "flash:", 0);
     f_setlabel("MZ800PICO");
     res = f_open(&fil, "WELCOME.TXT", FA_CREATE_NEW | FA_WRITE);

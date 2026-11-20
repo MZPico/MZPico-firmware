@@ -17,7 +17,7 @@
 
 #include "flash_fs.h"
 
-#define SECTOR_NUM ((PICO_FLASH_SIZE_BYTES - 1024 * 1024) / 512 - 4) // 30716 //2044 //1800
+// Volume size is a runtime value: flash_fs_num_fat_sectors()
 #define SECTOR_SIZE 512
 
 #ifdef __cplusplus

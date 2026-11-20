@@ -47,7 +47,8 @@ extern bool g_real_no_trim;
 #define CHECK(c) do { if (!(c)) { printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); g_fail++; } } while (0)
 
 static uint8_t* const CHIP = (uint8_t*)(uintptr_t)XIP_BASE;
-static const uint32_t REGION = 1024 * 1024;              // flash_fs: the upper 1 MB
+static const uint32_t REGION = MZPICO_FS_BASE;           // flash_fs storage region: offset
+static const uint32_t REGION_SIZE = PICO_FLASH_SIZE_BYTES - MZPICO_FS_BASE;   // and size
 static const uint8_t* const ZERO = CHIP + 0x80000;       // "firmware" half: a zero page
 static uint64_t g_trace_us = 0;                          // Z80 time (the trace's clock)
 static uint64_t now_us(void*) { return g_trace_us + sim_flash_us; }
@@ -90,7 +91,7 @@ static const OtherFile OTHERS[] = {
 static void real_volume() {
     g_real_flash = true;
     f_mount(nullptr, "flash:", 0);
-    memset(CHIP + REGION, 0xFF, REGION);
+    memset(CHIP + REGION, 0xFF, REGION_SIZE);
     memset((void*)ZERO, 0, 512);
     flash_fs_create();
     static BYTE work[FF_MAX_SS * 4];
@@ -318,6 +319,99 @@ static void test_writeback() {
            (unsigned long)kept, (unsigned long)bad, (unsigned long)pooled.size());
     CHECK(bad == 0);
     for (const auto& o : OTHERS) CHECK(file_ok(o.path, o.n, o.seed));
+    d2.close();
+}
+
+static void boot_like(LDisk& d, std::vector<uint8_t>& model, uint32_t nblk, uint32_t seed, uint32_t first);
+
+// ---------------- 2b. a 1 MB image on the 2M volume ----------------
+// The 2M storage region (1152 KB since v0.5.1) is sized for this: a 1 MB
+// learn image (+ its trailer sector) next to mzpico.ini, with room to
+// spare. The image's sectors run past FAT sector 2040, so its map entries
+// live in the second MZP1 map chunk - the part a whole-meg region never had.
+static void test_one_meg() {
+    if (REGION_SIZE < 1152 * 1024) {
+        printf("learn: 1 MB image skipped (storage region %lu KB)\n", (unsigned long)(REGION_SIZE / 1024));
+        return;
+    }
+    printf("learn: a 1 MB image on the %lu KB volume\n", (unsigned long)(REGION_SIZE / 1024));
+    g_real_flash = true;
+    f_mount(nullptr, "flash:", 0);
+    memset(CHIP + REGION, 0xFF, REGION_SIZE);
+    memset((void*)ZERO, 0, 512);
+    flash_fs_create();
+    static BYTE work[FF_MAX_SS * 4];
+    const MKFS_PARM opt = { FM_ANY | FM_SFD, 0, 0, 0, 0 };   // as create_fatfs_disk()
+    CHECK(f_mkfs("flash:", &opt, work, sizeof work) == FR_OK);
+    CHECK(f_mount(&g_lfs, "flash:", 1) == FR_OK);
+    write_file("flash:/mzpico.ini", 1500, 11);
+    printf("  %lu FAT sectors (%lu KB)\n", (unsigned long)flash_fs_num_fat_sectors(),
+           (unsigned long)(flash_fs_num_fat_sectors() / 2));
+
+    const uint32_t SIZE = 1024 * 1024;
+    std::vector<uint8_t> model(SIZE, 0), first_pass;
+    CowLearnCfg lc;
+    lc.cap = 1u << 30;           // write back everything at once
+    {
+        LDisk d;
+        CHECK(d.open("flash:/RAMDISK.IMG", SIZE, 72, -1, lc) == 0);
+        if (d.err[0]) printf("  open: %s\n", d.err);
+        boot_like(d, model, SIZE / 1024, 41, 0);
+        first_pass = model;
+        boot_like(d, model, 80, 43, 0);   // evicts the tail blocks: the image's end gets written too
+        d.reset();
+        printf("  %lu blocks written back, %lu fails, %lu erases (%lu copy), %lu map syncs\n",
+               (unsigned long)d.st.learn.blocks, (unsigned long)d.st.learn.fails,
+               (unsigned long)d.im.erases(), (unsigned long)flash_fs_copy_erases,
+               (unsigned long)flash_fs_map_syncs);
+        CHECK(d.st.learn.fails == 0);
+        CHECK(d.st.learn.blocks >= SIZE / 1024 - 72);
+        d.close();
+    }
+    // The second map chunk is in use
+    uint32_t hi = 0;
+    for (uint32_t s = 2040; s < flash_fs_num_fat_sectors(); s++) hi += flash_fs_map_entry(s) != 0;
+    printf("  %lu flash pages in use, %lu of them mapped by chunk 2\n",
+           (unsigned long)used_pages(), (unsigned long)hi);
+    CHECK(hi > 0);
+
+    // Power cycle: both chunks mount, the image is the model except for the
+    // blocks only the pool held, and there is room left beside it
+    CHECK(remount());
+    DWORD fre = 0; FATFS* fsp = nullptr;
+    CHECK(f_getfree("flash:", &fre, &fsp) == FR_OK);
+    printf("  free beside the image: %lu KB\n", (unsigned long)(fre * fsp->csize / 2));
+    printf("  fs: type %d csize %u n_fatent %lu fsize %lu fatbase %lu dirbase %lu database %lu n_rootdir %u\n",
+           fsp->fs_type, fsp->csize, (unsigned long)fsp->n_fatent, (unsigned long)fsp->fsize,
+           (unsigned long)fsp->fatbase, (unsigned long)fsp->dirbase, (unsigned long)fsp->database, fsp->n_rootdir);
+    CHECK(fre * fsp->csize / 2 >= 64);
+    write_file("flash:/EXTRA.BIN", 64 * 1024, 42);
+    CHECK(remount());
+    CHECK(file_ok("flash:/mzpico.ini", 1500, 11));
+    CHECK(file_ok("flash:/EXTRA.BIN", 64 * 1024, 42));
+    LDisk d2;
+    CHECK(d2.open("flash:/RAMDISK.IMG", SIZE, 72, -1) == 0);
+    // A block only the pool held at power-off reads its last written-back
+    // version (the first pass, or zeros if never written back): lost like
+    // RAM content, never anything else
+    uint32_t bad = 0, reverted = 0;
+    for (uint32_t b = 0; b < SIZE / 1024; b++) {
+        uint32_t wrong = 0, w_first = 0, w_zero = 0;
+        for (uint32_t o = 0; o < 1024; o++) {
+            const uint32_t p = b * 1024 + o;
+            const uint8_t v = d2.st.read(p);
+            wrong += v != model[p];
+            w_first += v != first_pass[p];
+            w_zero += v != 0;
+        }
+        if (wrong == 0) continue;
+        if (w_first == 0 || w_zero == 0) reverted++;
+        else bad += wrong;
+    }
+    printf("  after the power cycle: %lu bytes wrong, %lu blocks reverted (pool-only at power-off)\n",
+           (unsigned long)bad, (unsigned long)reverted);
+    CHECK(bad == 0);
+    CHECK(reverted <= 72);
     d2.close();
 }
 
@@ -730,7 +824,7 @@ static uint32_t g_snap_every = 0, g_snap_phase = 0;
 static void snap_hook(int kind, uint32_t off, size_t n) {
     if (!g_snap_every || (sim_ops % g_snap_every) != g_snap_phase) return;
     Snap s;
-    s.region.assign(CHIP + REGION, CHIP + 2 * REGION);
+    s.region.assign(CHIP + REGION, CHIP + REGION + REGION_SIZE);
     s.op = sim_ops;
     s.kind = kind;
     // Every other cut lands INSIDE the operation: half of it done
@@ -783,7 +877,7 @@ static void test_powercut() {
     }
     uint32_t mounted = 0, others_bad = 0, img_bad = 0, sect_bad = 0, trailer_ok = 0;
     for (const Snap& s : g_snaps) {
-        memcpy(CHIP + REGION, s.region.data(), REGION);
+        memcpy(CHIP + REGION, s.region.data(), REGION_SIZE);
         if (!remount()) continue;
         mounted++;
         for (const auto& o : OTHERS) if (!file_ok(o.path, o.n, o.seed)) others_bad++;
@@ -1074,6 +1168,7 @@ void learn_tests(int argc, char** argv) {
     const uint64_t t0 = sim_flash_us;
     test_create();
     test_writeback();
+    test_one_meg();
     test_converge();
     test_reset_path();
     test_power_sessions();
