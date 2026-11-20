@@ -472,6 +472,31 @@ static int mzp1_try_mount(void)
     return 0;
 }
 
+#if HW_FLASH_STORAGE_BASE < 1024 * 1024
+// Where a volume of the historic 1 MB-base layout keeps its map (MZP1
+// slots 0/1, or the legacy header), in sectors of THIS region
+#define OLD_LAYOUT_MAP_SECTOR ((uint16_t)((1024 * 1024 - HW_FLASH_STORAGE_BASE) / FLASH_SECTOR_SIZE))
+
+// Called with this volume's map mounted. A format at this base erases the
+// old-layout map sectors, so a valid old-layout map there that this map
+// does not own as data pages was written AFTER our format: firmware from
+// before the base moved formatted the card (a downgrade), and our map is
+// stale - its "free" pages hold that volume's files. Refusing the mount is
+// the safe answer (no medium over USB, never auto-formatted).
+static bool old_layout_volume_is_newer(void)
+{
+    const uint16_t s = OLD_LAYOUT_MAP_SECTOR;
+    if (used_bitmap[s] || used_bitmap[s + 1]) return false;   // our file data
+    for (int slot = 0; slot < 2; slot++) {
+        uint32_t gen;
+        flash_read_sector((uint16_t)(s + slot), 0, sector_scratch, FLASH_SECTOR_SIZE);
+        if (mzp1_image_valid(0, &gen)) return true;
+        if (slot == 0 && memcmp(sector_scratch, MAGIC_8_BYTES, 8) == 0) return true;
+    }
+    return false;
+}
+#endif
+
 int flash_fs_mount()
 {
     for (int i=0; i<MAP_PARTS_MAX; i++)
@@ -481,6 +506,12 @@ int flash_fs_mount()
     if (mzp1_try_mount() == 0) {
         fs_is_legacy = false;
         init_used_bitmap();
+#if HW_FLASH_STORAGE_BASE < 1024 * 1024
+        if (old_layout_volume_is_newer()) {
+            printf("mountFlashFS() - an older firmware's volume was formatted over this one; reformat\n");
+            return 1;
+        }
+#endif
         debug_print_in_use();
         return 0;
     }
@@ -537,11 +568,9 @@ void flash_fs_create()
     // and a downgrade after this format would otherwise find an old,
     // checksum-valid map pointing into pages this volume reuses - and
     // write through it. Data sectors of the new volume, empty right now.
-    {
-        const uint16_t old_map = (uint16_t)((1024 * 1024 - HW_FLASH_STORAGE_BASE) / FLASH_SECTOR_SIZE);
-        flash_erase_sector(old_map);
-        flash_erase_sector((uint16_t)(old_map + 1));
-    }
+    // (and flash_fs_mount relies on it: see old_layout_volume_is_newer)
+    flash_erase_sector(OLD_LAYOUT_MAP_SECTOR);
+    flash_erase_sector((uint16_t)(OLD_LAYOUT_MAP_SECTOR + 1));
 #endif
     for (int i=0; i<MZP1_MAP_CHUNKS; i++) {
         map_active_slot[i] = 1;         // first sync lands in slot 0

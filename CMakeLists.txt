@@ -30,7 +30,7 @@ set(GEN_MZF_SCRIPT ${SCRIPTS_ROOT}/gen_mzf_array.py)
 if(FLASH_SIZE STREQUAL "2M")
     set(FLASH_SIZE_BYTES 2097152)
     # 896 KB firmware / 1152 KB flash:/ (a 1 MB RAM disk image plus room).
-    # Was 1 MB / 1 MB until v0.5.1: a 2M volume from an older release does
+    # Was 1 MB / 1 MB until v0.6.0: a 2M volume from an older release does
     # not mount and needs mzpico_format_2m once.
     set(MZPICO_FS_BASE 0xE0000)
 elseif(FLASH_SIZE STREQUAL "16M")
@@ -81,7 +81,7 @@ foreach(MZF_FILE ${MZF_FILES})
         COMMAND ${CMAKE_COMMAND} -E echo "Generating header from ${MZF_FILE}"
         COMMAND ${GEN_MZF_SCRIPT}
                 ${MZF_FILE} ${HEADER_FILE}
-        # The script too: a generator change (v0.5.1's inline constexpr)
+        # The script too: a generator change (v0.6.0's inline constexpr)
         # must regenerate the headers in existing build directories
         DEPENDS ${MZF_FILE} ${GEN_MZF_SCRIPT}
         VERBATIM
