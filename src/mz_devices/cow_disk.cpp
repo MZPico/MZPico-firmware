@@ -258,7 +258,9 @@ int cow_disk_json(char* buf, size_t len, bool full) {
     const CowTrailer& t = im.trailer();
     // Wear: lifetime erases of the learn path over the volume's data
     // sectors, in parts per million of a 100,000-cycle endurance
-    const uint32_t data_sectors = flash_fs_num_pages() / 8 - 2;
+    // (MZP1: the FAT sector count is exactly the data pages - map chunks
+    // excluded, 4 reserved sectors at 2M, 30 at 16M)
+    const uint32_t data_sectors = flash_fs_num_fat_sectors() / 8;
     const uint64_t erases_total = (uint64_t)t.erases + im.sessionErases();
     const unsigned long wear_ppm = (unsigned long)(erases_total * 10u / (data_sectors ? data_sectors : 1));
     int n = snprintf(buf, len,

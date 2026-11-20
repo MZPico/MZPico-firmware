@@ -339,7 +339,15 @@ static void test_one_meg() {
     f_mount(nullptr, "flash:", 0);
     memset(CHIP + REGION, 0xFF, REGION_SIZE);
     memset((void*)ZERO, 0, 512);
+    // A 1 MB-base volume's map where pre-v0.5.1 firmware looks for it: the
+    // format must erase it, or a downgrade mounts it over this volume
+    uint8_t* const old_map = CHIP + 1024 * 1024;
+    memset(old_map, 0x5A, 2 * 4096);
+    memcpy(old_map, "MZP1", 4);
     flash_fs_create();
+    bool old_gone = true;
+    for (uint32_t i = 0; i < 2 * 4096; i++) old_gone &= old_map[i] == 0xFF;
+    CHECK(old_gone);
     static BYTE work[FF_MAX_SS * 4];
     const MKFS_PARM opt = { FM_ANY | FM_SFD, 0, 0, 0, 0 };   // as create_fatfs_disk()
     CHECK(f_mkfs("flash:", &opt, work, sizeof work) == FR_OK);

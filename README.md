@@ -278,8 +278,11 @@ pay the flash filesystem's sync cost.
   90 KB of other files) and about **15 MB on 16 MB boards**. Since v0.5.1
   the 2 MB layout gives the volume 128 KB more: a 2 MB card coming from an
   older release shows "no medium" over USB until it is formatted once with
-  the `mzpico_format_2m` UF2 (this erases `flash:`; copy files off first,
-  or keep them on the SD card). 16 MB volumes are unchanged
+  the `mzpico_format_2m` UF2 (this erases `flash:`: copy its files off
+  over USB **before** updating - the new firmware cannot mount the old
+  volume). Until it is formatted the MZ-800 boots only with an
+  `sd:/mzpico.ini`; without one the card halts and looks dead. 16 MB
+  volumes are unchanged
 - The internal `flash:` storage is best for images that change rarely.
   Bulk-write workloads (e.g. formatting a floppy image) are inherently
   several times slower on `flash:` than on `sd:` — prefer the SD card for

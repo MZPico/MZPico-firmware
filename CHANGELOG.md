@@ -25,8 +25,11 @@ bigger `flash:` volume, enough for a 1 MB `mode=cow` RAM disk.
 - **2 MB boards: `flash:` grows from 1024 KB to 1152 KB** (firmware region
   896 KB). A 1 MB learn RAM disk image fits with ~90 KB to spare. **A 2 MB
   card needs `mzpico_format_2m` once after the update** (it erases
-  `flash:`); until then the volume does not mount and USB shows no medium.
-  16 MB boards keep their volume.
+  `flash:` - copy files off over USB before updating). Until then the
+  volume does not mount: USB shows no medium, and the MZ-800 boots only
+  with an `sd:/mzpico.ini` (without one the card halts). A later
+  downgrade needs the old release's formatter. 16 MB boards keep their
+  volume.
 - New flash volumes are formatted without a partition table (superfloppy):
   the MBR layout wasted 31.5 KB before the volume.
 

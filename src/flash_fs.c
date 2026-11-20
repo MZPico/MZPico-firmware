@@ -531,6 +531,18 @@ void flash_fs_create()
     // previous filesystem would win the next mount over the fresh map
     for (int i=0; i<MZP1_RESERVED_SECTORS; i++)
         flash_erase_sector((uint16_t)i);
+#if HW_FLASH_STORAGE_BASE < 1024 * 1024
+    // Also where a 1 MB-base volume keeps its map (MZP1 slots 0/1, or the
+    // legacy header): firmware from before the base moved mounts there,
+    // and a downgrade after this format would otherwise find an old,
+    // checksum-valid map pointing into pages this volume reuses - and
+    // write through it. Data sectors of the new volume, empty right now.
+    {
+        const uint16_t old_map = (uint16_t)((1024 * 1024 - HW_FLASH_STORAGE_BASE) / FLASH_SECTOR_SIZE);
+        flash_erase_sector(old_map);
+        flash_erase_sector((uint16_t)(old_map + 1));
+    }
+#endif
     for (int i=0; i<MZP1_MAP_CHUNKS; i++) {
         map_active_slot[i] = 1;         // first sync lands in slot 0
         fs_map_needs_written[i] = true;
