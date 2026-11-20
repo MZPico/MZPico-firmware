@@ -1,7 +1,8 @@
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
+#include <cctype>
 #include <vector>
-#include <sstream>
 
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
@@ -328,27 +329,23 @@ std::string stripTrailingNumbers(const std::string& s) {
     return s.substr(0, end);
 }
 
+// Comma-separated port list: "0xD8, 0xD9" or decimal. No <sstream>: it
+// drags libstdc++'s whole locale/iostream machinery (wchar_t time_get...,
+// ~100 KB) into an image that must stay below the 1 MB flash_fs boundary.
 static std::vector<uint8_t> parsePortsList(const char* s) {
     std::vector<uint8_t> out;
-    if (!s || !*s) return out;
-    std::stringstream ss(s);
-    std::string tok;
-    while (std::getline(ss, tok, ',')) {
-        // Trim spaces
-        size_t start = tok.find_first_not_of(" \t\n\r");
-        size_t end   = tok.find_last_not_of(" \t\n\r");
-        if (start == std::string::npos) continue;
-        std::string val = tok.substr(start, end - start + 1);
-        // Support hex like 0xD8 or plain decimal
-        unsigned int num = 0;
-        if (val.size() > 2 && (val[0] == '0') && (val[1] == 'x' || val[1] == 'X')) {
-            std::stringstream hx;
-            hx << std::hex << val;
-            hx >> num;
-        } else {
-            num = static_cast<unsigned int>(std::strtoul(val.c_str(), nullptr, 0));
+    if (!s) return out;
+    while (*s) {
+        const char* end = std::strchr(s, ',');
+        if (!end) end = s + std::strlen(s);
+        while (s < end && std::isspace(static_cast<unsigned char>(*s))) ++s;
+        if (s < end) {
+            // strtoul base 0 takes 0x.. hex and plain decimal; it stops at
+            // trailing blanks and at the comma
+            unsigned long num = std::strtoul(s, nullptr, 0);
+            if (num <= 0xFF) out.push_back(static_cast<uint8_t>(num));
         }
-        if (num <= 0xFF) out.push_back(static_cast<uint8_t>(num));
+        s = *end ? end + 1 : end;
     }
     return out;
 }

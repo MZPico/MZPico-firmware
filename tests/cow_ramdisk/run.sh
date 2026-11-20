@@ -11,13 +11,15 @@ R=../../src
 FF=../../external/fatfs-sdk/src/ff15/source
 OUT=${TMPDIR:-/tmp}/cow_ramdisk_test
 SAN="-fsanitize=address,undefined"
+# The 2M storage base (CMakeLists.txt MZPICO_FS_BASE); override to test another
+FSB=${COW_FS_BASE:-0xE0000}
 [ -n "$COW_NOSAN" ] && SAN=""
 cc -O1 -w -I stubs -I $R -I $FF -c $FF/ff.c -o $OUT.ff.o
 cc -O1 -w -I stubs -I $R -I $FF -c $FF/ffunicode.c -o $OUT.ffu.o
 cc -O1 -w -I stubs -I $R -I $FF -c $FF/ffsystem.c -o $OUT.ffs.o
-cc -O1 -g -w $SAN -I stubs -I $R -c $R/flash_fs.c -o $OUT.flash_fs.o
+cc -O1 -g -w $SAN -I stubs -I $R -DMZPICO_FS_BASE=$FSB -c $R/flash_fs.c -o $OUT.flash_fs.o
 g++ -std=c++17 -O1 -g -Wall -Wextra -Wno-unused-parameter $SAN \
-    -DCOW_HOST_ATOMIC_BUSY -I stubs -I $R -I $R/mz_devices -I $FF \
+    -DCOW_HOST_ATOMIC_BUSY -DMZPICO_FS_BASE=$FSB -I stubs -I $R -I $R/mz_devices -I $FF \
     test.cpp learn.cpp flash_sim.cpp $R/mz_devices/cow_store.cpp $R/mz_devices/cow_resolve.cpp \
     $R/mz_devices/cow_image.cpp $OUT.flash_fs.o \
     $OUT.ff.o $OUT.ffu.o $OUT.ffs.o -lpthread $SAN -o $OUT
