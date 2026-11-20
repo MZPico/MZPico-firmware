@@ -325,7 +325,7 @@ static void test_writeback() {
 static void boot_like(LDisk& d, std::vector<uint8_t>& model, uint32_t nblk, uint32_t seed, uint32_t first);
 
 // ---------------- 2b. a 1 MB image on the 2M volume ----------------
-// The 2M storage region (1152 KB since v0.5.1) is sized for this: a 1 MB
+// The 2M storage region (1152 KB since v0.6.0) is sized for this: a 1 MB
 // learn image (+ its trailer sector) next to mzpico.ini, with room to
 // spare. The image's sectors run past FAT sector 2040, so its map entries
 // live in the second MZP1 map chunk - the part a whole-meg region never had.
@@ -339,7 +339,7 @@ static void test_one_meg() {
     f_mount(nullptr, "flash:", 0);
     memset(CHIP + REGION, 0xFF, REGION_SIZE);
     memset((void*)ZERO, 0, 512);
-    // A 1 MB-base volume's map where pre-v0.5.1 firmware looks for it: the
+    // A 1 MB-base volume's map where pre-v0.6.0 firmware looks for it: the
     // format must erase it, or a downgrade mounts it over this volume
     uint8_t* const old_map = CHIP + 1024 * 1024;
     memset(old_map, 0x5A, 2 * 4096);
@@ -358,6 +358,7 @@ static void test_one_meg() {
 
     const uint32_t SIZE = 1024 * 1024;
     std::vector<uint8_t> model(SIZE, 0), first_pass;
+    std::set<uint32_t> pooled;   // blocks only the pool held at power-off
     CowLearnCfg lc;
     lc.cap = 1u << 30;           // write back everything at once
     {
@@ -374,6 +375,8 @@ static void test_one_meg() {
                (unsigned long)flash_fs_map_syncs);
         CHECK(d.st.learn.fails == 0);
         CHECK(d.st.learn.blocks >= SIZE / 1024 - 72);
+        for (uint32_t b = 0; b < SIZE / 1024; b++)
+            if (d.st.slotOf(b * 1024) != COW_NONE) pooled.insert(b);
         d.close();
     }
     // The second map chunk is in use
@@ -401,7 +404,7 @@ static void test_one_meg() {
     CHECK(d2.open("flash:/RAMDISK.IMG", SIZE, 72, -1) == 0);
     // A block only the pool held at power-off reads its last written-back
     // version (the first pass, or zeros if never written back): lost like
-    // RAM content, never anything else
+    // RAM content. Every other block must read the model exactly.
     uint32_t bad = 0, reverted = 0;
     for (uint32_t b = 0; b < SIZE / 1024; b++) {
         uint32_t wrong = 0, w_first = 0, w_zero = 0;
@@ -413,14 +416,52 @@ static void test_one_meg() {
             w_zero += v != 0;
         }
         if (wrong == 0) continue;
-        if (w_first == 0 || w_zero == 0) reverted++;
+        if (pooled.count(b) && (w_first == 0 || w_zero == 0)) reverted++;
         else bad += wrong;
     }
     printf("  after the power cycle: %lu bytes wrong, %lu blocks reverted (pool-only at power-off)\n",
            (unsigned long)bad, (unsigned long)reverted);
     CHECK(bad == 0);
-    CHECK(reverted <= 72);
+    CHECK(reverted <= pooled.size());
     d2.close();
+}
+
+// ---------------- 2c. a downgrade formatted an old-layout volume over ours ----------------
+// v0.6.0 format at the 2M base, then (old firmware) a format at the 1 MB
+// base: our map at the region start survives, still checksum-valid. Mount
+// must refuse it - its "free" pages are the old volume's files.
+static void test_downgrade_reformat() {
+    if (REGION >= 1024 * 1024) return;
+    printf("learn: an old-layout volume formatted over this one\n");
+    real_volume();
+    CHECK(remount());                       // a normal volume mounts
+    const uint32_t old_s = (1024 * 1024 - REGION) / 4096;
+    uint32_t in_old = 0;
+    for (uint32_t s = 0; s < flash_fs_num_fat_sectors(); s++) {
+        const uint16_t e = flash_fs_map_entry(s);
+        if (e && (e >> 3) >= old_s && (e >> 3) <= old_s + 1) in_old++;
+    }
+    if (in_old) {                           // our data there: the check stands down by design
+        printf("  skipped: volume data in the old-layout map sectors\n");
+        return;
+    }
+    // The old formatter's fresh map: slot 0 of meg 0, empty payload
+    uint8_t* const om = CHIP + 1024 * 1024;
+    memset(om, 0xFF, 2 * 4096);
+    memset(om, 0, 4096);
+    memcpy(om, "MZP1", 4);
+    const uint32_t gen = 1; const uint16_t meg = 0, cnt = 2040; const uint32_t sum = 0;
+    memcpy(om + 4, &gen, 4); memcpy(om + 8, &meg, 2); memcpy(om + 10, &cnt, 2); memcpy(om + 12, &sum, 4);
+    f_mount(nullptr, "flash:", 0);
+    CHECK(flash_fs_mount() != 0);
+    // ... and the same with a legacy (A8PicoCart) header
+    memset(om, 0xFF, 2 * 4096);
+    memcpy(om, "RHE!FS30", 8);
+    CHECK(flash_fs_mount() != 0);
+    // Erased again (as a v0.6.0 format leaves it): our volume mounts
+    memset(om, 0xFF, 2 * 4096);
+    CHECK(remount());
+    for (const auto& o : OTHERS) CHECK(file_ok(o.path, o.n, o.seed));
 }
 
 // ---------------- 3. convergence ----------------
@@ -1177,6 +1218,7 @@ void learn_tests(int argc, char** argv) {
     test_create();
     test_writeback();
     test_one_meg();
+    test_downgrade_reformat();
     test_converge();
     test_reset_path();
     test_power_sessions();

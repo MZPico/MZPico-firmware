@@ -2,7 +2,7 @@
 
 All notable changes to the MZPico firmware.
 
-## v0.5.1 — unreleased
+## v0.6.0 — unreleased
 
 Fixes the v0.5.0 Pico W images, which were too large, and gives 2 MB boards a
 bigger `flash:` volume, enough for a 1 MB `mode=cow` RAM disk.
@@ -27,9 +27,12 @@ bigger `flash:` volume, enough for a 1 MB `mode=cow` RAM disk.
   card needs `mzpico_format_2m` once after the update** (it erases
   `flash:` - copy files off over USB before updating). Until then the
   volume does not mount: USB shows no medium, and the MZ-800 boots only
-  with an `sd:/mzpico.ini` (without one the card halts). A later
-  downgrade needs the old release's formatter. 16 MB boards keep their
-  volume.
+  with an `sd:/mzpico.ini` (without one the card halts). **Downgrading**
+  a 2 MB card needs the old release's formatter, which erases `flash:`
+  again: copy off what you added since the update first. Coming back to
+  v0.6.0 after that needs `mzpico_format_2m` again - the firmware refuses
+  to mount its own leftover map over the older volume rather than write
+  through it. 16 MB boards keep their volume.
 - New flash volumes are formatted without a partition table (superfloppy):
   the MBR layout wasted 31.5 KB before the volume.
 

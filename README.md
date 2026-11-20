@@ -275,7 +275,7 @@ pay the flash filesystem's sync cost.
   few seconds** to force a full MZPico restart instead
 - The internal `flash:` volume holds about **1.1 MB on 2 MB Picos**
   (1152 KB of flash; room for a 1 MB `mode=cow` RAM disk image plus about
-  90 KB of other files) and about **15 MB on 16 MB boards**. Since v0.5.1
+  90 KB of other files) and about **15 MB on 16 MB boards**. Since v0.6.0
   the 2 MB layout gives the volume 128 KB more: a 2 MB card coming from an
   older release shows "no medium" over USB until it is formatted once with
   the `mzpico_format_2m` UF2 (this erases `flash:`: copy its files off
@@ -288,9 +288,11 @@ pay the flash filesystem's sync cost.
   several times slower on `flash:` than on `sd:` — prefer the SD card for
   working disks
 - The internal flash filesystem is protected against power loss during
-  writes (double-buffered metadata). Volumes created by older firmware
-  keep working but lack this protection; back up the files and reformat
-  (e.g. with the `mzpico_format` UF2) to upgrade. A damaged flash volume
+  writes (double-buffered metadata). On 16 MB boards, volumes created by
+  firmware older than v0.3.0 keep working but lack this protection; back up the
+  files and reformat (e.g. with the `mzpico_format` UF2) to upgrade. (On
+  2 MB boards any volume from before v0.6.0 must be reformatted anyway,
+  see above.) A damaged flash volume
   is never reformatted automatically — over USB it shows as "no medium"
 
 ### PSG (SN76489)
