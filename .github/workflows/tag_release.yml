@@ -37,6 +37,25 @@ jobs:
           echo "Version tag detected: $TAG"
           echo "VERSION=$TAG" >> $GITHUB_ENV
 
+      - name: Release notes from CHANGELOG.md
+        # The tag's own section: from its "## vX.Y.Z" heading (the rest of
+        # the heading line, e.g. the date, is free) to the next "## "
+        # heading, both headings excluded. Runs before the builds so a tag
+        # without a CHANGELOG entry fails in seconds, not after them.
+        run: |
+          awk -v v="$VERSION" '
+            /^## / { if (found) exit; if ($2 == v) { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md | sed -e '/./,$!d' > release_notes.md
+          if ! grep -q '[^[:space:]]' release_notes.md; then
+            echo "::error::CHANGELOG.md has no (or an empty) '## $VERSION' section"
+            exit 1
+          fi
+          if grep -q "^## $VERSION .*unreleased" CHANGELOG.md; then
+            echo "::warning::CHANGELOG.md still marks $VERSION as unreleased"
+          fi
+          echo "Release notes: $(wc -l < release_notes.md) lines"
+
       - name: Create build directory
         run: |
           mkdir build
@@ -96,7 +115,7 @@ jobs:
         with:
           name: ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
-          generate_release_notes: true
+          body_path: release_notes.md
           draft: true
           files: |
             build/*.uf2

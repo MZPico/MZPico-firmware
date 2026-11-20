@@ -2,7 +2,7 @@
 
 All notable changes to the MZPico firmware.
 
-## v0.6.0 — unreleased
+## v0.6.0 — 2026-11-20
 
 > [!WARNING]
 > **2 MB boards (every genuine Pico and Pico W): back up `flash:` before
